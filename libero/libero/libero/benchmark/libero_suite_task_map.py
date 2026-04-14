@@ -24,7 +24,8 @@ libero_task_map = {
         "pick_up_the_orange_juice_and_place_it_in_the_basket",
     ],
     "libero_goal": [
-        "open_the_middle_drawer_of_the_cabinet",
+        "custom_task", # Harness Code
+        "open_the_middle_drawer_of_the_cabinet", 
         "put_the_bowl_on_the_stove",
         "put_the_wine_bottle_on_top_of_the_cabinet",
         "open_the_top_drawer_and_put_the_bowl_inside",

@@ -118,6 +118,7 @@ class LiberoEnv(gym.Env):
         camera_name_mapping: dict[str, str] | None = None,
         num_steps_wait: int = 10,
         control_mode: str = "relative",
+        prompt_override: str | None = None,
     ):
         super().__init__()
         self.task_id = task_id
@@ -155,10 +156,21 @@ class LiberoEnv(gym.Env):
         # Extract task metadata without allocating GPU resources (safe before fork).
         task = task_suite.get_task(task_id)
         self.task = task.name
-        self.task_description = task.language
+
+        # ── HARNESS START ──
+        if prompt_override is not None:
+            self.task_description = prompt_override
+        else:
+            self.task_description = task.language
+
+        # ── HARNESS END ──
         self._task_bddl_file = os.path.join(
             get_libero_path("bddl_files"), task.problem_folder, task.bddl_file
         )
+        # ── HARNESS START ──
+        print(f"[legislative harness] task_id={task_id} language='{self.task_description}'")
+        # ── HARNESS END ──
+
         self._env: OffScreenRenderEnv | None = (
             None  # deferred — created on first reset() inside the worker subprocess
         )
@@ -380,6 +392,7 @@ def _make_env_fns(
     gym_kwargs: Mapping[str, Any],
     control_mode: str,
     camera_name_mapping: dict[str, str] | None = None,
+    prompt_override: str | None = None,  # ── HARNESS ──
 ) -> list[Callable[[], LiberoEnv]]:
     """Build n_envs factory callables for a single (suite, task_id)."""
 
@@ -396,6 +409,7 @@ def _make_env_fns(
             n_envs=n_envs,
             control_mode=control_mode,
             camera_name_mapping=camera_name_mapping,
+            prompt_override=prompt_override,  # ── HARNESS ──
             **local_kwargs,
         )
 
@@ -418,6 +432,8 @@ def create_libero_envs(
     control_mode: str = "relative",
     episode_length: int | None = None,
     camera_name_mapping: dict[str, str] | None = None,
+    prompt_override: str | None = None,  # ── HARNESS ──
+
 ) -> dict[str, dict[int, Any]]:
     """
     Create vectorized LIBERO environments with a consistent return shape.
@@ -475,6 +491,7 @@ def create_libero_envs(
                 gym_kwargs=gym_kwargs,
                 control_mode=control_mode,
                 camera_name_mapping=camera_name_mapping,
+                prompt_override=prompt_override,  # ── HARNESS ──
             )
             if is_async:
                 lazy = _LazyAsyncVectorEnv(fns, cached_obs_space, cached_act_space)
