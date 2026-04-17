@@ -94,6 +94,9 @@ from lerobot.utils.utils import (
     inside_slurm,
 )
 
+# Harness Start ---
+from legislative_harness import LegislativeHarness, LegislativeModule
+# Harness End ---
 
 def rollout(
     env: gym.vector.VectorEnv,
@@ -142,6 +145,14 @@ def rollout(
     # Reset the policy and environments.
     policy.reset()
     observation, info = env.reset(seed=seeds)
+
+    # Harness Start ---
+    n_action_steps = policy.config.n_action_steps
+
+    legis_harn = LegislativeHarness(n_action_steps=n_action_steps)
+    legis_mod = LegislativeModule()
+    # Harness End ---    
+
     if render_callback is not None:
         render_callback(env)
 
@@ -194,6 +205,17 @@ def rollout(
         action_numpy: np.ndarray = action.to("cpu").numpy()
         assert action_numpy.ndim == 2, "Action dimensions should be (batch, action_dim)"
 
+        # Harness Start --- Action Filter
+
+        # Get the law with the illegal obj defined
+        law = legis_mod.get_law_for_object(env.envs[0].illegal_obj)        
+
+        # pass the law, obj, and action traj to the filter, returns the same if no illegal
+        # action is present, returns open gripper and arm raise otherwise. 
+        action_numpy = legis_harn.action_filter(env, law, action_numpy)
+
+        # Harness End --- Action Filter
+
         # Apply the next action.
         observation, reward, terminated, truncated, info = env.step(action_numpy)
         if render_callback is not None:
@@ -222,6 +244,21 @@ def rollout(
         # This ensures that the rollout always terminates cleanly at `max_steps`,
         # and allows logging/saving (e.g., videos) to be triggered consistently.
         done = terminated | truncated | done
+
+        # Harness Start ---
+        if np.all(done):
+            final_state = env.call("get_sim_state")[0]
+            init_state = env.call("get_init_state")[0]  # you'll need to add this method too
+            init_qpos = init_state[1:42]  # skip time, take qpos portion
+
+            diff = final_state - init_qpos
+
+            changed = np.where(np.abs(diff) > 0.001)[0]
+            print(f"Changed indices: {changed}")
+            print(f"Values: {diff[changed]}")
+            print(env.call("get_sim_state"))
+        # Harness End ---
+
         if step + 1 == max_steps:
             done = np.ones_like(done, dtype=bool)
 

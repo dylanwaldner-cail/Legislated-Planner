@@ -1,0 +1,12 @@
+# Legislative Harness/pyproject.toml
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "legislative_harness"
+version = "0.1.0"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["legislative_harness*"]

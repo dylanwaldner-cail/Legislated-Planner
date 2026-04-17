@@ -33,6 +33,8 @@ from lerobot.types import RobotObservation
 
 from .utils import _LazyAsyncVectorEnv
 
+import pickle
+
 
 def _parse_camera_names(camera_name: str | Sequence[str]) -> list[str]:
     """Normalize camera_name into a non-empty list of strings."""
@@ -118,7 +120,8 @@ class LiberoEnv(gym.Env):
         camera_name_mapping: dict[str, str] | None = None,
         num_steps_wait: int = 10,
         control_mode: str = "relative",
-        prompt_override: str | None = None,
+        prompt_override: str = '',
+        illegal_obj: str = '',
     ):
         super().__init__()
         self.task_id = task_id
@@ -149,6 +152,12 @@ class LiberoEnv(gym.Env):
         self.episode_length = episode_length
         # Load once and keep
         self._init_states = get_task_init_states(task_suite, self.task_id) if self.init_states else None
+
+        # Harness Start --- Print initial state
+        print(type(self._init_states[0]))
+        print(self._init_states[0].keys() if hasattr(self._init_states[0], 'keys') else self._init_states[0])
+        # Harness End ---
+
         self._reset_stride = n_envs  # when performing a reset, append `_reset_stride` to `init_state_id`.
 
         self.init_state_id = self.episode_index  # tie each sub-env to a fixed init state
@@ -158,15 +167,22 @@ class LiberoEnv(gym.Env):
         self.task = task.name
 
         # ── HARNESS START ──
-        if prompt_override is not None:
+        if prompt_override:
             self.task_description = prompt_override
         else:
             self.task_description = task.language
 
+        if illegal_obj:
+            self.illegal_obj = illegal_obj
+        else:
+            self.illegal_obj = None
+
         # ── HARNESS END ──
+
         self._task_bddl_file = os.path.join(
             get_libero_path("bddl_files"), task.problem_folder, task.bddl_file
         )
+
         # ── HARNESS START ──
         print(f"[legislative harness] task_id={task_id} language='{self.task_description}'")
         # ── HARNESS END ──
@@ -262,6 +278,13 @@ class LiberoEnv(gym.Env):
         env.reset()
         self._env = env
 
+    # ── HARNESS START ──
+    def get_init_state(self):
+        if self._init_states is None:
+            return None
+        return self._init_states[self.init_state_id]
+    # ── HARNESS END ──
+
     def render(self):
         self._ensure_env()
         raw_obs = self._env.env._get_observations()
@@ -324,11 +347,29 @@ class LiberoEnv(gym.Env):
 
     def reset(self, seed=None, **kwargs):
         self._ensure_env()
+
+        # ── HARNESS START ──
+        ''' comenting out for now
+        sim = self._env.sim
+        # print all joints with their qpos address and current value
+        for i in range(sim.model.njnt):
+            name = sim.model.joint_id2name(i)
+            qpos_addr = sim.model.jnt_qposadr[i]
+            print(f"joint {i}: {name} | qpos_addr={qpos_addr} | value={sim.data.qpos[qpos_addr]}")
+        # ── HARNESS END ──
+        '''
         super().reset(seed=seed)
         self._env.seed(seed)
         raw_obs = self._env.reset()
         if self.init_states and self._init_states is not None:
-            raw_obs = self._env.set_init_state(self._init_states[self.init_state_id % len(self._init_states)])
+            # ── HARNESS START ──
+            init_state = self._init_states[self.init_state_id % len(self._init_states)].copy()
+            self.drawer_override = False
+            if self.drawer_override:
+                init_state[1 + 38] = -0.14168  # open middle drawer
+            raw_obs = self._env.set_init_state(init_state)
+            # ── HARNESS END ──
+            # commenting out for now, come back! raw_obs = self._env.set_init_state(self._init_states[self.init_state_id % len(self._init_states)])
             self.init_state_id += self._reset_stride  # Change init_state_id when reset
 
         # After reset, objects may be unstable (slightly floating, intersecting, etc.).
@@ -375,6 +416,12 @@ class LiberoEnv(gym.Env):
         truncated = False
         return observation, reward, terminated, truncated, info
 
+    # ── HARNESS START ──
+    def get_sim_state(self):
+        """Return current MuJoCo qpos for inspection and custom init states."""
+        return self._env.sim.data.qpos.copy()
+    # ── HARNESS END ──
+
     def close(self):
         if self._env is not None:
             self._env.close()
@@ -393,6 +440,7 @@ def _make_env_fns(
     control_mode: str,
     camera_name_mapping: dict[str, str] | None = None,
     prompt_override: str | None = None,  # ── HARNESS ──
+    illegal_obj: str | None = None, # Harness
 ) -> list[Callable[[], LiberoEnv]]:
     """Build n_envs factory callables for a single (suite, task_id)."""
 
@@ -410,6 +458,7 @@ def _make_env_fns(
             control_mode=control_mode,
             camera_name_mapping=camera_name_mapping,
             prompt_override=prompt_override,  # ── HARNESS ──
+            illegal_obj=illegal_obj, # Harness
             **local_kwargs,
         )
 
@@ -433,6 +482,7 @@ def create_libero_envs(
     episode_length: int | None = None,
     camera_name_mapping: dict[str, str] | None = None,
     prompt_override: str | None = None,  # ── HARNESS ──
+    illegal_obj: str | None = None, # Harness
 
 ) -> dict[str, dict[int, Any]]:
     """
@@ -492,6 +542,7 @@ def create_libero_envs(
                 control_mode=control_mode,
                 camera_name_mapping=camera_name_mapping,
                 prompt_override=prompt_override,  # ── HARNESS ──
+                illegal_obj=illegal_obj, # Harness
             )
             if is_async:
                 lazy = _LazyAsyncVectorEnv(fns, cached_obs_space, cached_act_space)
