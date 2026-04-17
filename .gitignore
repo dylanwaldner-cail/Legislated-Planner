@@ -9,3 +9,5 @@ Code_Libero/
 .DS_Store
 
 outputs/
+
+__pycache__/

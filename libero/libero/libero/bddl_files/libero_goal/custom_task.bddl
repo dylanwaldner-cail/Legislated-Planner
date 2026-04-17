@@ -1,6 +1,8 @@
+# Currently trying to make the bowl touching illegal
+
 (define (problem LIBERO_Tabletop_Manipulation)
   (:domain robosuite)
-  (:language Open the bottom layer of the drawer, not the middle layer of the drawer) # Harness Code
+  (:language Open the top drawer and put the bowl inside) # Harness Code
     (:regions
       (plate_region
           (:target main_table)
@@ -107,7 +109,8 @@
   )
 
   (:obj_of_interest
-    wooden_cabinet_1_bottom_region # Harness Code
+    akita_black_bowl_1
+    wooden_cabinet_1_top_region
   )
 
   (:init

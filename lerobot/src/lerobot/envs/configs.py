@@ -351,7 +351,11 @@ class LiberoEnv(EnvConfig):
         }
     )
     control_mode: str = "relative"  # or "absolute"
+
+    # Harness Start ---
     prompt_override: str | None = None  # ── HARNESS ──
+    illegal_obj: str | None = None
+    # Harness End ---
 
     def __post_init__(self):
         if self.obs_type == "pixels":
@@ -434,6 +438,7 @@ class LiberoEnv(EnvConfig):
             episode_length=self.episode_length,
             camera_name_mapping=self.camera_name_mapping,
             prompt_override=self.prompt_override,  # ── HARNESS ──
+            illegal_obj=self.illegal_obj, # Harness
         )
 
     def get_env_processors(self):
