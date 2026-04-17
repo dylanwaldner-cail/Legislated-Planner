@@ -13,4 +13,5 @@ outputs/
 __pycache__/
 
 source.txt
-vlabench_pi0/
+checkpoints/
+src/
