@@ -14,7 +14,11 @@ class LegislativeHarness:
         self.action_history = self.action_history[-self.action_hist_len:]
 
     def is_illegal_action(self, env, law, action_traj:list) -> bool:
+        if law is None:
+            return False
         obj_name = law["PDDL"]["Object"]
+        if obj_name is None:
+            return False
 
         illegal_pred = law["PDDL"]["Predicate"]
 
