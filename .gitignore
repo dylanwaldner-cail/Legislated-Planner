@@ -18,3 +18,13 @@ checkpoints/
 *.egg-info
 
 Demo/
+*.mp4
+
+*.part
+*.zip
+*.pt
+*.bin
+*.safetensors
+*.h5
+*.npz
+vlabench_pi0/VLABench/assets/
