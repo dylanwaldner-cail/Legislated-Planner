@@ -62,7 +62,8 @@ from ..rtc.modeling_rtc import RTCProcessor
 from .configuration_pi0 import DEFAULT_IMAGE_SIZE, PI0Config
 
 # HArness Start ---
-from legislative_harness import LegislativeHarness, LegislativeModule
+from legislative_harness import LegislativeHarness
+from legislative_harness import LegislativeModule
 # Harness End ---
 
 
