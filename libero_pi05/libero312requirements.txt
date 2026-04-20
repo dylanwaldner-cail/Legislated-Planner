@@ -48,8 +48,10 @@ jsonschema-specifications==2025.9.1
 jupyter_core==5.9.1
 jupytext==1.19.1
 kiwisolver==1.5.0
--e git+https://github.com/dylanwaldner-cail/Legislative-Harness@0cace4b016e0ff416f152240a22a8100362b9609#egg=lerobot&subdirectory=lerobot
--e git+https://github.com/dylanwaldner-cail/Legislative-Harness@0cace4b016e0ff416f152240a22a8100362b9609#egg=libero&subdirectory=libero
+# Editable install with no version control (lerobot==0.5.2)
+-e /Users/2499677/Desktop/Legislative Harness/lerobot
+# Editable install with no version control (libero==0.1.0)
+-e /Users/2499677/Desktop/Legislative Harness/libero
 llvmlite==0.47.0
 Markdown==3.10.2
 markdown-it-py==4.0.0
