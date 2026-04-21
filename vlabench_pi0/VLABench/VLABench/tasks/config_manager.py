@@ -63,7 +63,7 @@ class BenchTaskConfigManager():
         elif isinstance(self.num_objects, int):
             self.num_object = self.num_objects
         
-    def get_seen_task_config(self):
+    def get_seen_task_config(self, illegal_entity=None): # Harness
         target_entity = random.choice(self.seen_object)
         if isinstance(target_entity, list):
             target_entity = random.choice(target_entity)
@@ -78,9 +78,10 @@ class BenchTaskConfigManager():
         return self.get_task_config(target_entity=target_entity, 
                                     target_container=container, 
                                     init_container=init_container,
+                                    illegal_entity=illegal_entity, # Harness
                                     **self.kwargs)
     
-    def get_unseen_task_config(self):
+    def get_unseen_task_config(self, illegal_entity=None): # Harness
         target_entity = random.choice(self.unseen_object)
         if isinstance(target_entity, list):
             target_entity = random.choice(target_entity)
@@ -95,6 +96,7 @@ class BenchTaskConfigManager():
         return self.get_task_config(target_entity=target_entity, 
                                     target_container=container, 
                                     init_container=init_container,
+                                    illegal_entity=illegal_entity, # Harness
                                     **self.kwargs)
     
     def get_entity_config(self, target_entity:str, position=[0,0,0.8], orientation=[0, 0, 0], randomness=DEFAULT_RABDOMNESS, **kwargs):
@@ -119,7 +121,7 @@ class BenchTaskConfigManager():
         """
         raise NotImplementedError
     
-    def get_task_config(self, target_entity, target_container, init_container, **kwargs):
+    def get_task_config(self, target_entity, target_container, init_container, illegal_entity=None, **kwargs): # Harness
         """
         Load task related entity configs.
         param:
@@ -128,9 +130,10 @@ class BenchTaskConfigManager():
             init_container: task the target entity from the init containers 
         """
         self.target_entity, self.target_container, self.init_container = target_entity, target_container, init_container
+        self.illegal_entity = illegal_entity # Harness
         self.load_containers(target_container=target_container)
         self.load_init_containers(init_container=init_container)
-        self.load_objects(target_entity=target_entity)
+        self.load_objects(target_entity=target_entity, illegal_entity=illegal_entity) # Harness
         self.get_condition_config(target_entity=target_entity, target_container=target_container, init_container=init_container)
         self.get_instruction(target_entity=target_entity, target_container=target_container, init_container=init_container)
         return self.config
@@ -153,17 +156,28 @@ class BenchTaskConfigManager():
             init_container_config = self.get_entity_config(init_container)
             self.config["task"]["components"].append(init_container_config)
     
-    def load_objects(self, target_entity):
+    def load_objects(self, target_entity, illegal_entity=None):
         objects = []
         objects.append(target_entity)
         self.other_objects = flatten_list(self.seen_object) + flatten_list(self.unseen_object)
         self.other_objects.remove(target_entity)
-        objects.extend(random.sample(self.other_objects, self.num_object-1))
 
+        # Harness Start ---
+        illegal_entity = illegal_entity or []
+        if isinstance(illegal_entity, str):
+            illegal_entity = [illegal_entity]
+        n_sample = self.num_object - 1
+        for entity in illegal_entity:
+            if entity != target_entity:
+                objects.append(entity)
+                n_sample -= 1
+                self.other_objects.remove(entity)
+        # Harness End ---
+
+        objects.extend(random.sample(self.other_objects, n_sample))
         for i, object in enumerate(objects):
             object_config = self.get_entity_config(object, position=[-0.1+i*0.1, 0.2, 0.8])
             self.config["task"]["components"].append(object_config)
-    
 
 class PressButtonConfigManager(BenchTaskConfigManager):     
     def get_condition_config(self, target_button, **kwargs):

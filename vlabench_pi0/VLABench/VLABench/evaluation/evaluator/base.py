@@ -62,6 +62,10 @@ class Evaluator:
         with open(os.path.join(os.getenv("VLABENCH_ROOT"), "configs/task_config.json"), "r") as f:
            self.task_configs = json.load(f)
         
+        # Harness Start ---
+        self.illegal_entity = kwargs.get("illegal_entity", None)  # Harness
+        # Harness End ---
+
     def evaluate(self, agent):
         """
         Evaluate the agent on all tasks defined in the evaluator.
@@ -123,9 +127,9 @@ class Evaluator:
             np.random.seed(seed)
             random.seed(seed)
         if episode_config is not None:
-            env = load_env(task_name, episode_config=episode_config, random_init=False, eval=self.eval_unseen, run_mode="eval")
+            env = load_env(task_name, episode_config=episode_config, random_init=False, eval=self.eval_unseen, run_mode="eval", illegal_entity=self.illegal_entity)
         else:
-            env = load_env(task_name, random_init=True, eval=self.eval_unseen, run_mode="eval")
+            env = load_env(task_name, random_init=True, eval=self.eval_unseen, run_mode="eval", illegal_entity=self.illegal_entity)
         env.reset()
         success = False
         info = {}

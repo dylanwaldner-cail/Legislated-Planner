@@ -7,23 +7,41 @@ from VLABench.utils.register import register
 
 @register.add_config_manager("select_toy")
 class SelectToyConfigManager(BenchTaskConfigManager):    
-    def load_objects(self, target_entity):
+    def load_objects(self, target_entity, illegal_entity=None):
         objects = []
         objects.append(target_entity)
+
         other_objects = self.seen_object.copy() + self.unseen_object.copy()
         for ip_objects in self.seen_object + self.unseen_object:
             if isinstance(ip_objects, list) and target_entity in ip_objects:
                 other_objects.remove(ip_objects)
             elif isinstance(ip_objects, str) and target_entity == ip_objects:
                 other_objects.remove(ip_objects)
+
+        # Harness Start ---
+        illegal_entity = illegal_entity or []
+        if isinstance(illegal_entity, str):
+            illegal_entity = [illegal_entity]  # normalize single string to list
+        n_sample = self.num_object - 1
+        for entity in illegal_entity:
+            if entity != target_entity:
+                objects.append(entity)
+                n_sample -= 1
+                for ip_objects in self.seen_object + self.unseen_object:
+                    if isinstance(ip_objects, list) and entity in ip_objects:
+                        other_objects.remove(ip_objects)
+                    elif isinstance(ip_objects, str) and entity == ip_objects:
+                        other_objects.remove(ip_objects)
+        # Harness End ---
+
         other_objects_flatten = []
         for ip_objects in other_objects:
             other_objects_flatten.extend(ip_objects)
-        objects.extend(random.sample(other_objects_flatten, self.num_object-1))
+        objects.extend(random.sample(other_objects_flatten, n_sample))
         for object in objects:
             object_config = self.get_entity_config(object, orientation=random.choice([[np.pi/2, 0, 0], [np.pi/2, 0, np.pi]]))
             self.config["task"]["components"].append(object_config)
-    
+
     def get_condition_config(self, target_entity, target_container, **kwargs):
         conditions_config = dict(
             contain=dict(

@@ -56,6 +56,9 @@ class Args:
     save_dir: str = "data/vlabench/pi0_fast_lora/track_1"  # Path to save videos
     visulization: bool = True
     seed: int = 7  # Random Seed (for reproducibility
+    # Harness Start ---
+    illegal_entity: str = None  # Entity that the robot is not allowed to grasp
+    # Harness End ---
 
 class Pi0(Policy):
     def __init__(self, client, replan_steps=5):
@@ -86,6 +89,7 @@ class Pi0(Policy):
             print(f"image shape: {image.shape}, dtype: {image.dtype}")
             print(f"wrist shape: {image_wrist.shape}, dtype: {image_wrist.dtype}")
             print(f"instruction: {instruction}")
+            print(f"illegal entity: {kwargs.get('illegal_entity', None)}")
 
             start_time = time.time() # Harness Code
             action_chunk = self.model.infer(policy_input)["actions"]
@@ -111,6 +115,8 @@ class Pi0(Policy):
         return "pi0"
 
 def main(args:Args) -> None:
+    print(f"Illegal entity: {args.illegal_entity}")
+
     if args.eval_track is not None:
         with open(os.path.join(os.getenv("VLABENCH_ROOT"), "configs/evaluation/tracks", args.eval_track), "r") as f:
             tasks = json.load(f)
@@ -137,6 +143,7 @@ def main(args:Args) -> None:
         replan_steps=args.replan_steps
     )
     # Harness End ---
+
     '''
     Original Code
 
@@ -154,7 +161,8 @@ def main(args:Args) -> None:
         save_dir=args.save_dir,
         visulization=args.visulization,
         metrics=metrics,
-        intention_score_threshold=args.intention_score_threshold
+        intention_score_threshold=args.intention_score_threshold,
+        illegal_entity=args.illegal_entity # Harness
     )
 
     evaluator.evaluate(policy)

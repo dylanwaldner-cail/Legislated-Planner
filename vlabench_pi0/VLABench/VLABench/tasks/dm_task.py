@@ -170,8 +170,12 @@ class LM4ManipBaseTask(composer.Task):
             - load scene by configuration
             - entity configuration
         """
-        if eval: config = self.config_manager.get_unseen_task_config()
-        else: config = self.config_manager.get_seen_task_config() 
+        # Harness Start ---
+        illegal_entity = kwargs.get("illegal_entity", None)  # Harness
+        if eval: config = self.config_manager.get_unseen_task_config(illegal_entity=illegal_entity)
+        else: config = self.config_manager.get_seen_task_config(illegal_entity=illegal_entity)
+        # Harness End ---
+
         if isinstance(config, dict):
             self.config = config
         elif isinstance(config, str):
@@ -183,7 +187,7 @@ class LM4ManipBaseTask(composer.Task):
             for key in ["scene", "components", "instructions", "conditions"]:
                 if key in deterministic_config["task"].keys():
                     self.config["task"][key] = deterministic_config["task"][key]
-            for key in ["target_entity", "target_container", "target_entities"]:
+            for key in ["target_entity", "target_container", "target_entities", "illegal_entity"]: # Harness adds illegal_entity
                 if key in deterministic_config["task"].keys() and hasattr(self.config_manager, key):
                     setattr(self.config_manager, key, deterministic_config["task"][key])
         # load engine config

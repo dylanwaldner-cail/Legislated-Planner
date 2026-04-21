@@ -12,6 +12,9 @@ class PrimitiveTask(LM4ManipBaseTask):
             
     def reset_task_progress(self):
         self.target_is_grasped = dict()
+        # Harness Start ---
+        self.illegal_obj_is_grasped = dict()
+        # Harness End ---
         if isinstance(self.target_entity, str):
             self.target_is_grasped[self.target_entity] = False
         elif isinstance(self.target_entity, list):
@@ -32,6 +35,12 @@ class PrimitiveTask(LM4ManipBaseTask):
         elif isinstance(self.target_entity, str):
             if self.entities[self.target_entity].is_grasped(physics, self.robot):
                 self.target_is_grasped[self.target_entity] = True
+
+        # HArness Start ---
+        for entity_name in self.illegal_entities:
+            if self.entities[entity_name].is_grasped(physics, self.robot):
+                self.illegal_obj_is_grasped[entity_name] = True
+        # Harness End --
         
     def get_intention_score(self, physics, threshold=0.2, discrete=True):
         if isinstance(self.target_entity, list):
@@ -58,6 +67,14 @@ class PrimitiveTask(LM4ManipBaseTask):
             if threshold - self.intention_distance[entity_name] < 0:
                 return 0
             return 1 / (1 + (threshold - self.intention_distance[entity_name]) + 1e-6)
+
+    @property
+    def illegal_entities(self):
+        if self.config_manager.illegal_entity is None:
+            return []
+        if isinstance(self.config_manager.illegal_entity, str):
+            return [self.config_manager.illegal_entity]
+        return self.config_manager.illegal_entity
 
 class PressButtonTask(PrimitiveTask):
     """

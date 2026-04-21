@@ -1,19 +1,36 @@
-## VLABench Changes
+# VLABench Changes
 
-### Overview
-VLABench (https://github.com/OpenMOSS/VLABench) is used as an evaluation environment for the π0-fast model fine-tuned on primitive manipulation tasks. The original evaluation pipeline uses a server/client architecture where the policy runs as a separate server process and the environment communicates with it over a websocket. We modified the pipeline to load model weights directly in-process, which is necessary for legislative harness intervention (action filtering, activation steering, KV cache access).
+## Illegal Entity CLI Support
+
+Added `--args.illegal-entity` argument to the evaluation pipeline, allowing specification of one or more objects that the robot is not permitted to grasp. The illegal entity is guaranteed to appear in the scene and is tracked via ground-truth MuJoCo grasp state during evaluation.
 
 ### Files Modified
 
-**`vlabench_pi0/VLABench/third_party/openpi/examples/vlabench/eval.py`**
-The main evaluation script. Removed the websocket client instantiation and replaced it with direct model loading via `openpi.policies.policy_config.create_trained_policy`. The `Pi0` policy class is unchanged — it still calls `self.model.infer()`, but now against a local model object rather than a remote server. Also added direct norm stats loading from the checkpoint's `assets/` directory to bypass the asset_id lookup in the training config, which pointed to a different path than the downloaded checkpoint structure. Added `pathlib` import.
+**`third_party/openpi/examples/vlabench/eval.py`**
+- Added `illegal_entity: str = None` to `Args` dataclass
+- Passes `illegal_entity` to `Evaluator`
+- Camera index fix: `image, _, _, image_wrist` → `_, _, image, image_wrist` (was using side camera instead of front camera, causing 0% SR)
+- Config name fix: `pi0_fast_vlabench` → `pifast_ft_vlabench_primitive_aligned`
+- `max_substeps` changed from `10` to `1` to match reference `evaluate_policy.py`
+- Replaced websocket client with direct local model loading via `create_trained_policy`
 
-Key changes:
-- **Camera index fix**: Changed `image, _, _, image_wrist = obs["rgb"]` to `_, _, image, image_wrist = obs["rgb"]`. The original `eval.py` used camera index 0 (side view) while the canonical `OpenPiPolicy` in `VLABench/evaluation/model/policy/openpi.py` used index 2 (front view). This was the primary cause of 0% success rate — the model was receiving the wrong camera view entirely.
-- **`max_substeps`**: Changed from `10` to `1` to match the `evaluate_policy.py` reference script.
-- **Instruction stripping**: Added `.replace("_seen", "").replace("_unseen", "")` to clean evaluation track suffixes from instructions, since the training data did not include these suffixes.
-- **Timing instrumentation**: Added inference time logging around `model.infer()` call.
+**`VLABench/evaluation/evaluator/base.py`**
+- Stores `illegal_entity` from kwargs in `__init__`
+- Passes `illegal_entity` to both `load_env` call sites in `evaluate_single_episode`
 
-**`vlabench_pi0/VLABench/third_party/openpi/packages/openpi-client/src/openpi_client/websocket_client_policy.py`**
-Added `ping_timeout=None` to the websocket connection call to prevent timeout errors during long inference runs.
+**`VLABench/tasks/dm_task.py`**
+- `build_from_config` extracts `illegal_entity` from kwargs and passes to `get_seen/unseen_task_config`
+- Added `"illegal_entity"` to the deterministic config override key list
 
+**`VLABench/tasks/config_manager.py`**
+- `get_seen_task_config` and `get_unseen_task_config` accept and forward `illegal_entity`
+- `get_task_config` stores `self.illegal_entity` and passes to `load_objects`
+- `load_objects` guarantees illegal entities appear in the scene and are excluded from random distractor sampling, adjusting `n_sample` accordingly
+
+**`VLABench/tasks/hierarchical_tasks/primitive/select_toy_series.py`**
+- `SelectToyConfigManager.load_objects` overrides base — updated with same illegal entity logic, including group-level removal from distractor pool
+
+**`VLABench/tasks/hierarchical_tasks/primitive/base.py`**
+- `reset_task_progress` initializes `self.illegal_obj_is_grasped` dict
+- `update_task_progress` checks `is_grasped` for each illegal entity each step
+- Added `illegal_entities` property that reads from `config_manager.illegal_entity`, normalizing str or list
