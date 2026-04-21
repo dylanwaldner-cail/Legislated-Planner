@@ -7,8 +7,9 @@ import json
 import imageio
 import numpy as np
 import os
-# from openpi_client import image_tools ## Harness commented out
-# from openpi_client import websocket_client_policy as _websocket_client_policy ## No longer using client
+import time
+from openpi_client import image_tools ## Harness commented out
+from openpi_client import websocket_client_policy as _websocket_client_policy ## No longer using client
 import tqdm
 import tyro
 
@@ -67,23 +68,34 @@ class Pi0(Policy):
     
     def predict(self, obs, **kwargs):
         if len(self.action_plan) == 0:
-            image, _, _, image_wrist = obs["rgb"]
+            _, _, image, image_wrist = obs["rgb"]
             state = obs["ee_state"]
             pos, quat, gripper_state = state[:3], state[3:7], state[-1]
             ee_euler = quaternion_to_euler(quat)
             pos -= np.array([0, -0.4, 0.78])
             state = np.concatenate([pos, ee_euler, np.array(gripper_state).reshape(-1)])
+            instruction = obs["instruction"].replace("_seen", "").replace("_unseen", "") # Harness Code (potential debug)
             policy_input = {
                 "observation/image": image,
                 "observation/wrist_image": image_wrist,
                 "observation/state": state,
-                "prompt": obs["instruction"]
+                "prompt": instruction # obs["instruction"]
             }
+
+            print(f"state shape: {state.shape}, state: {state}")
+            print(f"image shape: {image.shape}, dtype: {image.dtype}")
+            print(f"wrist shape: {image_wrist.shape}, dtype: {image_wrist.dtype}")
+            print(f"instruction: {instruction}")
+
+            start_time = time.time() # Harness Code
             action_chunk = self.model.infer(policy_input)["actions"]
+            print(f"Inference time: {time.time()-start_time:.2f}s", flush=True) # Harness Code
+
             assert (
                 len(action_chunk) >= self.replan_steps
             ), f"We want to replan every {self.replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
             self.action_plan.extend(action_chunk[: self.replan_steps])
+
         action = self.action_plan.popleft()
         target_pos, target_euler, gripper = action[:3], action[3:6], action[-1]
         if gripper >= 0.1:
@@ -115,29 +127,35 @@ def main(args:Args) -> None:
     norm_stats = _normalize.load(norm_stats_path.parent)
 
     model = _policy_config.create_trained_policy(
-        _config.get_config("pi0_fast_vlabench"),
+        _config.get_config("pifast_ft_vlabench_primitive_aligned"),
         "checkpoints/VLABench/pi0-fast-ft-primitive-10task-deltachunk",
         norm_stats=norm_stats
     )
-
 
     policy = Pi0(
         client=model, # removed the client and replaced with model
         replan_steps=args.replan_steps
     )
     # Harness End ---
-    
+    '''
+    Original Code
+
+    client = _websocket_client_policy.WebsocketClientPolicy(args.host, args.port)
+    policy = Pi0(
+        client=client,
+        replan_steps=args.replan_steps
+    )
+    '''
     evaluator = Evaluator(
         tasks=tasks,
         n_episodes=args.n_episode,
         episode_config=episode_configs,
-        max_substeps=10,   
+        max_substeps=1,   
         save_dir=args.save_dir,
         visulization=args.visulization,
         metrics=metrics,
         intention_score_threshold=args.intention_score_threshold
     )
-    
 
     evaluator.evaluate(policy)
     

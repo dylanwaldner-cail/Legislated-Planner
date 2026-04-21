@@ -28,3 +28,6 @@ Demo/
 *.h5
 *.npz
 vlabench_pi0/VLABench/assets/
+
+*.stl
+*.txt
