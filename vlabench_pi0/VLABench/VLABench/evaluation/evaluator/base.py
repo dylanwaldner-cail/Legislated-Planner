@@ -199,9 +199,6 @@ class Evaluator:
             physics = env.physics
             task = env.task
 
-            if i % 20 == 0:
-                print(f"[Debug] Action: {action}")
-
             for law in self.legis_module.get_all_laws():
                 action, illegal_entity = self.legis_harness.action_filter(physics, task, law, action)
                 if illegal_entity and illegal_entity not in illegal_objs:

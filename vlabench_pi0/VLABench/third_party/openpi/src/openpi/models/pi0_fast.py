@@ -295,31 +295,12 @@ class Pi0FAST(_model.BaseModel):
         self._debug_step += 1
         replan_idx = self._debug_step
 
-        def _harness_callback(prefix_token_embeddings, tokenized_prompt_mask, tokenized_prompt, prefix_mask, all_hidden_states_leaf, *kv_cache_leaves):
+        def _harness_callback(prefix_token_embeddings, tokenized_prompt_mask, tokenized_prompt, prefix_mask, prefix_logits_leaf, *kv_cache_leaves):
             with open("/newdata2/dylantw/Legislative-Harness/vlabench_pi0/kv_output.txt", "a") as f:
                 f.write("CALLBACK REACHED\n")
             # all arrays are real numpy here
             try:
-                hidden_states = np.array(all_hidden_states_leaf)  # (18, batch, seq_len, embed_dim)
                 embed_matrix = _DEBUG_WEIGHTS['embed_matrix']     # (vocab_size, embed_dim)
-                sp = get_tokenizer()
-                
-                target_positions = list(range(905, 948))
-                
-                with open("/newdata2/dylantw/Legislative-Harness/vlabench_pi0/kv_output.txt", "a") as f:
-                    f.write(f"\n[HIDDEN STATE LOGIT LENS] replan {replan_idx}:\n")
-                    f.write(f"all_hidden_states type: {type(all_hidden_states_leaf)}\n")
-                    f.write(f"all_hidden_states shape: {np.array(all_hidden_states_leaf).shape}\n")
-                    f.write(f"all_hidden_states dtype: {np.array(all_hidden_states_leaf).dtype}\n")
-                    for layer_idx in range(18):
-                        f.write(f"  [layer {layer_idx}]:\n")
-                        h = hidden_states[layer_idx, 0, target_positions, :].astype(np.float32)  # (n_pos, embed_dim)
-                        logits = h @ embed_matrix.T  # (n_pos, vocab_size)
-                        for i, pos in enumerate(target_positions):
-                            top5 = np.argsort(logits[i])[-5:][::-1]
-                            input_tok = sp.decode([int(token_ids[pos])])
-                            top5_str = ", ".join([f"{sp.decode([int(t)])}({logits[i,t]:.1f})" for t in top5])
-                            f.write(f"    pos {pos:4d} (input='{input_tok}'): {top5_str}\n")
                 
                 prefix_token_embeddings_np = np.array(prefix_token_embeddings)
                 total_valid = int(np.sum(prefix_mask[0]))
@@ -332,7 +313,6 @@ class Pi0FAST(_model.BaseModel):
                     913
                 )
                 lang_end = len(token_ids)  # 948
-                print(f"lang start: {lang_start}")
 
                 lang_positions = list(range(lang_start, total_valid))
 
@@ -431,7 +411,7 @@ class Pi0FAST(_model.BaseModel):
             observation.tokenized_prompt_mask,
             observation.tokenized_prompt,
             prefix_mask,
-            out["all_hidden_states"], 
+            out["pre_logits"], 
             *kv_cache_leaves,
         )
         # Harness End ---
