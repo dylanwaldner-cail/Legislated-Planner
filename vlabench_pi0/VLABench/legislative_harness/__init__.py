@@ -1,4 +1,4 @@
 from .harness import LegislativeHarness
-from .legislative_module import LegislativeModule
+from .module import LegislativeModule
 
 __all__ = ["LegislativeHarness", "LegislativeModule"]

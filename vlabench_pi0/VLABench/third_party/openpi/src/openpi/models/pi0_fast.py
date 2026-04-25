@@ -14,9 +14,35 @@ import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
 
+# Harness Start ---
+import numpy as np
+from legislative_harness.utils import (
+    get_tokenizer,
+    recover_token_ids,
+    decode_prefix,
+    decode_instruction,
+    find_target_positions,
+    extract_target_vecs,
+    compute_layer_profiles,
+    compute_target_norms,
+    metric1_full_cache_drift,
+    metric5_target_token_drift,
+    metric3_norm_distribution_shift,
+    metric6a_layer_transformation,
+    metric6b_input_embedding_drift,
+    decode_prelogits_to_nl,
+    write_prelogits_nl,
+    write_kv_analysis,
+    write_error,
+)
+import traceback
+# Harness End ---
+
 logger = logging.getLogger("openpi")
 
 PALIGEMMA_EOS_TOKEN = 1
+
+_DEBUG_WEIGHTS = {}
 
 
 def make_attn_mask(input_mask, mask_ar):
@@ -138,6 +164,7 @@ class Pi0FAST(_model.BaseModel):
             )
         )
         llm.lazy_init(rngs=rngs, method="init")
+
         img = nnx_bridge.ToNNX(
             _siglip.Module(
                 num_classes=paligemma_config.width,
@@ -235,6 +262,7 @@ class Pi0FAST(_model.BaseModel):
         max_decoding_steps: int | at.Int[at.Array, ""] = 256,
         temperature: float = 0.0,
     ) -> _model.Actions:
+
         # TODO: this is a hack to get the image keys.
         observation = _model.preprocess_observation(
             None, observation, train=False, image_keys=list(observation.images.keys())
@@ -256,9 +284,157 @@ class Pi0FAST(_model.BaseModel):
         # pad attention mask to set the size of the KV cache (prefill_size + max_decoding_steps)
         prefix_attn_mask = jnp.pad(prefix_attn_mask, ((0, 0), (0, 0), (0, max_decoding_steps)))
         prefix_positions = jnp.cumsum(prefix_mask, axis=-1) - 1
-        prefix_logits, kv_cache, _ = self.PaliGemma.llm(
+        prefix_logits, kv_cache, out = self.PaliGemma.llm( # _ changed to out
             embedded_prefix=prefix_token_embeddings, mask=prefix_attn_mask, positions=prefix_positions, decode=True
         )
+
+        # Harness Start ---
+        # -- replan counter
+        if not hasattr(self, '_debug_step'):
+            self._debug_step = 0
+        self._debug_step += 1
+        replan_idx = self._debug_step
+
+        def _harness_callback(prefix_token_embeddings, tokenized_prompt_mask, tokenized_prompt, prefix_mask, all_hidden_states_leaf, *kv_cache_leaves):
+            with open("/newdata2/dylantw/Legislative-Harness/vlabench_pi0/kv_output.txt", "a") as f:
+                f.write("CALLBACK REACHED\n")
+            # all arrays are real numpy here
+            try:
+                hidden_states = np.array(all_hidden_states_leaf)  # (18, batch, seq_len, embed_dim)
+                embed_matrix = _DEBUG_WEIGHTS['embed_matrix']     # (vocab_size, embed_dim)
+                sp = get_tokenizer()
+                
+                target_positions = list(range(905, 948))
+                
+                with open("/newdata2/dylantw/Legislative-Harness/vlabench_pi0/kv_output.txt", "a") as f:
+                    f.write(f"\n[HIDDEN STATE LOGIT LENS] replan {replan_idx}:\n")
+                    f.write(f"all_hidden_states type: {type(all_hidden_states_leaf)}\n")
+                    f.write(f"all_hidden_states shape: {np.array(all_hidden_states_leaf).shape}\n")
+                    f.write(f"all_hidden_states dtype: {np.array(all_hidden_states_leaf).dtype}\n")
+                    for layer_idx in range(18):
+                        f.write(f"  [layer {layer_idx}]:\n")
+                        h = hidden_states[layer_idx, 0, target_positions, :].astype(np.float32)  # (n_pos, embed_dim)
+                        logits = h @ embed_matrix.T  # (n_pos, vocab_size)
+                        for i, pos in enumerate(target_positions):
+                            top5 = np.argsort(logits[i])[-5:][::-1]
+                            input_tok = sp.decode([int(token_ids[pos])])
+                            top5_str = ", ".join([f"{sp.decode([int(t)])}({logits[i,t]:.1f})" for t in top5])
+                            f.write(f"    pos {pos:4d} (input='{input_tok}'): {top5_str}\n")
+                
+                prefix_token_embeddings_np = np.array(prefix_token_embeddings)
+                total_valid = int(np.sum(prefix_mask[0]))
+                n_lang_tokens = int(np.sum(tokenized_prompt_mask[0]))
+                token_ids = recover_token_ids(prefix_token_embeddings_np, embed_matrix)
+
+                lang_start = next(
+                    (i for i in range(len(token_ids) - 1) 
+                     if token_ids[i] == 2 and token_ids[i+1] == 7071),
+                    913
+                )
+                lang_end = len(token_ids)  # 948
+                print(f"lang start: {lang_start}")
+
+                lang_positions = list(range(lang_start, total_valid))
+
+                with open("/newdata2/dylantw/Legislative-Harness/vlabench_pi0/kv_output.txt", "a") as f:
+                    f.write(f"embed_matrix shape: {embed_matrix.shape} dtype: {embed_matrix.dtype}\n")
+                    f.write(f"prefix_token_embeddings_np shape: {prefix_token_embeddings_np.shape} dtype: {prefix_token_embeddings_np.dtype}\n")
+                    f.write(f"embed_matrix sample norm: {np.linalg.norm(embed_matrix[0]):.4f}\n")
+                    f.write(f"prefix sample norm (pos 768): {np.linalg.norm(prefix_token_embeddings_np[0, 768]):.4f}\n")
+                    f.write(f"prefix sample norm (pos 0): {np.linalg.norm(prefix_token_embeddings_np[0, 0]):.4f}\n")
+                    logits_sample = prefix_token_embeddings_np[0, 768] @ embed_matrix.T
+                    f.write(f"logits sample max: {logits_sample.max():.4f} min: {logits_sample.min():.4f} argmax: {np.argmax(logits_sample)}\n")
+                    f.write(f"logits sample top5 ids: {np.argsort(logits_sample)[-5:][::-1].tolist()}\n")
+
+                instruction_text = decode_instruction(tokenized_prompt, tokenized_prompt_mask)
+                target_word = instruction_text.strip().replace(" ", "_")
+                target_positions = find_target_positions(token_ids)
+
+                # rebuild kv_cache_np from flat leaves
+                kv_cache_np = jax.tree_util.tree_unflatten(kv_cache_treedef, [np.array(x) for x in kv_cache_leaves])
+                cache_flat = np.concatenate([x.flatten().astype(np.float32) for x in jax.tree_util.tree_leaves(kv_cache_np) if x.dtype == np.dtype('bfloat16')])
+
+                layer_profiles = compute_layer_profiles(kv_cache_np)
+                target_vecs = extract_target_vecs(kv_cache_np, target_positions)
+                target_norms = compute_target_norms(kv_cache_np, target_positions)
+
+                if replan_idx == 1:
+                    prefix_mask_np = np.array(prefix_mask[0])
+                    with open("/newdata2/dylantw/Legislative-Harness/vlabench_pi0/kv_output.txt", "a") as f:
+                        f.write(f"\n[TOKEN LAYOUT]:\n")
+                        f.write(f"  total prefix length : {len(prefix_mask_np)}\n")
+                        f.write(f"  total valid tokens  : {total_valid}\n")
+                        f.write(f"  language tokens     : {n_lang_tokens} (positions {lang_start} to {lang_end})\n")
+                        f.write(f"  image+state tokens  : {lang_start} (positions 0 to {lang_start-1})\n")
+                        f.write(f"\n  [LANGUAGE TOKEN DECODE]:\n")
+                        sp = get_tokenizer()
+                        for i, tid in enumerate(token_ids[lang_start:total_valid]):
+                            pos = lang_start + i
+                            decoded_tok = sp.decode([int(tid)])
+                            f.write(f"    pos {pos:4d}: id={tid:6d} tok='{decoded_tok}'\n")
+
+                    self._baseline_cache_flat = cache_flat.copy()
+                    self._baseline_layer_profiles = {k: v.copy() for k, v in layer_profiles.items()}
+                    self._baseline_vecs = {k: v.copy() for k, v in target_vecs.items() if v is not None}
+                    self._baseline_embeddings = prefix_token_embeddings_np[0].copy()
+
+                m1 = metric1_full_cache_drift(cache_flat, self._baseline_cache_flat)
+                m5 = metric5_target_token_drift(target_vecs, getattr(self, '_baseline_vecs', {}))
+                m3 = metric3_norm_distribution_shift(layer_profiles, getattr(self, '_baseline_layer_profiles', {}))
+                m6a = metric6a_layer_transformation(kv_cache_np, target_positions)
+                m6b = metric6b_input_embedding_drift(
+                    prefix_token_embeddings_np,
+                    getattr(self, '_baseline_embeddings', prefix_token_embeddings_np[0]),
+                    target_positions
+                )
+
+                decoded = decode_prefix(token_ids) if replan_idx == 1 else ""
+
+                write_kv_analysis(
+                    replan_idx=replan_idx,
+                    instruction_text=instruction_text,
+                    decoded=decoded,
+                    target_positions=target_positions,
+                    target_norms=target_norms,
+                    m1_full_drift=m1,
+                    m5_target_drifts=m5,
+                    m3_layer_stats=m3,
+                    m6a_layer_transform=m6a,
+                    m6b_embedding_drift=m6b,
+                    token_ids=token_ids,
+                )
+
+                # Convert residual into nl
+                pre_logits_np = np.array(prefix_logits_leaf)[0].astype(np.float32)
+                lang_logits_np = pre_logits_np @ embed_matrix.T
+                nl_results = decode_prelogits_to_nl(
+                    lang_logits=lang_logits_np,
+                    token_ids=token_ids,
+                    top_k=5
+                )
+                write_prelogits_nl(replan_idx, nl_results)
+
+            except Exception as e:
+                print("oops")
+                print('*' * 80)
+                write_error(f"{e}\n{traceback.format_exc()}")
+
+            return np.zeros(1, dtype=np.float32)
+
+        # flatten kv_cache so we can pass it through pure_callback (must be flat arrays)
+        kv_cache_leaves, kv_cache_treedef = jax.tree_util.tree_flatten(kv_cache)
+
+
+        jax.debug.callback(
+            _harness_callback,
+            prefix_token_embeddings,
+            observation.tokenized_prompt_mask,
+            observation.tokenized_prompt,
+            prefix_mask,
+            out["all_hidden_states"], 
+            *kv_cache_leaves,
+        )
+        # Harness End ---
 
         # prepare decoding -- final logit decodes the first token
         last_logit = prefix_logits[:, -1:]

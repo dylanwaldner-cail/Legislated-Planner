@@ -20,7 +20,7 @@ class InsertFlowerConfigManager(BenchTaskConfigManager):
             position=[random.uniform(-0.3, 0.3), random.uniform(0.15, 0.25), 0.78]
         )
         
-    def load_objects(self, target_entity):
+    def load_objects(self, target_entity,illegal_entity=None): # Harness
         super().load_objects(target_entity)
         for i in range(self.num_object):
             self.config["task"]["components"][-i-1]["position"] = [-0.3 + i * 0.3 + random.uniform(-0.05, 0.05), 

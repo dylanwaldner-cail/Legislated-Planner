@@ -85,12 +85,6 @@ class Pi0(Policy):
                 "prompt": instruction # obs["instruction"]
             }
 
-            print(f"state shape: {state.shape}, state: {state}")
-            print(f"image shape: {image.shape}, dtype: {image.dtype}")
-            print(f"wrist shape: {image_wrist.shape}, dtype: {image_wrist.dtype}")
-            print(f"instruction: {instruction}")
-            print(f"illegal entity: {kwargs.get('illegal_entity', None)}")
-
             start_time = time.time() # Harness Code
             action_chunk = self.model.infer(policy_input)["actions"]
             print(f"Inference time: {time.time()-start_time:.2f}s", flush=True) # Harness Code
@@ -115,8 +109,6 @@ class Pi0(Policy):
         return "pi0"
 
 def main(args:Args) -> None:
-    print(f"Illegal entity: {args.illegal_entity}")
-
     if args.eval_track is not None:
         with open(os.path.join(os.getenv("VLABENCH_ROOT"), "configs/evaluation/tracks", args.eval_track), "r") as f:
             tasks = json.load(f)

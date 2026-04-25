@@ -171,9 +171,10 @@ class LM4ManipBaseTask(composer.Task):
             - entity configuration
         """
         # Harness Start ---
-        illegal_entity = kwargs.get("illegal_entity", None)  # Harness
+        legis_module = kwargs.get("legis_module", None)
+        illegal_entity = legis_module.get_illegal_objects() if legis_module else None
         if eval: config = self.config_manager.get_unseen_task_config(illegal_entity=illegal_entity)
-        else: config = self.config_manager.get_seen_task_config(illegal_entity=illegal_entity)
+        else:    config = self.config_manager.get_seen_task_config(illegal_entity=illegal_entity)
         # Harness End ---
 
         if isinstance(config, dict):

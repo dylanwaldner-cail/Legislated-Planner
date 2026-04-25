@@ -1,0 +1,192 @@
+{
+  "add_condiment": [
+    {
+      "task": {
+        "components": [
+          {
+            "name": "counter",
+            "xml_path": "obj/meshes/counters/counter_0/counter.xml",
+            "position": [
+              0.5301622398029567,
+              0.00037608477232979495,
+              0.0057947251125566885
+            ],
+            "orientation": [
+              0.9999686293548077,
+              0.007907078314687312,
+              -0.0003131440573099605,
+              -0.00034692880029764395
+            ],
+            "class": "Counter",
+            "materials": [
+              "wood2"
+            ]
+          },
+          {
+            "name": "stove",
+            "xml_path": "obj/meshes/stoves/coil_burners_induc/model.xml",
+            "position": [
+              -0.21500001546975045,
+              -3.3930806605475223e-08,
+              0.009963279232546847
+            ],
+            "orientation": [
+              0.9999999999998934,
+              -4.6178043815523154e-07,
+              1.4237265979502257e-09,
+              8.973344686648307e-09
+            ],
+            "class": "Stove",
+            "has_offset": true
+          },
+          {
+            "name": "pan_seen",
+            "xml_path": "obj/meshes/tablewares/pans/pan_1/model.xml",
+            "position": [
+              -0.16275020722320846,
+              -0.0008416945468531544,
+              0.8073658665234298
+            ],
+            "orientation": [
+              0.9999999324283879,
+              -0.00011686496268761273,
+              0.0003462142214456164,
+              -4.026801106023804e-05
+            ],
+            "class": "FlatContainer"
+          },
+          {
+            "name": "dishes",
+            "xml_path": "obj/meshes/dishes/dish_without_plate_0/dish_without_plate_0.xml",
+            "position": [
+              -0.16274779357032682,
+              0.029158304536410905,
+              0.8073588537896609
+            ],
+            "orientation": [
+              0.9999999324283879,
+              -0.00011686496268761273,
+              0.0003462142214456164,
+              -4.026801106023804e-05
+            ],
+            "class": "FlatContainer"
+          },
+          {
+            "name": "salad_dressing",
+            "xml_path": "obj/meshes/condiment/salad_dressing/salad_dressing.xml",
+            "position": [
+              0.14386206213758998,
+              -0.1648545341641788,
+              0.8256275628119801
+            ],
+            "orientation": [
+              0.9993954168253055,
+              0.011553415147560201,
+              -0.0013418930449741414,
+              -0.03276459598494248
+            ],
+            "class": "CommonGraspedEntity"
+          },
+          {
+            "name": "bbq_sauce",
+            "xml_path": "obj/meshes/condiment/bbq_sauce/bbq_sauce1/model.xml",
+            "position": [
+              0.1682275827474996,
+              0.005533478291257698,
+              0.8266035719966266
+            ],
+            "orientation": [
+              0.9985059382360307,
+              -0.0067027829490959,
+              7.822347914712641e-06,
+              0.05423065504797227
+            ],
+            "class": "CommonGraspedEntity"
+          },
+          {
+            "name": "ketchup",
+            "xml_path": "obj/meshes/condiment/ketchup/ketchup_2/model.xml",
+            "position": [
+              0.1463597269256668,
+              0.1339102740338589,
+              0.8333755249755286
+            ],
+            "orientation": [
+              0.9975674955875345,
+              0.005350587258806353,
+              -0.0009962483624584542,
+              -0.0694943915175837
+            ],
+            "class": "CommonGraspedEntity"
+          },
+          {
+            "name": "salt",
+            "xml_path": "obj/meshes/condiment/shaker/shaker_1/model.xml",
+            "position": [
+              0.16247793668753277,
+              0.3158403319117628,
+              0.797172502020609
+            ],
+            "orientation": [
+              0.9987290624023347,
+              0.0005661293595153166,
+              1.8018763747695955e-05,
+              0.050397808343484084
+            ],
+            "class": "CommonGraspedEntity"
+          },
+          {
+            "name": "salt_tag",
+            "xml_path": "obj/meshes/tube/nametag/nametag.xml",
+            "position": [
+              0.25772282844564964,
+              0.29999999999999993,
+              0.75
+            ],
+            "orientation": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "class": "NameTag",
+            "content": "salt"
+          }
+        ],
+        "scene": {
+          "name": "default",
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "orientation": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "floor_textures": [
+            "floorplane"
+          ]
+        },
+        "instructions": [
+          "Add ketchup to the dish"
+        ],
+        "conditions": {
+          "pour": {
+            "target_entity": "ketchup"
+          },
+          "above": {
+            "target_entity": "ketchup",
+            "platform": "pan_seen"
+          }
+        },
+        "target_entity": [
+          "ketchup"
+        ],
+        "target_container": "pan_seen"
+      }
+    }
+  ]
+}

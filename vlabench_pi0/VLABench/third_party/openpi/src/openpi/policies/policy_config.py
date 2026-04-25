@@ -6,6 +6,12 @@ from typing import Any
 
 import jax.numpy as jnp
 
+# Harness Start ---
+from flax import nnx
+import numpy as np
+import jax
+# Harness End ---
+
 import openpi.models.model as _model
 import openpi.policies.policy as _policy
 import openpi.shared.download as download
@@ -13,6 +19,9 @@ from openpi.training import checkpoints as _checkpoints
 from openpi.training import config as _config
 import openpi.transforms as transforms
 
+# Harness Start --- 
+import openpi.models.pi0_fast as _pi0_fast
+# Harness End ---
 
 @dataclasses.dataclass
 class PolicyConfig:
@@ -54,6 +63,16 @@ def create_trained_policy(
 
     logging.info("Loading model...")
     model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
+
+    # Harness Start ---
+    # Attach debug weights before JIT boundary
+    _state = nnx.state(model.PaliGemma.llm)
+    _pi0_fast._DEBUG_WEIGHTS['embed_matrix'] = jax.device_get(
+        _state['embedder']['input_embedding'].value).astype(np.float32)
+
+    _pi0_fast._DEBUG_WEIGHTS['attn_vec_einsum'] = jax.device_get(
+        _state['layers']['attn']['attn_vec_einsum']['w'].value).astype(np.float32)
+    # Harness End ---
 
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
     if norm_stats is None:

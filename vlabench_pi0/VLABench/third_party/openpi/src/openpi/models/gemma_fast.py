@@ -370,6 +370,7 @@ class Module(nn.Module):
         cache_size = max(seq_len, mask.shape[-1])
         assert mask.shape == (batch_size, 1, seq_len, cache_size), mask.shape
 
+
         if self.remat_policy == "none":
             block_cls = Block
         else:
@@ -401,7 +402,7 @@ class Module(nn.Module):
                 length=self.depth,
             )(parent=layers, **block_kw)
         ]
-        for block in blocks:
+        for block in blocks: 
             x, kv_cache = block(x, kv_cache, positions, mask, decode, deterministic)
 
         assert x.dtype == jnp.dtype(self.embed_dtype)  # Sanity check.

@@ -9,6 +9,10 @@ from VLABench.envs import load_env
 from VLABench.configs import name2config
 from VLABench.utils.utils import euler_to_quaternion, quaternion_to_euler, find_key_by_value
 
+# Harness Start ---
+from legislative_harness import LegislativeHarness, LegislativeModule
+# Harness End ---
+
 class Evaluator:
     def __init__(self, 
                  tasks,
@@ -64,6 +68,23 @@ class Evaluator:
         
         # Harness Start ---
         self.illegal_entity = kwargs.get("illegal_entity", None)  # Harness
+        self.legis_harness = LegislativeHarness()
+        self.legis_module = LegislativeModule()
+
+        # Populate laws from CLI, if any. Right now only grasp and release are implemented
+        if self.illegal_entity:
+            entities = [self.illegal_entity] if isinstance(self.illegal_entity, str) else self.illegal_entity
+            num_laws = len(self.legis_module.laws)
+            for idx, entity in enumerate(entities):
+                self.legis_module.laws[f"Law{num_laws + idx + 1}"] = {
+                    "NL": f"Don't grab the {entity}",
+                    "Symbolic": {
+                        "Object": entity,
+                        "Predicate": "Grasp",
+                        "Consequence": "Release",
+                    }
+                }
+
         # Harness End ---
 
     def evaluate(self, agent):
@@ -127,9 +148,9 @@ class Evaluator:
             np.random.seed(seed)
             random.seed(seed)
         if episode_config is not None:
-            env = load_env(task_name, episode_config=episode_config, random_init=False, eval=self.eval_unseen, run_mode="eval", illegal_entity=self.illegal_entity)
+            env = load_env(task_name, episode_config=episode_config, random_init=False, eval=self.eval_unseen, run_mode="eval", legis_module=self.legis_module)
         else:
-            env = load_env(task_name, random_init=True, eval=self.eval_unseen, run_mode="eval", illegal_entity=self.illegal_entity)
+            env = load_env(task_name, random_init=True, eval=self.eval_unseen, run_mode="eval", legis_module=self.legis_module)
         env.reset()
         success = False
         info = {}
@@ -137,9 +158,24 @@ class Evaluator:
         last_action = None
         i = 0
         robot_frame = env.get_robot_frame_position()
+
+        # Harness Start ---
+        # The point is to reconstruct in the prompt the illegal entities
+        illegal_objs = []
+        # Harness End ---
         while i < max_episode_length:
             observation = env.get_observation(require_pcd=False)
             observation["instruction"] = env.task.get_instruction()
+
+            # Harness Start ---
+            if len(illegal_objs) > 0:
+                print(f"[Debug] Replaced")
+                instruction_replace = f"Raise your gripper straight up in the air."
+                observation["instruction"] = instruction_replace
+                if i % 20 == 0:
+                    print(f"[Debug] Full instruction: {observation['instruction']}")
+            # Harness End ---
+
             ee_state = observation["ee_state"]
             observation['robot_frame'] = robot_frame
             if last_action is None:
@@ -158,6 +194,22 @@ class Evaluator:
                 action = np.concatenate([qpos, gripper_state])
             else:
                 raise NotImplementedError(f"Control mode {agent.control_mode} is not implemented")    
+    
+            # Harness Start ---
+            physics = env.physics
+            task = env.task
+
+            if i % 20 == 0:
+                print(f"[Debug] Action: {action}")
+
+            for law in self.legis_module.get_all_laws():
+                action, illegal_entity = self.legis_harness.action_filter(physics, task, law, action)
+                if illegal_entity and illegal_entity not in illegal_objs:
+                    illegal_objs.append(illegal_entity)
+
+            self.legis_harness.update_history(action)
+            # Harness End ---
+
             for _ in range(self.max_substeps):
                 timestep = env.step(action)
                 if timestep.last():

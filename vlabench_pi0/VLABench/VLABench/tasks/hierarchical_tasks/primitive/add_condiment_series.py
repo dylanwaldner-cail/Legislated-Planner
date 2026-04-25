@@ -40,7 +40,7 @@ class AddCondimentConfigManager(BenchTaskConfigManager):
         )
         self.config["task"]["conditions"] = conditions_config
     
-    def load_objects(self, target_entity):
+    def load_objects(self, target_entity, illegal_entity=None): # Harness
         objects = []
         objects.append(target_entity)
         other_objects = flatten_list(self.seen_object) + flatten_list(self.unseen_object)
