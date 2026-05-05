@@ -33,6 +33,12 @@ training:
   save_every_x_epoch: 1
   wandb_logging: false
   num_samples: 300
+  rollout_horizon: 5
+  alpha: 1
+  base: 1
+  objective_mode: 'last'
+  db_path: /newdata2/dylantw/Legislative-Harness/dino_wm/wm_traj.h5
+  num_iterations: 5
 
 data:
   root: checkpoints/point_maze
@@ -43,3 +49,23 @@ data:
 
   obses_dir: ${data.root}/obses
   num_episodes: 1800
+
+
+img_size: 224 # should be a multiple of 224
+frameskip: 5
+concat_dim: 1
+
+normalize_action: True
+
+# action encoder
+action_emb_dim: 10
+num_action_repeat: 1
+
+# proprio encoder
+proprio_emb_dim: 10
+num_proprio_repeat: 1
+
+num_hist: 3
+num_pred: 1 # only supports 1
+has_predictor: True # set this to False for only training a decoder
+has_decoder: True # set this to False for only training a predictor
