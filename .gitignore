@@ -31,3 +31,12 @@ vlabench_pi0/VLABench/assets/
 
 *.stl
 *.txt
+
+probe_outputs/
+
+__pycache__
+*.pyc
+outputs
+plan_outputs
+
+*.swp

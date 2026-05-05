@@ -1,0 +1,45 @@
+defaults:
+  - _self_
+  - env: point_maze
+  - override hydra/launcher: basic
+
+ckpt_base_path: ./checkpoints
+model_name: point_maze
+model_epoch: latest
+
+hydra:
+  run:
+    dir: probe_outputs/${now:%Y%m%d%H%M%S}_${model_name}
+  sweep:
+    dir: probe_outputs/${now:%Y%m%d%H%M%S}_${model_name}
+    subdir: ${hydra.job.num}
+
+probe:
+  input_dim: 394
+  lr: 3e-3
+  batch_size: 256
+  epochs: 20
+  num_batches: 1000
+  illegal_region:
+    x_min: 1.0
+    x_max: 3.0
+    y_min: 0.75
+    y_max: 1.5
+
+training:
+  seed: 0
+  num_workers: 4
+  pool: mean_patch
+  save_every_x_epoch: 1
+  wandb_logging: false
+  num_samples: 300
+
+data:
+  root: checkpoints/point_maze
+
+  states: ${data.root}/states.pth
+  actions: ${data.root}/actions.pth
+  seq_lengths: ${data.root}/seq_lengths.pth
+
+  obses_dir: ${data.root}/obses
+  num_episodes: 1800
