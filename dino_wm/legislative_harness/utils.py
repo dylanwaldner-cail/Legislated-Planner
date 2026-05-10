@@ -77,26 +77,28 @@ def eval_probe(probe, wm, dset, eval_episodes, illegal_region, loss_fn, device):
         "eval_illegal_acc": total_illegal_acc / illegal_count if illegal_count > 0 else 0.0,
     }
 
-def append_step(path, z_input, illegal_label, illegal_region, pixel_mse, div_visual, div_proprio, div, env_state, iteration, traj_idx, step, seed_val):
+def append_step(path, z_input, action, illegal_label, illegal_region, pixel_mse, div_visual, div_proprio, div, start_env_state, new_env_state, iteration, traj_idx, step, seed_val):
     z_hash = hashlib.md5(z_input.cpu().numpy().tobytes()).hexdigest()
-    
+
     with h5py.File(path, "a") as f:
         if z_hash in f:
             return  # duplicate, skip
-        
+
         grp = f.create_group(z_hash)
-        grp.create_dataset("z_input",       data=z_input.cpu().numpy())
-        grp.create_dataset("illegal_label", data=np.array(illegal_label.item()))
-        grp.create_dataset("pixel_mse",     data=np.array(pixel_mse))
-        grp.create_dataset("div_visual",    data=np.array(div_visual))
-        grp.create_dataset("div_proprio",   data=np.array(div_proprio))
-        grp.create_dataset("div",           data=np.array(div))
-        grp.create_dataset("env_state",     data=env_state)
-        grp.create_dataset("illegal_region",data=np.array([
+        grp.create_dataset("z_input",         data=z_input.cpu().numpy())
+        grp.create_dataset("action",          data=action)
+        grp.create_dataset("illegal_label",   data=np.array(illegal_label.item()))
+        grp.create_dataset("pixel_mse",       data=np.array(pixel_mse))
+        grp.create_dataset("div_visual",      data=np.array(div_visual))
+        grp.create_dataset("div_proprio",     data=np.array(div_proprio))
+        grp.create_dataset("div",             data=np.array(div))
+        grp.create_dataset("start_env_state", data=start_env_state)
+        grp.create_dataset("new_env_state",   data=new_env_state) # After rollout, new state for next step
+        grp.create_dataset("illegal_region",  data=np.array([
             illegal_region["x_min"], illegal_region["x_max"],
             illegal_region["y_min"], illegal_region["y_max"],
         ]))
-        grp.create_dataset("iteration",     data=np.array(iteration))
-        grp.create_dataset("traj_idx",      data=np.array(traj_idx))
-        grp.create_dataset("step",          data=np.array(step))
-        grp.create_dataset("seed_val",      data=np.array(seed_val))
+        grp.create_dataset("iteration",       data=np.array(iteration))
+        grp.create_dataset("traj_idx",        data=np.array(traj_idx))
+        grp.create_dataset("step",            data=np.array(step))
+        grp.create_dataset("seed_val",        data=np.array(seed_val))

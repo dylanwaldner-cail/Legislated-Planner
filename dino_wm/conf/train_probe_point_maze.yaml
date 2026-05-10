@@ -15,16 +15,24 @@ hydra:
     subdir: ${hydra.job.num}
 
 probe:
-  input_dim: 394
-  lr: 3e-3
+  # Probe input is the concat of start and end state embeddings:
+  #   start_visual_pool (384) + start_proprio (10) + end_visual_pool (384) + end_proprio (10) = 788.
+  input_dim: 788
+  lr: 3e-4
   batch_size: 256
-  epochs: 20
+  epochs: 30
   num_batches: 1000
+  # U_MAZE reachable region (per env/pointmaze/point_maze_wrapper.py:32-33).
+  # Anything outside these corridors is wall, so an illegal_region defined
+  # outside them has no effect.
+  #   - Left  corridor: x ∈ [0.5, 1.1], y ∈ [0.5, 3.1]
+  #   - Top   corridor: x ∈ [1.1, 2.5], y ∈ [2.5, 3.1]
+  #   - Right corridor: x ∈ [2.5, 3.1], y ∈ [0.5, 3.1]
   illegal_region:
-    x_min: 1.0
-    x_max: 3.0
-    y_min: 0.75
-    y_max: 1.5
+    x_min: 0.5
+    x_max: 0.9
+    y_min: 1.3
+    y_max: 2.6
 
 training:
   seed: 0
@@ -32,13 +40,15 @@ training:
   pool: mean_patch
   save_every_x_epoch: 1
   wandb_logging: false
-  num_samples: 300
+  num_samples: 1000
+  topk: 100
+  log_every_traj: 100   # gate per-step fidelity prints to once every N trajs
   rollout_horizon: 5
   alpha: 1
   base: 1
   objective_mode: 'last'
   db_path: /newdata2/dylantw/Legislative-Harness/dino_wm/wm_traj.h5
-  num_iterations: 5
+  num_iterations: 10
 
 data:
   root: checkpoints/point_maze

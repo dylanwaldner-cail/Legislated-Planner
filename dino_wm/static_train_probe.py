@@ -236,6 +236,9 @@ def main(cfg: OmegaConf):
 
     log.info(f"Learning Rate: {cfg.probe.lr}")
 
+    torch.save(probe.state_dict(), "probe_final.pt")
+    log.info("Saved final probe weights to probe_final.pt")
+
 
 
 if __name__ == "__main__":

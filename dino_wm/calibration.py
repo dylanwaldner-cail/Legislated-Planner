@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from env.pointmaze.point_maze_wrapper import PointMazeWrapper
 
+import subprocess, os
+
 U_MAZE = \
         "#####\\"+\
         "#GOO#\\"+\
