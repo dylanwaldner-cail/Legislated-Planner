@@ -1,3 +1,9 @@
+import multiprocessing as mp
+try:
+  mp.set_start_method("spawn", force=True)
+except RuntimeError:
+  pass  # already set (e.g., test reruns)
+
 import os
 import gym
 import json
@@ -233,6 +239,49 @@ class PlanWorkspace:
             self.state_0 = rand_init_state  # (b, d)
             self.state_g = rand_goal_state
             self.gt_actions = None
+        # === HARNESS EDIT: fixed init/goal sourced from train_probe yaml ===
+        # Single source of truth with train_probe.py (which uses the same
+        # INIT/GOAL constants). We still call sample_traj_segment_from_dset
+        # to populate env_info -- env.update_env(env_info) is what gives each
+        # parallel env worker its concrete maze instance; without it, env.prepare
+        # silently fails on workers that never got initialized.
+        elif self.goal_source == "fixed":
+            observations, states, actions, env_info = (
+                self.sample_traj_segment_from_dset(traj_len=2)
+            )
+            self.env.update_env(env_info)
+
+            train_cfg_path = os.path.join(
+                get_original_cwd(), "conf", "train_probe_point_maze.yaml"
+            )
+            train_cfg = OmegaConf.load(train_cfg_path)
+            init_state_arr = np.array(
+                OmegaConf.to_container(train_cfg.probe.init_state, resolve=True),
+                dtype=np.float32,
+            )
+            goal_state_arr = np.array(
+                OmegaConf.to_container(train_cfg.probe.goal_state, resolve=True),
+                dtype=np.float32,
+            )
+            # Tile to (n_evals, state_dim) so every parallel eval shares the
+            # same task. Differences across the 5 evals then come only from
+            # CEM's per-eval random seed, not from task variation.
+            fixed_init = np.tile(init_state_arr, (self.n_evals, 1))
+            fixed_goal = np.tile(goal_state_arr, (self.n_evals, 1))
+
+            obs_0, state_0 = self.env.prepare(self.eval_seed, fixed_init)
+            obs_g, state_g = self.env.prepare(self.eval_seed, fixed_goal)
+
+            for k in obs_0.keys():
+                obs_0[k] = np.expand_dims(obs_0[k], axis=1)
+                obs_g[k] = np.expand_dims(obs_g[k], axis=1)
+
+            self.obs_0 = obs_0
+            self.obs_g = obs_g
+            self.state_0 = fixed_init
+            self.state_g = fixed_goal
+            self.gt_actions = None
+        # === END HARNESS EDIT ===
         else:
             # update env config from val trajs
             observations, states, actions, env_info = (
@@ -468,8 +517,15 @@ def planning_main(cfg_dict):
     )
     model = load_model(model_ckpt, model_cfg, num_action_repeat, device=device)
 
+    # IsaacLab path: single process, one GPU, n_evals batched as the IsaacLab
+    # num_envs dimension. No subprocesses (Isaac Sim is one app per process).
+    if model_cfg.env.name.startswith("isaaclab_"):
+        from env.isaaclab.isaaclab_venv import IsaacLabVectorEnv
+        kwargs = dict(model_cfg.env.kwargs)
+        kwargs.pop("num_envs", None)
+        env = IsaacLabVectorEnv(num_envs=cfg_dict["n_evals"], **kwargs)
     # use dummy vector env for wall and deformable envs
-    if model_cfg.env.name == "wall" or model_cfg.env.name == "deformable_env":
+    elif model_cfg.env.name == "wall" or model_cfg.env.name == "deformable_env":
         from env.serial_vector_env import SerialVectorEnv
         env = SerialVectorEnv(
             [

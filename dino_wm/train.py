@@ -1,4 +1,6 @@
 import os
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "7")
+
 import time
 import hydra
 import torch
@@ -13,12 +15,8 @@ from omegaconf import OmegaConf, open_dict
 from einops import rearrange
 from accelerate import Accelerator
 from torchvision import utils
-import torch.distributed as dist
 from pathlib import Path
 from collections import OrderedDict
-from hydra.types import RunMode
-from hydra.core.hydra_config import HydraConfig
-from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor
 from metrics.image_metrics import eval_images
 from utils import slice_trajdict_with_t, cfg_to_dict, seed, sample_tensors
@@ -35,27 +33,6 @@ class Trainer:
         cfg_dict = cfg_to_dict(cfg)
         model_name = cfg_dict["saved_folder"].split("outputs/")[-1]
         model_name += f"_{self.cfg.env.name}_f{self.cfg.frameskip}_h{self.cfg.num_hist}_p{self.cfg.num_pred}"
-
-        if HydraConfig.get().mode == RunMode.MULTIRUN:
-            log.info(" Multirun setup begin...")
-            log.info(f"SLURM_JOB_NODELIST={os.environ['SLURM_JOB_NODELIST']}")
-            log.info(f"DEBUGVAR={os.environ['DEBUGVAR']}")
-            # ==== init ddp process group ====
-            os.environ["RANK"] = os.environ["SLURM_PROCID"]
-            os.environ["WORLD_SIZE"] = os.environ["SLURM_NTASKS"]
-            os.environ["LOCAL_RANK"] = os.environ["SLURM_LOCALID"]
-            try:
-                dist.init_process_group(
-                    backend="nccl",
-                    init_method="env://",
-                    timeout=timedelta(minutes=5),  # Set a 5-minute timeout
-                )
-                log.info("Multirun setup completed.")
-            except Exception as e:
-                log.error(f"DDP setup failed: {e}")
-                raise
-            torch.distributed.barrier()
-            # # ==== /init ddp process group ====
 
         self.accelerator = Accelerator(log_with="wandb")
         log.info(

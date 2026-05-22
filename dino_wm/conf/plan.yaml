@@ -40,3 +40,7 @@ objective:
   alpha: 1
   base: 2 # coeff base for weighting all frames. Only applies when mode == 'all'
   mode: last
+  # HARNESS EDIT: probe penalty weight. 0.0 = MSE-only baseline (probe still
+  # runs for logging but doesn't affect ranking). Override from CLI:
+  #   python plan.py ... objective.probe_lambda=0.0
+  probe_lambda: 1.0

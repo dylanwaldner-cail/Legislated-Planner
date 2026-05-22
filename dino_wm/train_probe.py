@@ -24,8 +24,17 @@ from legislative_harness.probe import LegislativeProbe
 from legislative_harness.utils import is_illegal_state, eval_probe, append_step
 from planning.objectives import create_objective_fn
 from env.venv import SubprocVectorEnv
-from env.pointmaze.point_maze_wrapper import PointMazeWrapper
-from env.pointmaze.maze_model import U_MAZE_EVAL, U_MAZE
+# point_maze deps require mujoco_py; not present in the IsaacLab docker.
+# Import lazily inside the non-IsaacLab branch below.
+try:
+    from env.pointmaze.point_maze_wrapper import PointMazeWrapper
+    from env.pointmaze.maze_model import U_MAZE_EVAL, U_MAZE
+except Exception:
+    # gym.error.DependencyNotInstalled when mujoco_py is missing (e.g. inside
+    # the IsaacLab docker). Non-mujoco branches don't need these.
+    PointMazeWrapper = None
+    U_MAZE = None
+    U_MAZE_EVAL = None
 
 warnings.filterwarnings("ignore")
 log = logging.getLogger(__name__)
@@ -40,9 +49,9 @@ log = logging.getLogger(__name__)
 FIDELITY_THRESHOLD = 1.0
 
 # Fixed init and goal states for PointMaze (x, y, dx, dy).
-# Set based on domain knowledge of the maze layout.
-INIT_STATE = np.array([1.0, 1.0, 0.0, 0.0], dtype=np.float32)
-GOAL_STATE = np.array([3.0, 3.0, 0.0, 0.0], dtype=np.float32)
+# Sourced from conf/train_probe_point_maze.yaml (probe.init_state /
+# probe.goal_state) so plan.py and this script share one source of truth.
+# See self.init_state / self.goal_state assignment in __init__.
 
 
 class ProbeRolloutTrainer:
@@ -71,6 +80,14 @@ class ProbeRolloutTrainer:
         self.device = device
 
         self.illegal_region = OmegaConf.to_container(cfg.probe.illegal_region, resolve=True)
+        self.init_state = np.array(
+            OmegaConf.to_container(cfg.probe.init_state, resolve=True),
+            dtype=np.float32,
+        )
+        self.goal_state = np.array(
+            OmegaConf.to_container(cfg.probe.goal_state, resolve=True),
+            dtype=np.float32,
+        )
 
         # num_hist: context frames WM needs before predicting.
         self.num_hist: int = cfg.num_hist  # baked in from train_cfg at init
@@ -344,7 +361,7 @@ class ProbeRolloutTrainer:
         # prepend the start frame, so length is T*F + 1.
         rollout_obses_full, rollout_states_full = self.env.rollout(
             seed_val[0],
-            INIT_STATE,
+            self.init_state,
             exec_actions_np,
         )
 
@@ -561,8 +578,8 @@ class ProbeRolloutTrainer:
             log.info(f"[iter={iteration}/{self.cfg.training.num_iterations}] Getting obs at init/goal states...")
 
             # 1. Get obs_0 and obs_g from fixed states.
-            obs_0_np    = self.get_obs_at_state(INIT_STATE, seed_val)
-            obs_g_np    = self.get_obs_at_state(GOAL_STATE, seed_val)
+            obs_0_np    = self.get_obs_at_state(self.init_state, seed_val)
+            obs_g_np    = self.get_obs_at_state(self.goal_state, seed_val)
             trans_obs_0 = self.to_wm_obs(obs_0_np)
             trans_obs_g = self.to_wm_obs(obs_g_np)
 
@@ -801,11 +818,15 @@ def main(cfg: OmegaConf):
 
     # Env — kwargs mirror env/__init__.py:9-21 (the registration plan.py uses
     # via gym.make("point_maze")), so the planner's env behaves the same here.
-    env = PointMazeWrapper(
-        maze_spec=U_MAZE,
-        reward_type="sparse",
-        reset_target=False,
-    )
+    if train_cfg.env.name.startswith("isaaclab_"):
+        from env.isaaclab.isaaclab_wrapper import IsaacLabWrapper
+        env = IsaacLabWrapper(**dict(train_cfg.env.kwargs))
+    else:
+        env = PointMazeWrapper(
+            maze_spec=U_MAZE,
+            reward_type="sparse",
+            reset_target=False,
+        )
 
     # Bake num_hist from train_cfg into cfg so the trainer can access it.
     with open_dict(cfg):

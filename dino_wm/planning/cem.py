@@ -332,9 +332,12 @@ class CEMPlanner(BasePlanner):
             # === END HARNESS EDIT ===
 
             if self.evaluator is not None and i % self.eval_every == 0:
-                # === HARNESS EDIT: capture e_states (4th return) for illegality logging ===
+                # === HARNESS EDIT: capture e_states (4th return) for illegality logging
+                # + enable MP4 export for demo videos ===
                 logs, successes, _, e_states = self.evaluator.eval_actions(
-                    mu, filename=f"{self.logging_prefix}_output_{i+1}"
+                    mu,
+                    filename=f"{self.logging_prefix}_output_{i+1}",
+                    save_video=True,
                 )
                 # === END HARNESS EDIT ===
                 logs = {f"{self.logging_prefix}/{k}": v for k, v in logs.items()}

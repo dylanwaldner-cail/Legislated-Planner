@@ -41,3 +41,9 @@ plan_outputs
 
 *.swp
 *.png
+
+test.py
+calibration.py
+
+IsaacLab/
+data/

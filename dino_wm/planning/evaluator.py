@@ -13,6 +13,43 @@ from utils import (
 )
 from torchvision import utils
 
+# === HARNESS EDIT: illegal-region overlay imports + state-coord bounds ===
+# Loaded from the same train_probe yaml that cem.py/train_probe.py use so all
+# scripts share one source of truth for illegal_region.
+from omegaconf import OmegaConf
+from hydra.utils import get_original_cwd
+
+# Visible bounds of the U_MAZE rendered frame in AGENT STATE COORDS.
+#
+# Why state coords: illegal_region in the yaml is in agent qpos / state coords
+# (that's the space is_illegal_state runs in). The MuJoCo world has a fixed
+# +1.2 offset from state (the particle body is positioned at world (1.2, 1.2)
+# in maze_model.py:59 and ball_x / ball_y are slide joints == displacement
+# from that origin), but we never have to think about world coords here -- we
+# stay entirely in state coords.
+#
+# How the range was computed (empirical calibration via rendering the agent at
+# two known states and back-solving the affine state->pixel transform):
+#   pixel_x = 27.8976 * state_x + 61.3072
+#   pixel_y = 27.8976 * state_y + 61.3072
+# from which:
+#   visible state x range = (-2.1976, 5.8318)
+#   visible state y range = (-2.1976, 5.8318)
+#
+# Important: in this view, image-y and state-y go the SAME direction (high
+# state y -> high pixel y, i.e., bottom of image). No flip in _illegal_pixel_box.
+# This is the opposite of my earlier first-principles guess.
+OVERLAY_STATE_X_RANGE = (-2.1976, 5.8318)
+OVERLAY_STATE_Y_RANGE = (-2.1976, 5.8318)
+OVERLAY_BORDER_PX     = 2
+OVERLAY_COLOR_RGB     = np.array([255, 0, 0], dtype=np.uint8)
+
+# Optional: also overlay a state-coord grid for calibration. Set to False once
+# you're satisfied with alignment to keep demo videos clean.
+OVERLAY_DRAW_GRID = True
+OVERLAY_GRID_COLOR = (0, 255, 255)   # cyan, visible against maze gray
+# === END HARNESS EDIT ===
+
 
 class PlanEvaluator:  # evaluator for planning
     def __init__(
@@ -41,6 +78,22 @@ class PlanEvaluator:  # evaluator for planning
         self.device = next(wm.parameters()).device
 
         self.plot_full = False  # plot all frames or frames after frameskip
+
+        # === HARNESS EDIT: load illegal_region for video overlay ===
+        # If load fails (e.g. env != point_maze, yaml missing), overlay is
+        # silently disabled rather than crashing the eval loop.
+        try:
+            train_cfg_path = os.path.join(
+                get_original_cwd(), "conf", "train_probe_point_maze.yaml"
+            )
+            train_cfg = OmegaConf.load(train_cfg_path)
+            self.illegal_region = OmegaConf.to_container(
+                train_cfg.probe.illegal_region, resolve=True
+            )
+        except Exception as exc:
+            print(f"[PlanEvaluator] illegal_region overlay disabled: {exc}")
+            self.illegal_region = None
+        # === END HARNESS EDIT ===
 
     def assign_init_cond(self, obs_0, state_0):
         self.obs_0 = obs_0
@@ -185,6 +238,117 @@ class PlanEvaluator:  # evaluator for planning
 
         return logs, successes
 
+    # === HARNESS EDIT: illegal-region overlay helpers ===
+    def _illegal_pixel_box(self, sub_h, sub_w):
+        """State->pixel for the illegal_region rectangle within a sub_h x sub_w panel.
+        Returns (y_min, y_max, x_min, x_max) in image pixel space.
+
+        Empirical calibration (see header constants): image-y and state-y go
+        the same direction in this top-down view, so NO y-flip here.
+        """
+        sx0, sx1 = OVERLAY_STATE_X_RANGE
+        sy0, sy1 = OVERLAY_STATE_Y_RANGE
+        ir = self.illegal_region
+        nx_min = (ir["x_min"] - sx0) / (sx1 - sx0)
+        nx_max = (ir["x_max"] - sx0) / (sx1 - sx0)
+        ny_min = (ir["y_min"] - sy0) / (sy1 - sy0)
+        ny_max = (ir["y_max"] - sy0) / (sy1 - sy0)
+        x_min = int(np.clip(nx_min * sub_w, 0, sub_w - 1))
+        x_max = int(np.clip(nx_max * sub_w, 0, sub_w - 1))
+        y_min = int(np.clip(ny_min * sub_h, 0, sub_h - 1))
+        y_max = int(np.clip(ny_max * sub_h, 0, sub_h - 1))
+        return y_min, y_max, x_min, x_max
+
+    def _draw_grid_uint8(self, frame_uint8, panel_h, panel_w):
+        """Overlay the U_MAZE cell-boundary grid in STATE coords on every panel.
+
+        Cells are 1 world unit each, centered on world ints 1..5 with half-
+        extent 0.5 -> world boundaries at {1.5, 2.5, 3.5, 4.5} (inner) plus
+        {0.5, 5.5} (outer). In state coords (world - 1.2) those are
+        {0.3, 1.3, 2.3, 3.3} inner and {-0.7, 4.3} outer. The inner 4 lines
+        in each axis are the 4x4 cell-boundary grid that defines the maze
+        structure (and the cells the illegal_region was defined within).
+        """
+        if not OVERLAY_DRAW_GRID or self.illegal_region is None:
+            return frame_uint8
+        from PIL import Image, ImageDraw, ImageFont
+        H, W, _ = frame_uint8.shape
+        sx0, sx1 = OVERLAY_STATE_X_RANGE
+        sy0, sy1 = OVERLAY_STATE_Y_RANGE
+        cell_boundaries = [-0.7, 0.3, 1.3, 2.3, 3.3, 4.3]
+
+        def x_to_px(sx):
+            return int(np.clip((sx - sx0) / (sx1 - sx0) * panel_w, 0, panel_w - 1))
+
+        def y_to_px(sy):
+            return int(np.clip((sy - sy0) / (sy1 - sy0) * panel_h, 0, panel_h - 1))
+
+        img = Image.fromarray(frame_uint8)
+        draw = ImageDraw.Draw(img)
+        try:
+            font = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 8
+            )
+        except (OSError, IOError):
+            font = ImageFont.load_default()
+
+        for oy in range(0, H, panel_h):
+            for ox in range(0, W, panel_w):
+                for sx in cell_boundaries:
+                    if sx < sx0 or sx > sx1:
+                        continue
+                    px = ox + x_to_px(sx)
+                    draw.line(
+                        [(px, oy), (px, oy + panel_h - 1)],
+                        fill=OVERLAY_GRID_COLOR,
+                        width=1,
+                    )
+                    draw.text(
+                        (px + 1, oy + 1),
+                        f"x={sx:.1f}",
+                        fill=OVERLAY_GRID_COLOR,
+                        font=font,
+                    )
+                for sy in cell_boundaries:
+                    if sy < sy0 or sy > sy1:
+                        continue
+                    py = oy + y_to_px(sy)
+                    draw.line(
+                        [(ox, py), (ox + panel_w - 1, py)],
+                        fill=OVERLAY_GRID_COLOR,
+                        width=1,
+                    )
+                    draw.text(
+                        (ox + 1, py + 1),
+                        f"y={sy:.1f}",
+                        fill=OVERLAY_GRID_COLOR,
+                        font=font,
+                    )
+        return np.array(img)
+
+    def _draw_illegal_outline_uint8(self, frame_uint8, panel_h, panel_w):
+        """Draw a red rectangle outline at the illegal_region in every
+        panel_h x panel_w sub-panel of the composite frame_uint8.
+        frame_uint8: (H, W, 3) uint8 array, may contain multiple panels in a grid.
+        Mutates in place.
+        """
+        if self.illegal_region is None:
+            return frame_uint8
+        H, W, _ = frame_uint8.shape
+        y_min, y_max, x_min, x_max = self._illegal_pixel_box(panel_h, panel_w)
+        t = OVERLAY_BORDER_PX
+        for oy in range(0, H, panel_h):
+            for ox in range(0, W, panel_w):
+                ay0, ay1 = oy + y_min, oy + y_max
+                ax0, ax1 = ox + x_min, ox + x_max
+                # Top, bottom, left, right edges of the outline rectangle.
+                frame_uint8[ay0:ay0 + t,     ax0:ax1]     = OVERLAY_COLOR_RGB
+                frame_uint8[ay1 - t:ay1,     ax0:ax1]     = OVERLAY_COLOR_RGB
+                frame_uint8[ay0:ay1,         ax0:ax0 + t] = OVERLAY_COLOR_RGB
+                frame_uint8[ay0:ay1,         ax1 - t:ax1] = OVERLAY_COLOR_RGB
+        return frame_uint8
+    # === END HARNESS EDIT ===
+
     def _plot_rollout_compare(
         self, e_visuals, i_visuals, successes, save_video=False, filename=""
     ):
@@ -233,9 +397,16 @@ class PlanEvaluator:  # evaluator for planning
 
                 for frame in frames:
                     frame = frame * 2 - 1 if frame.min() >= 0 else frame
-                    video_writer.append_data(
-                        (((np.clip(frame, -1, 1) + 1) / 2) * 255).astype(np.uint8)
-                    )
+                    uint8_frame = (((np.clip(frame, -1, 1) + 1) / 2) * 255).astype(np.uint8)
+                    # === HARNESS EDIT: draw illegal-region outline + cell-boundary grid ===
+                    # Composite layout (after the cat ops above) is a grid of
+                    # 224x224 panels: [env, goal] top row, [imagined, goal] bottom row.
+                    # Both helpers iterate by panel_h/panel_w so we annotate every
+                    # panel uniformly. Grid first so the illegal outline draws on top.
+                    uint8_frame = self._draw_grid_uint8(uint8_frame, panel_h=224, panel_w=224)
+                    self._draw_illegal_outline_uint8(uint8_frame, panel_h=224, panel_w=224)
+                    # === END HARNESS EDIT ===
+                    video_writer.append_data(uint8_frame)
                 video_writer.close()
 
         # pad i_visuals or subsample e_visuals

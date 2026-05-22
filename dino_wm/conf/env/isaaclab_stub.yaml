@@ -1,0 +1,20 @@
+name: isaaclab_stub
+args: []
+kwargs:
+  task_id: Isaac-DinoWMStub-v0
+  num_envs: 1
+  image_size: ${img_size}
+  device: "cuda:0"
+
+dataset:
+  _target_: "datasets.isaaclab_dset.load_isaaclab_stub_slice_train_val"
+  n_rollout: null
+  normalize_action: ${normalize_action}
+  data_path: ${oc.env:DATASET_DIR}/isaaclab_stub
+  split_ratio: 0.9
+  transform:
+    _target_: "datasets.img_transforms.default_transform"
+    img_size: ${img_size}
+
+decoder_path: null
+num_workers: 4

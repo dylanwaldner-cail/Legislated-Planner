@@ -1,0 +1,19 @@
+diff --git a/docker/docker-compose.yaml b/docker/docker-compose.yaml
+index 09fde19be..7073cff11 100644
+--- a/docker/docker-compose.yaml
++++ b/docker/docker-compose.yaml
+@@ -69,6 +69,9 @@ x-default-isaac-lab-volumes: &default-isaac-lab-volumes
+   - type: bind
+     source: .isaac-lab-docker-history
+     target: ${DOCKER_USER_HOME}/.bash_history
++  - type: bind
++    source: /newdata2/dylantw/Legislative-Harness/dino_wm
++    target: /workspace/dino_wm
+ 
+ x-default-isaac-lab-environment: &default-isaac-lab-environment
+   - ISAACSIM_PATH=${DOCKER_ISAACLAB_PATH}/_isaac_sim
+@@ -151,3 +154,4 @@ volumes:
+   isaac-lab-docs:
+   isaac-lab-logs:
+   isaac-lab-data:
++

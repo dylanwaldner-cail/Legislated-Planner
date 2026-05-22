@@ -3,24 +3,20 @@ import torch
 import torch.nn as nn
 
 
-def create_objective_fn(alpha, base, mode="last"):
+def create_objective_fn(alpha, base, mode="last", probe_lambda=1.0):
     """
     Loss calculated on the last pred frame.
     Args:
         alpha: int
         base: int. only used for objective_fn_all
+        probe_lambda: float (HARNESS EDIT). Scales the per-traj probe penalty
+            added to the loss. Set to 0.0 from the CLI to disable the probe
+            entirely (standard MSE-only planning baseline). The probe still
+            runs in cem.py for logging, but doesn't shift the loss ranking.
     Returns:
         loss: tensor (B, )
     """
     metric = nn.MSELoss(reduction="none")
-
-    # === HARNESS EDIT: probe penalty weight ===
-    # Added: per-trajectory P(illegal) from the legislative probe (computed in
-    # planning/cem.py:plan()) is added to the MSE loss with this scalar weight.
-    # Higher P(illegal) -> higher loss -> trajectory is less likely to land in
-    # the CEM topk elite set. lambda=1.0 is the starter value.
-    probe_lambda = 1.0
-    # === END HARNESS EDIT ===
 
     # === HARNESS EDIT: added probe_out arg, default None so non-CEM callers
     # (e.g. planning/gd.py) keep working with the old 2-arg signature ===
