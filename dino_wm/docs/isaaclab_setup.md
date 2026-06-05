@@ -3,7 +3,7 @@
 Opt-in via `ISAACLAB_AVAILABLE=1`. Run inside the Isaac Sim docker.
 
 ## Required env vars
-- `ISAACLAB_AVAILABLE=1` — registers the `isaaclab_stub` gym id.
+- `ISAACLAB_AVAILABLE=1` — registers the `isaaclab_grid` gym id.
 - `DATASET_DIR` — host path for datasets; bind-mounted into the container at the same path.
 
 ## Container launch (sketch)

@@ -819,8 +819,8 @@ def main(cfg: OmegaConf):
     # Env — kwargs mirror env/__init__.py:9-21 (the registration plan.py uses
     # via gym.make("point_maze")), so the planner's env behaves the same here.
     if train_cfg.env.name.startswith("isaaclab_"):
-        from env.isaaclab.isaaclab_wrapper import IsaacLabWrapper
-        env = IsaacLabWrapper(**dict(train_cfg.env.kwargs))
+        from env.isaaclab.grid_wrapper import GridWrapper
+        env = GridWrapper(**dict(train_cfg.env.kwargs))
     else:
         env = PointMazeWrapper(
             maze_spec=U_MAZE,

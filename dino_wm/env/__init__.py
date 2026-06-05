@@ -2,7 +2,7 @@ from gym.envs.registration import register
 
 # point_maze depends on gym.envs.mujoco -> mujoco_py, which is not installed in
 # the IsaacLab docker container. Make this registration opt-out so other envs
-# (including isaaclab_stub) can still load when mujoco_py is missing.
+# (including isaaclab_grid) can still load when mujoco_py is missing.
 try:
     from .pointmaze import U_MAZE
     register(
@@ -47,11 +47,6 @@ register(
 # so importing env/__init__.py does not import IsaacLab or boot Omniverse.
 import os
 if os.environ.get("ISAACLAB_AVAILABLE"):
-    register(
-        id="isaaclab_stub",
-        entry_point="env.isaaclab.isaaclab_wrapper:IsaacLabWrapper",
-        max_episode_steps=300,
-    )
     register(
         id="isaaclab_grid",
         entry_point="env.isaaclab.grid_wrapper:GridWrapper",

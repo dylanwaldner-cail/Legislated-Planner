@@ -1,12 +1,13 @@
 """DinoWM grid dataset loader.
 
 On-disk schema (scripts/collect_isaaclab_grid_data.py):
-  states.pth         (E, T, 75)
+  states.pth         (E, T, 62)
   actions_left.pth   (E, T, 7)        actions_right.pth   (E, T, 7)
   proprio_left.pth   (E, T, 18)       proprio_right.pth   (E, T, 18)
-  cell_labels.pth    (E, T, 3) int64  (optional)
+  cell_labels.pth    (E, T, 2) int64  (optional; per-cube: red, blue)
   seq_lengths.pth    (E,) int64
-  obses/{overhead,front}/episode_NNN.pth  (T, H, W, 3) uint8
+  obses/left/episode_NNN.pth   (T, H, W, 3) uint8
+  obses/right/episode_NNN.pth  (T, H, W, 3) uint8
 
 cooperative=True: 14-D action + 36-D proprio per sample. False not yet wired.
 """
@@ -28,12 +29,14 @@ class IsaacLabGridDataset(TrajDataset):
         normalize_action: bool = False,
         action_scale: float = 1.0,
         cooperative: bool = True,
-        camera: str = "overhead",
+        camera: str = "left",
     ):
         if not cooperative:
             raise NotImplementedError("Non-cooperative path not yet wired up.")
-        if camera not in ("overhead", "front"):
-            raise ValueError(f"camera must be 'overhead' or 'front', got {camera!r}")
+        if camera not in ("left", "right"):
+            raise ValueError(
+                f"camera must be 'left' or 'right' (per-robot OTS views), got {camera!r}"
+            )
 
         p = Path(data_path)
         self.data_path = p
@@ -106,7 +109,7 @@ class IsaacLabGridDataset(TrajDataset):
 
 def load_isaaclab_grid_slice_train_val(
     transform, n_rollout=None, data_path="data/isaaclab_grid",
-    normalize_action=False, cooperative=True, camera="overhead",
+    normalize_action=False, cooperative=True, camera="left",
     split_ratio=0.9, num_hist=0, num_pred=0, frameskip=0,
 ):
     dset = IsaacLabGridDataset(

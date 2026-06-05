@@ -520,10 +520,10 @@ def planning_main(cfg_dict):
     # IsaacLab path: single process, one GPU, n_evals batched as the IsaacLab
     # num_envs dimension. No subprocesses (Isaac Sim is one app per process).
     if model_cfg.env.name.startswith("isaaclab_"):
-        from env.isaaclab.isaaclab_venv import IsaacLabVectorEnv
+        from env.isaaclab.grid_venv import GridVectorEnv
         kwargs = dict(model_cfg.env.kwargs)
         kwargs.pop("num_envs", None)
-        env = IsaacLabVectorEnv(num_envs=cfg_dict["n_evals"], **kwargs)
+        env = GridVectorEnv(num_envs=cfg_dict["n_evals"], **kwargs)
     # use dummy vector env for wall and deformable envs
     elif model_cfg.env.name == "wall" or model_cfg.env.name == "deformable_env":
         from env.serial_vector_env import SerialVectorEnv
