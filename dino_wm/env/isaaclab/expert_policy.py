@@ -1,312 +1,441 @@
-"""Scripted pick-and-place expert for the DinoWMGrid env.
+"""Scripted single-robot PUSH expert for the DinoWMGrid-Single env.
 
-Single-env phase machine: each arm grabs its nearest cube and moves it to a
-random cell. Phases:
-    approach_above -> descend -> grasp -> lift -> move -> hover -> descend2
-    -> release -> done
+Single env, single arm, single cube. A rigid cylindrical pusher rod is welded
+under the hand (see _pusher in the env cfg); the arm holds a fixed wrist-down
+orientation and drives the rod to push the cube along a random monotone-Manhattan
+path of within-cell waypoints from its start cell to a target cell. The gripper
+is parked OPEN so the fingers stay clear of the rod.
 
-Used by inspect_trajectory.py (visualization) and
-scripts/collect_isaaclab_grid_data.py (data collection). For batched data
-collection the caller must force num_envs=1; a batched refactor would move
-the per-arm state from scalars to length-N arrays.
+Per push segment (cube -> next waypoint) the phase machine is:
+    approach_above -> descend -> push
+On reaching a waypoint it advances to the next; if the cube slips off the
+paddle or stops progressing it does a corrective re-approach (back to
+approach_above behind the cube's new position). After the final waypoint it is
+`done` (deterministic) or resamples a fresh target and loops (chase_random).
+
+Used by inspect_single.py (visualization) and
+scripts/collect_isaaclab_grid_data.py (data collection). Single env only.
+
+All HEIGHT constants are wrist-target offsets relative to cube_z: the IK aims
+`panda_hand` (the wrist) at the target, and the gripper TCP sits ~10.7cm below
+the wrist, so PUSH_HEIGHT ~0.10 puts the closed paddle low on the cube side.
 """
 from __future__ import annotations
 
 import numpy as np
 
-from .grid_wrapper import ACTION_DIM_PER_AGENT
-from .grid_metadata import GRID_CENTER_XY, GRID_HALF, CELL
+from .grid_wrapper_single import ACTION_DIM
+from .grid_metadata import (
+    GRID_CENTER_XY,
+    GRID_HALF,
+    N_CELLS,
+    REACH_X_MIN,
+    monotone_manhattan_cells,
+    random_point_in_cell,
+    which_cell,
+)
+
+# Must match the IK scale in dinowm_grid_env_cfg.py (_ik scale=2.0).
+_IK_SCALE = 2.0
 
 
-# Must match the IK scale in dinowm_grid_env_cfg.py
-_IK_SCALE = 0.5
-_CUBE_NAMES = ("cube_red", "cube_blue")
-_SIDES = ("left", "right")
-
-# Per-side allowed place cells (cell_id = row*3 + col; col grows with +x, row
-# with +y, so row 0 = front/-y, row 2 = back/+y). With the bases at ±0.55 each
-# robot can reach across most of the grid width (the absolute far corner is
-# near-singular), so columns are unrestricted; the split is by camera row-half:
-# camera_left sits at -y, so the
-# left robot owns the front rows {0,1} (all columns); camera_right sits at +y,
-# so the right robot owns the back rows {1,2} (all columns). The middle row
-# (cells 3,4,5) is shared, but neither robot enters the other's exclusive far
-# row (left never row 2, right never row 0).
-_LEFT_CELLS = (0, 1, 2, 3, 4, 5)   # front rows 0-1, all columns
-_RIGHT_CELLS = (3, 4, 5, 6, 7, 8)  # back rows 1-2, all columns
-_SIDE_CELLS = {"left": _LEFT_CELLS, "right": _RIGHT_CELLS}
+# --- minimal quaternion helpers (wxyz, to match IsaacLab) for yawing the blade ---
+def _quat_mul(a, b):
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return np.array([
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    ], dtype=np.float32)
 
 
-class ExpertPickPlace:
-    """Per-arm phase machine for pick-and-place. Single env only.
+def _quat_rotate(q, v):
+    """Rotate 3-vec v by quaternion q (wxyz)."""
+    w, x, y, z = q
+    qv = np.array([x, y, z], dtype=np.float32)
+    t = 2.0 * np.cross(qv, v)
+    return (v + w * t + np.cross(qv, t)).astype(np.float32)
 
-    All HEIGHT constants are wrist-target offsets relative to cube_z. The IK
-    aims `panda_hand` (the wrist body) at the target, but the gripper TCP sits
-    ~10.7cm below the wrist along the gripper axis. So a wrist target of
-    cube_z + 10.7cm puts the fingertips at cube center for grasping.
 
-    Stores `last_target` per side (world frame) so callers can render the
-    commanded target with VisualizationMarkers and diff against EE position.
+def _quat_yaw(angle):
+    """Quaternion (wxyz) for a rotation of `angle` about +z."""
+    h = 0.5 * angle
+    return np.array([np.cos(h), 0.0, 0.0, np.sin(h)], dtype=np.float32)
+
+
+class PushExpert:
+    """Single-arm push phase machine. Single env only.
+
+    Two waypoint-generation modes (push_mode):
+      "random" (default) -> the cube does a random walk: each segment picks a
+          random direction + distance from the cube's current spot (clamped to
+          stay on the grid) and pushes it there, then picks another, forever.
+          This is the WM data-collection driver: dense, diverse contact
+          transitions, no goal structure (a one-step dynamics model needs none).
+      "cells" -> goal-directed: random monotone-Manhattan path of within-cell
+          waypoints from a start cell to a target cell (deterministic ends, or
+          chase_random to loop to fresh target cells). Kept for goal-directed
+          demos / eval-goal generation.
+
+    Either way the control is the same: approach_above (move behind the cube and
+    rotate the blade to face the push direction simultaneously) -> descend ->
+    push, with corrective re-approach on slip/stall. Stores `last_target` (world
+    frame) for optional marker rendering.
     """
 
-    # Deterministic pick-and-place phases (used by --policy expert).
-    PHASES_DETERMINISTIC = (
-        "approach_above", "descend", "grasp",
-        "lift", "move", "hover", "descend2", "release", "done",
-    )
-    # Looped pick-and-place phases (used by --policy noisy_expert): same
-    # phases as deterministic but without "done" at the end. After release,
-    # phase_idx wraps to 0 (approach_above) and a fresh random target xy
-    # is sampled. The arm continuously picks up the cube, places it at a
-    # random spot, picks it back up, places it elsewhere, etc. Each cycle
-    # yields a grasp event + release event with a different placement, so
-    # an episode produces many transitions instead of just one.
-    PHASES_LOOP = (
-        "approach_above", "descend", "grasp",
-        "lift", "move", "hover", "descend2", "release",
-    )
+    PHASES = ("approach_above", "descend", "push")
 
-    APPROACH_HEIGHT = 0.25
-    PICK_HEIGHT = 0.107
-    LIFT_Z = 0.32   # was 0.26; raised so the carried block clears the grid
-                    # instead of dragging when an arm reaches a far cell on the
-                    # enlarged grid. Used by lift / move / hover phases.
-    PLACE_Z = 0.13
-    DIST_THRESHOLD = 0.010  # default / precise-phase arrival threshold
-    # Per-phase arrival threshold. Transit phases (approach_above, lift, move)
-    # advance loosely so the arm doesn't creep the last cm at each waypoint —
-    # the next precise phase re-aims and converges tightly (descend re-targets
-    # the cube before grasp; descend2 re-targets the place spot), so loose
-    # transit doesn't cost grasp/place accuracy. Phases not listed (descend,
-    # and the step-hold phases) fall back to DIST_THRESHOLD.
-    PHASE_DIST_THRESHOLD = {
-        "approach_above": 0.05,
-        "lift": 0.05,
-        "move": 0.05,
-        "descend2": 0.015,  # placement — looser than grasp but still tidy
-    }
+    # The blade's flat-face normal in panda_hand local frame (thin axis = local-x;
+    # see _pusher in the env cfg). The wrist is yawed so this points along the
+    # push direction.
+    LOCAL_FACE_AXIS = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    # Don't leave approach_above (blade up, clear of the cube) until the blade has
+    # rotated to within this of facing the push direction — otherwise the slow IK
+    # wrist rotation isn't finished by contact and the cube gets hit with the side.
+    ORI_ALIGN_THRESH = 0.18  # rad (~10 deg)
+
+    # Random-mode push: each segment shoves the cube a random distance in a
+    # random heading, clamped to stay `RAND_MARGIN` inside the grid edge.
+    RAND_PUSH_MIN = 0.06
+    RAND_PUSH_MAX = 0.18
+    RAND_MARGIN = 0.06   # >= cube half (0.045) so pushes keep the 9cm cube on-grid
+
+    # Heights are wrist (panda_hand) target offsets above cube_z (= cube CENTER).
+    # The pusher tip (paddle bottom) sits ~0.13m below the wrist (short pole +
+    # paddle). With the base at 0.15m, the push wrist (~0.15) is ~at base height
+    # (elbow-comfortable) while the tip reaches the cube's lower side / CoM.
+    APPROACH_HEIGHT = 0.27   # wrist high enough that the tip (~0.13 below) clears the cube top
+    PUSH_HEIGHT = 0.10       # wrist height while pushing (tip ~just above table, wrist ~base height)
+    BEHIND_DIST = 0.12       # how far behind the cube (along -push_dir) the blade
+                             # sits; clears the 9cm cube (half 0.045) on descent,
+                             # even yawed, so it descends beside the cube not on top
+    CONTACT_OFFSET = 0.05    # EE push-target = waypoint - push_dir*CONTACT_OFFSET
+                             # (~blade_half + cube_half, so the cube center lands on wp)
+
+    APPROACH_ARRIVE = 0.12   # loose so it cuts the corner into descend (no full stop)
+    DESCEND_ARRIVE = 0.06    # loose so it flows into the push instead of stopping low
+    CUBE_ARRIVE = 0.03       # cube within this of the waypoint => segment done
+    SLIP_THRESH = 0.06       # cube lateral deviation from the push line => re-approach
+
     MAX_STEPS_PER_PHASE = 80
-    GRASP_HOLD_STEPS = 10
-    HOVER_HOLD_STEPS = 12
-    RELEASE_HOLD_STEPS = 12
-    PLATEAU_WINDOW = 6
-    PLATEAU_TOL = 0.005
+    MAX_REAPPROACH = 4       # per segment; then force-advance the waypoint
+    PLATEAU_WINDOW = 8
+    PLATEAU_TOL = 0.004      # cube-to-waypoint distance change over the window
+    # Approach/descend stall watchdog: if the EE-to-target distance stops shrinking
+    # (the arm pinned a joint / can't reach this target), abandon the push and try
+    # a new direction instead of freezing the whole trajectory.
+    EE_PLATEAU_WINDOW = 10
+    EE_PLATEAU_TOL = 0.012   # min EE-distance progress over the window (m)
 
-    # Random placement-target bounds for looped (noisy_expert) mode.
-    RAND_XY_HALF = GRID_HALF  # legacy full-half bound; superseded by PLACE_* below.
-    # Place-target band (env-local). With the bases at ±0.45 and the smaller
-    # grid, x spans [-PLACE_X_HALF, +PLACE_X_HALF] for both robots; the band is
-    # kept ~= the grid corner extent so continuous targets don't reach past the
-    # deterministic far corner. The front/back (y) split stays: each robot only
-    # places on its own camera's row-half — left robot front (y<=0, near
-    # camera_left at -y), right robot back (y>=0, near camera_right at +y),
-    # sharing the center row.
-    PLACE_X_HALF = 0.19125  # scaled with the grid (~23.5% smaller than original)
-    PLACE_Y_MIN = 0.0
-    PLACE_Y_MAX = 0.19125
+    # Per-phase scale on exploration noise. Push gets full noise for path
+    # variety; the re-positioning phases get less so the paddle still lands
+    # behind the cube. Default 1.0.
+    PHASE_NOISE_SCALE = {"approach_above": 0.5, "descend": 0.3, "push": 1.0}
 
-    def __init__(self, rng, env=None, verbose=True, chase_random=False, fixed_cells=None):
-        """chase_random=False -> deterministic pick-and-place (expert):
-            one fixed cell, run once, then done.
-        chase_random=True  -> looped pick-and-place (noisy_expert):
-            place at a fresh random xy each cycle, then loop back to
-            re-grasp the just-released cube; never terminates.
-        fixed_cells -> optional {side: cell_id} forcing the deterministic
-            place target (e.g. {"left": 2, "right": 6}); overrides the random
-            cell draw. Used to pin a specific placement for a demo run.
+    def __init__(self, rng, env=None, verbose=True, push_mode="random",
+                 chase_random=False, reachable_cells=None):
+        """push_mode -> "random" (default; cube random-walk, loops forever) or
+            "cells" (goal-directed Manhattan path; see class docstring).
+        chase_random -> "cells" mode only: loop to fresh target cells instead of
+            stopping (done) at the first target. Ignored in "random" mode (always
+            loops).
+        reachable_cells -> "cells" mode only: cell_ids the target may be drawn
+            from (default all 9). Restrict once the smoke test shows which cells
+            the single arm can reach.
         """
         self.rng = rng
-        self.state = {}
-        self.last_target = {"left": None, "right": None}
         self._env = env
         self.verbose = verbose
+        self.push_mode = push_mode
         self.chase_random = chase_random
-        self.fixed_cells = fixed_cells or {}
-        # Reference gripper orientation (base frame, per side) captured at reset.
-        # The IK gets a rotation command each step driving the wrist back to this
-        # so it can't drift forward or spin (a zero rotation command gives the IK
-        # no orientation feedback, which caused the wrist-forward / barrel-roll).
-        self.ref_quat = {}
-        self.PHASES = self.PHASES_LOOP if chase_random else self.PHASES_DETERMINISTIC
+        self.reachable_cells = tuple(reachable_cells) if reachable_cells is not None \
+            else tuple(range(N_CELLS))
+        self.noise_std = 0.0          # set per episode by the caller; 0 = clean
+        self.ref_quat = None          # base-frame wrist orientation to hold
+        self.last_target = None
+        self.state = None
+        self.debug = False            # per-step diagnostic prints (inspect --debug sets True)
 
-    def _sample_target_xy(self, side):
-        # Markers land anywhere across the grid width (x full range), but each
-        # robot stays on its own camera's row-half (y): left robot front
-        # (y<=0, near camera_left), right robot back (y>=0, near camera_right).
-        x = self.rng.uniform(-self.PLACE_X_HALF, self.PLACE_X_HALF)
-        mag_y = self.rng.uniform(self.PLACE_Y_MIN, self.PLACE_Y_MAX)
-        y = -mag_y if side == "left" else mag_y
-        return np.array([x, y], dtype=np.float32)
+    # ---------- path / target setup ----------
 
-    def reset(self):
-        cube_pos = self._env.get_cube_positions()
-        ee_pos = self._env.get_ee_positions()
-        # Capture the ready-pose gripper orientation (base frame) to hold the
-        # wrist at throughout the episode — this is the "wrist down" crane pose.
-        ee_quats = self._env.get_ee_quats_base()
-        for side in _SIDES:
-            self.ref_quat[side] = ee_quats[side][0].copy()
-        available = list(_CUBE_NAMES)
+    def _cube_xy(self):
+        return self._env.get_cube_positions()[0][:2].astype(np.float32)
 
-        def _nearest(side, choices):
-            ee = ee_pos[side][0]
-            return min(choices, key=lambda c: float(np.linalg.norm(cube_pos[c][0] - ee)))
+    def _pick_target_cell(self, start_cell):
+        choices = [c for c in self.reachable_cells if c != start_cell] \
+            or [c for c in range(N_CELLS) if c != start_cell]
+        return int(choices[self.rng.randint(0, len(choices))])
 
-        assignments = {}
-        assignments["left"] = _nearest("left", available)
-        available.remove(assignments["left"])
-        assignments["right"] = _nearest("right", available)
+    def _build_waypoints(self, start_cell, target_cell):
+        """One random within-cell waypoint per cell on the monotone-Manhattan
+        path AFTER the start cell (the last lands in the target cell = goal)."""
+        path = monotone_manhattan_cells(start_cell, target_cell, self.rng)
+        cells = path[1:] if len(path) > 1 else [target_cell]
+        return [random_point_in_cell(c, self.rng) for c in cells]
 
-        for side in _SIDES:
-            cube = assignments[side]
-            # Deterministic-mode place cell: a fixed_cells override wins (pins a
-            # specific target for a demo run); otherwise draw a random cell from
-            # this side's allowed region (its camera's row-half, any column).
-            # Used only in deterministic mode.
-            if side in self.fixed_cells:
-                cell = int(self.fixed_cells[side])
-            else:
-                allowed = _SIDE_CELLS[side]
-                cell = int(allowed[self.rng.randint(0, len(allowed))])
-            target_xy = self._sample_target_xy(side) if self.chase_random else None
-            self.state[side] = {
-                "phase_idx": 0,
-                "step_in_phase": 0,
-                "cube": cube,
-                "cell": cell,
-                "target_xy": target_xy,  # used only in chase_random mode
-                "cycle": 0,
-                "recent_dists": [],
-            }
+    def _random_waypoint(self):
+        """A single push target a random distance in a random heading from the
+        cube's current spot, clamped to stay inside the grid (RAND_MARGIN from
+        the edge). This is what makes the cube move in random directions."""
+        cube_xy = self._cube_xy()
+        theta = self.rng.uniform(-np.pi, np.pi)
+        dist = self.rng.uniform(self.RAND_PUSH_MIN, self.RAND_PUSH_MAX)
+        wp = cube_xy + dist * np.array([np.cos(theta), np.sin(theta)], dtype=np.float32)
+        cx, cy = GRID_CENTER_XY
+        lim = GRID_HALF - self.RAND_MARGIN
+        # x lower-bounded at REACH_X_MIN so pushes don't drive the cube into the
+        # near-base column the arm can't get behind.
+        wp[0] = float(np.clip(wp[0], max(cx - lim, REACH_X_MIN), cx + lim))
+        wp[1] = float(np.clip(wp[1], cy - lim, cy + lim))
+        return wp.astype(np.float32)
+
+    def _target_quat_for_dir(self, push_dir):
+        """Base-frame wrist quaternion that yaws the blade face normal to point
+        along push_dir (rotation about vertical, preserving the captured
+        wrist-down pose). Assumes the robot base is at identity yaw, so base-z is
+        world vertical and push_dir (env-local xy) is already in the base frame."""
+        n0 = _quat_rotate(self.ref_quat, self.LOCAL_FACE_AXIS)  # blade normal at ref
+        heading0 = float(np.arctan2(n0[1], n0[0]))
+        desired = float(np.arctan2(push_dir[1], push_dir[0]))
+        # The blade is symmetric (both ±x faces are flat), so align the NEARER
+        # face: wrap the yaw to [-pi/2, pi/2] -> max 90deg spin instead of 180.
+        yaw = (desired - heading0 + np.pi / 2) % np.pi - np.pi / 2
+        return _quat_mul(_quat_yaw(yaw), self.ref_quat)
+
+    def _begin_segment(self, recompute_dir_from_cube=True):
+        """(Re)compute the push direction for the current waypoint from the
+        cube's current position, set the wrist orientation that faces the blade
+        along it, and reset the per-phase counters."""
+        st = self.state
+        if recompute_dir_from_cube:
+            wp = st["waypoints"][st["wp_idx"]]
+            d = wp - self._cube_xy()
+            n = float(np.linalg.norm(d))
+            st["push_dir"] = (d / n) if n > 1e-6 else np.array([1.0, 0.0], dtype=np.float32)
+        st["target_quat"] = self._target_quat_for_dir(st["push_dir"])
+        st["phase_idx"] = 0
+        st["step_in_phase"] = 0
+        st["recent_cube_dists"] = []
+        st["recent_ee"] = []
+
+    def reset(self, start_cell=None, target_cell=None):
+        """Init episode state. In "cells" mode start_cell/target_cell may be
+        pinned (else derived/random). In "random" mode they're ignored."""
+        self.ref_quat = self._env.get_ee_quats_base()[0].copy()
+        self.state = {
+            "wp_idx": 0,
+            "phase_idx": 0,
+            "step_in_phase": 0,
+            "push_dir": np.array([1.0, 0.0], dtype=np.float32),
+            "reapproaches": 0,
+            "recent_cube_dists": [],
+            "cycle": 0,
+            "done": False,
+        }
+        if self.push_mode == "random":
+            self.state["waypoints"] = [self._random_waypoint()]
+            self.state["target_cell"] = -1  # n/a in random mode
             if self.verbose:
-                if self.chase_random:
-                    print(f"[expert] {side:5s}: pick {cube} (nearest) -> "
-                          f"loop place/regrasp, first target_xy = "
-                          f"({target_xy[0]:+.3f}, {target_xy[1]:+.3f})")
-                else:
-                    r, c = cell // 3, cell % 3
-                    print(f"[expert] {side:5s}: pick {cube} (nearest) -> place at cell (row {r+1}, col {c})")
+                wp = self.state["waypoints"][0]
+                print(f"[push] random mode: first target ({wp[0]:+.3f},{wp[1]:+.3f})")
+        else:
+            cube_xy = self._cube_xy()
+            if start_cell is None:
+                start_cell = int(which_cell(cube_xy))
+                if start_cell < 0:
+                    start_cell = 4  # cube off-grid -> fall back to center
+            if target_cell is None:
+                target_cell = self._pick_target_cell(start_cell)
+            self.state["start_cell"] = int(start_cell)
+            self.state["target_cell"] = int(target_cell)
+            self.state["waypoints"] = self._build_waypoints(start_cell, target_cell)
+            if self.verbose:
+                print(f"[push] cells mode: cell {start_cell} -> cell {target_cell}; "
+                      f"{len(self.state['waypoints'])} waypoints")
+        self._begin_segment()
+
+    # ---------- per-step control ----------
 
     def __call__(self, ee_positions, cube_positions):
-        return {side: self._step_arm(side, ee_positions[side][0], cube_positions) for side in _SIDES}
+        return self._step(ee_positions[0].astype(np.float32),
+                          cube_positions[0].astype(np.float32))
 
-    @staticmethod
-    def _cell_xy(cell_id):
-        cx, cy = GRID_CENTER_XY
-        row = cell_id // 3
-        col = cell_id % 3
-        return np.array([
-            cx - GRID_HALF + CELL / 2 + col * CELL,
-            cy - GRID_HALF + CELL / 2 + row * CELL,
-        ], dtype=np.float32)
-
-    def _step_arm(self, side, ee_pos, cube_positions):
-        st = self.state[side]
-        phase = self.PHASES[st["phase_idx"]]
-        cube_pos = cube_positions[st["cube"]][0]
-        # Place target: random per-cycle xy in chase_random mode, otherwise
-        # the fixed assigned cell center.
-        place_xy = st["target_xy"] if self.chase_random else self._cell_xy(st["cell"])
-        z_cube = float(cube_pos[2])
-
-        OPEN, CLOSE = +1.0, -1.0
-        if phase == "approach_above":
-            target = np.array([cube_pos[0], cube_pos[1], z_cube + self.APPROACH_HEIGHT])
-            gripper = OPEN
-        elif phase == "descend":
-            target = np.array([cube_pos[0], cube_pos[1], z_cube + self.PICK_HEIGHT])
-            gripper = OPEN
-        elif phase == "grasp":
-            target = np.array([cube_pos[0], cube_pos[1], z_cube + self.PICK_HEIGHT])
-            gripper = CLOSE
-        elif phase == "lift":
-            target = np.array([cube_pos[0], cube_pos[1], self.LIFT_Z])
-            gripper = CLOSE
-        elif phase == "move":
-            target = np.array([place_xy[0], place_xy[1], self.LIFT_Z])
-            gripper = CLOSE
-        elif phase == "hover":
-            target = np.array([place_xy[0], place_xy[1], self.LIFT_Z])
-            gripper = CLOSE
-        elif phase == "descend2":
-            target = np.array([place_xy[0], place_xy[1], self.PLACE_Z])
-            gripper = CLOSE
-        elif phase == "release":
-            target = np.array([place_xy[0], place_xy[1], self.PLACE_Z])
-            gripper = OPEN
-        else:  # done
-            target = ee_pos
-            gripper = OPEN
-
-        self.last_target[side] = target.copy()
-        delta_world = (target - ee_pos) / _IK_SCALE
-        delta_base = self._env.world_to_base_delta(side, delta_world)
+    def _action(self, target_xyz, ee_pos, phase):
+        """Build the 7-D action that drives the wrist toward target_xyz while
+        yawing it so the blade face points along the current push direction
+        (state['target_quat']). Gripper parked OPEN so the fingers stay clear of
+        the blade."""
+        OPEN = +1.0
+        self.last_target = np.asarray(target_xyz, dtype=np.float32).copy()
+        delta_world = (np.asarray(target_xyz, dtype=np.float32) - ee_pos) / _IK_SCALE
+        delta_base = np.asarray(self._env.world_to_base_delta(delta_world), dtype=np.float32)
+        scale = self.PHASE_NOISE_SCALE.get(phase, 1.0)
+        if self.noise_std > 0.0 and scale > 0.0:
+            delta_base = delta_base + self.rng.normal(
+                0.0, self.noise_std * scale, size=3).astype(np.float32)
         delta_base = np.clip(delta_base, -1.0, 1.0).astype(np.float32)
-        action = np.zeros((1, ACTION_DIM_PER_AGENT), dtype=np.float32)
+        action = np.zeros((1, ACTION_DIM), dtype=np.float32)
         action[0, :3] = delta_base
-        # Closed-loop orientation hold: command the rotation that drives the
-        # wrist back to the captured reference orientation each step (instead of
-        # a zero delta, which gave the IK no orientation feedback and let the
-        # wrist drift forward / spin). /_IK_SCALE matches the action term's 0.5
-        # scale, same as the position channel; clip to the action range.
-        rot_aa = self._env.orientation_delta_base(side, self.ref_quat[side])[0]
+        target_quat = self.state.get("target_quat", self.ref_quat) \
+            if self.state is not None else self.ref_quat
+        rot_aa = self._env.orientation_delta_base(target_quat)[0]
+        if self.state is not None:
+            self.state["ori_err"] = float(np.linalg.norm(rot_aa))  # rad, for phase gating
         action[0, 3:6] = np.clip(rot_aa / _IK_SCALE, -1.0, 1.0).astype(np.float32)
-        action[0, 6] = gripper
-
-        st["step_in_phase"] += 1
-        dist = float(np.linalg.norm(target - ee_pos))
-        thresh = self.PHASE_DIST_THRESHOLD.get(phase, self.DIST_THRESHOLD)
-
-        st["recent_dists"].append(dist)
-        if len(st["recent_dists"]) > self.PLATEAU_WINDOW:
-            st["recent_dists"].pop(0)
-        plateaued = (
-            len(st["recent_dists"]) >= self.PLATEAU_WINDOW
-            and max(st["recent_dists"]) - min(st["recent_dists"]) < self.PLATEAU_TOL
-        )
-
-        if phase == "grasp":
-            advance = st["step_in_phase"] >= self.GRASP_HOLD_STEPS
-        elif phase == "hover":
-            advance = st["step_in_phase"] >= self.HOVER_HOLD_STEPS
-        elif phase == "release":
-            advance = st["step_in_phase"] >= self.RELEASE_HOLD_STEPS
-        elif phase == "done":
-            advance = False
-        else:
-            advance = (
-                dist < thresh
-                or plateaued
-                or st["step_in_phase"] >= self.MAX_STEPS_PER_PHASE
-            )
-
-        if advance:
-            if self.chase_random:
-                # Wrap from last phase (release) back to approach_above and
-                # resample a fresh target for the next cycle.
-                next_idx = (st["phase_idx"] + 1) % len(self.PHASES)
-                if next_idx == 0:
-                    st["target_xy"] = self._sample_target_xy(side)
-                    st["cycle"] += 1
-                    if self.verbose:
-                        tx, ty = st["target_xy"]
-                        print(f"[expert] {side:5s}: cycle {st['cycle']} start, "
-                              f"new target_xy = ({tx:+.3f}, {ty:+.3f})")
-            else:
-                next_idx = min(st["phase_idx"] + 1, len(self.PHASES) - 1)
-            if self.verbose:
-                reason = (
-                    "reached" if dist < thresh
-                    else "plateau" if plateaued
-                    else "timeout"
-                )
-                print(
-                    f"[expert] {side:5s}: {phase} -> {self.PHASES[next_idx]} "
-                    f"({reason}, steps={st['step_in_phase']}, dist={dist:.3f}, "
-                    f"ee_z={ee_pos[2]:.3f}, target_z={target[2]:.3f})"
-                )
-            st["phase_idx"] = next_idx
-            st["step_in_phase"] = 0
-            st["recent_dists"] = []
-
+        action[0, 6] = OPEN
         return action
+
+    def _step(self, ee_pos, cube_pos):
+        st = self.state
+        if st["done"]:
+            return self._action(ee_pos, ee_pos, "done")  # hold
+
+        cube_xy = cube_pos[:2]
+        z_cube = float(cube_pos[2])
+        wp = st["waypoints"][st["wp_idx"]]
+        d = st["push_dir"]
+        phase = self.PHASES[st["phase_idx"]]
+        behind_xy = cube_xy - d * self.BEHIND_DIST
+
+        if phase == "approach_above":
+            # Move behind the cube (up high) and rotate to face the push dir at
+            # once; descent waits until both arrived and aimed.
+            target = np.array([behind_xy[0], behind_xy[1], z_cube + self.APPROACH_HEIGHT])
+        elif phase == "descend":
+            target = np.array([behind_xy[0], behind_xy[1], z_cube + self.PUSH_HEIGHT])
+        else:  # push
+            push_xy = wp - d * self.CONTACT_OFFSET
+            target = np.array([push_xy[0], push_xy[1], z_cube + self.PUSH_HEIGHT])
+
+        action = self._action(target, ee_pos, phase)
+        st["step_in_phase"] += 1
+        ee_dist = float(np.linalg.norm(target - ee_pos))
+        cube_to_wp = float(np.linalg.norm(wp - cube_xy))
+
+        if phase in ("approach_above", "descend"):
+            # Advance on POSITION only (loose) — the blade keeps rotating to face
+            # the push dir every step via target_quat, but we never WAIT for the
+            # yaw. That wait was the "complete stop" between phases and the cause
+            # of trajectories that approached but never pushed. It contacts mostly
+            # aimed and keeps correcting during the push.
+            arrive = self.APPROACH_ARRIVE if phase == "approach_above" else self.DESCEND_ARRIVE
+            st["recent_ee"].append(ee_dist)
+            if len(st["recent_ee"]) > self.EE_PLATEAU_WINDOW:
+                st["recent_ee"].pop(0)
+            stalled = (
+                len(st["recent_ee"]) >= self.EE_PLATEAU_WINDOW
+                and max(st["recent_ee"]) - min(st["recent_ee"]) < self.EE_PLATEAU_TOL
+                and ee_dist > arrive
+            )
+            if ee_dist < arrive or st["step_in_phase"] >= self.MAX_STEPS_PER_PHASE:
+                self._advance_phase()
+            elif stalled:
+                # Arm can't reach this target (pinned a joint, e.g. the elbow at a
+                # far-lateral/low pose) -> abandon and try a different push dir
+                # instead of freezing the trajectory.
+                if self.verbose:
+                    print(f"[push] {phase} STALLED (unreachable) wp {st['wp_idx']} "
+                          f"eeD={ee_dist:.3f} -> new push")
+                self._advance_waypoint("stuck")
+        else:  # push
+            self._push_logic(cube_xy, wp, d, cube_to_wp)
+
+        if self.debug:
+            self._debug_print(phase, d, ee_dist, cube_to_wp)
+        return action
+
+    def _debug_print(self, phase, d, ee_dist, cube_to_wp):
+        """Per-step diagnostic: push heading, orientation error, EE/cube progress,
+        and any joints pinned near their limits (the freeze suspect)."""
+        st = self.state
+        heading = float(np.degrees(np.arctan2(d[1], d[0])))
+        ori_err_deg = float(np.degrees(st.get("ori_err", 0.0)))
+        near = ""
+        try:
+            jp, names, lim = self._env.get_joint_diag()
+            if lim is not None:
+                flags = []
+                for k, nm in enumerate(names):
+                    lo, hi = float(lim[k][0]), float(lim[k][1])
+                    margin = min(jp[k] - lo, hi - jp[k])
+                    if margin < 0.15:  # within ~8.5deg of a joint limit
+                        flags.append(f"{nm.replace('panda_', '')}={jp[k]:+.2f}(m{margin:.2f})")
+                if flags:
+                    near = " LIMIT:" + ",".join(flags)
+        except Exception:
+            pass
+        print(f"[diag s{st['step_in_phase']:02d}] {phase:13s} head={heading:+4.0f} "
+              f"oriErr={ori_err_deg:3.0f} eeD={ee_dist:.3f} cubeD={cube_to_wp:.3f}{near}")
+
+    def _push_logic(self, cube_xy, wp, d, cube_to_wp):
+        st = self.state
+        # Reached the waypoint -> next segment.
+        if cube_to_wp < self.CUBE_ARRIVE:
+            self._advance_waypoint("reached")
+            return
+        # Lateral deviation of the cube from the push line -> slipped off paddle.
+        off = cube_xy - wp
+        slip = float(np.linalg.norm(off - np.dot(off, d) * d))
+        # Progress plateau: cube no longer closing on the waypoint.
+        st["recent_cube_dists"].append(cube_to_wp)
+        if len(st["recent_cube_dists"]) > self.PLATEAU_WINDOW:
+            st["recent_cube_dists"].pop(0)
+        plateaued = (
+            len(st["recent_cube_dists"]) >= self.PLATEAU_WINDOW
+            and max(st["recent_cube_dists"]) - min(st["recent_cube_dists"]) < self.PLATEAU_TOL
+        )
+        if slip > self.SLIP_THRESH or plateaued or st["step_in_phase"] >= self.MAX_STEPS_PER_PHASE:
+            st["reapproaches"] += 1
+            if st["reapproaches"] > self.MAX_REAPPROACH:
+                self._advance_waypoint("gave_up")
+            else:
+                if self.verbose:
+                    reason = "slip" if slip > self.SLIP_THRESH else (
+                        "plateau" if plateaued else "timeout")
+                    print(f"[push] re-approach ({reason}) wp {st['wp_idx']} "
+                          f"slip={slip:.3f} d_wp={cube_to_wp:.3f} "
+                          f"#{st['reapproaches']}")
+                self._begin_segment()  # back to approach_above, recompute push_dir
+
+    def _advance_phase(self):
+        st = self.state
+        st["phase_idx"] = min(st["phase_idx"] + 1, len(self.PHASES) - 1)
+        st["step_in_phase"] = 0
+        st["recent_cube_dists"] = []
+
+    def _advance_waypoint(self, reason):
+        st = self.state
+        if self.verbose:
+            print(f"[push] wp {st['wp_idx']} done ({reason}); cube cell "
+                  f"{int(which_cell(self._cube_xy()))}")
+        st["reapproaches"] = 0
+        st["cycle"] += 1
+
+        # Random mode: just shove the cube somewhere new, forever.
+        if self.push_mode == "random":
+            st["waypoints"] = [self._random_waypoint()]
+            st["wp_idx"] = 0
+            self._begin_segment()
+            return
+
+        # Cells mode: advance along the Manhattan path.
+        st["wp_idx"] += 1
+        if st["wp_idx"] < len(st["waypoints"]):
+            self._begin_segment()
+            return
+        # Final waypoint reached.
+        if self.chase_random:
+            start_cell = int(which_cell(self._cube_xy()))
+            if start_cell < 0:
+                start_cell = st["target_cell"]
+            target_cell = self._pick_target_cell(start_cell)
+            st["wp_idx"] = 0
+            st["target_cell"] = target_cell
+            st["waypoints"] = self._build_waypoints(start_cell, target_cell)
+            self._begin_segment()
+            if self.verbose:
+                print(f"[push] cycle {st['cycle']}: new target cell {target_cell}")
+        else:
+            st["done"] = True

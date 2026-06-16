@@ -29,6 +29,7 @@ def get_app(
     enable_cameras: bool = True,
     render_mode: str = "PathTracing",
     spp: int = 128,
+    device: str = "cuda:0",  ### HARNESS EDIT ### selects the GPU; AppLauncher derives active_gpu (renderer) + physics_gpu from it
 ):
     """Boot Kit's SimulationApp (idempotent).
 
@@ -54,6 +55,7 @@ def get_app(
         _launcher = AppLauncher(
             headless=headless,
             enable_cameras=enable_cameras,
+            device=device,  ### HARNESS EDIT ### pins renderer (active_gpu) + physics_gpu to this device
             kit_args=" ".join(kit_args_parts),
         )
         _app = _launcher.app

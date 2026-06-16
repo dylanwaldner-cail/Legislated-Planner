@@ -15,7 +15,6 @@ import wandb
 import logging
 import warnings
 import numpy as np
-import submitit
 from itertools import product
 from pathlib import Path
 from einops import rearrange
@@ -51,6 +50,7 @@ def launch_plan_jobs(
     cfg_dicts,
     plan_output_dir,
 ):
+    import submitit  # lazy: only needed for SLURM auto-launch from train.py
     with submitit.helpers.clean_env():
         jobs = []
         for cfg_dict in cfg_dicts:
@@ -146,6 +146,10 @@ class PlanWorkspace:
         self.goal_H = cfg_dict["goal_H"]
         self.action_dim = self.dset.action_dim * self.frameskip
         self.debug_dset_init = cfg_dict["debug_dset_init"]
+        ### HARNESS EDIT ### cap how deep into an episode a segment can start (offset in [0, max_offset]).
+        # Small => init near the episode start (arm at rest, cubes freshly placed) = clean teleport.
+        # Large/None => can start mid-trajectory (mid-grasp), which teleports poorly. Default 50.
+        self.max_offset = cfg_dict.get("max_offset", 50)
 
         objective_fn = hydra.utils.call(
             cfg_dict["objective"],
@@ -199,11 +203,25 @@ class PlanWorkspace:
 
         # optional: assume planning horizon equals to goal horizon
         from planning.mpc import MPCPlanner
+        ### HARNESS EDIT ### decouple goal_H from MPC horizon/cadence (goal_H = goal distance only)
+        # orig (MPC branch): sub_planner.horizon = n_taken_actions = goal_H -> collapses MPC to open-loop
         if isinstance(self.planner, MPCPlanner):
-            self.planner.sub_planner.horizon = cfg_dict["goal_H"]
-            self.planner.n_taken_actions = cfg_dict["goal_H"]
+            pass  # keep configured sub_planner.horizon / n_taken_actions
         else:
             self.planner.horizon = cfg_dict["goal_H"]
+        ### END HARNESS EDIT ###
+
+        ### HARNESS EDIT ### RIGHT-ROBOT FREEZE: test the LEFT robot only.
+        # Hand the GD optimizer each eval's recorded expert action sequence (gt_actions,
+        # already aligned to the per-eval episode+frames sampled in prepare_targets). The
+        # optimizer then overwrites the right-arm dims with the expert's, so the right robot
+        # replays its real trajectory (instead of flopping) while only the left arm is planned.
+        # Gated by cfg `freeze_right` (default True); set freeze_right=false for joint planning.
+        if cfg_dict.get("freeze_right", True) and self.gt_actions is not None:
+            _gd = self.planner.sub_planner if isinstance(self.planner, MPCPlanner) else self.planner
+            _gd.freeze_right_gt = self.gt_actions
+            print("[freeze_right] right robot replays its recorded expert trajectory; planning LEFT arm only")
+        ### END HARNESS EDIT ###
 
         self.dump_targets()
 
@@ -296,21 +314,27 @@ class PlanWorkspace:
             if self.goal_source == "random_action":
                 actions = torch.randn_like(actions)
             wm_actions = rearrange(actions, "b (t f) d -> b t (f d)", f=self.frameskip)
-            exec_actions = self.data_preprocessor.denormalize_actions(actions)
-            # replay actions in env to get gt obses
-            rollout_obses, rollout_states = self.env.rollout(
-                self.eval_seed, init_state, exec_actions.numpy()
-            )
-            self.obs_0 = {
-                key: np.expand_dims(arr[:, 0], axis=1)
-                for key, arr in rollout_obses.items()
-            }
-            self.obs_g = {
-                key: np.expand_dims(arr[:, -1], axis=1)
-                for key, arr in rollout_obses.items()
-            }
+            ### HARNESS EDIT ### teleport to dataset init/goal states (2 renders) instead of replaying all frameskip*goal_H steps
+            # We only keep the first/last frame anyway, and the dataset gives us both
+            # endpoint states, so teleport+render each (mirrors the random_state branch)
+            # rather than simulating the whole segment (~10 min at goal_H=39).
+            #
+            # --- original (replayed every step, rendering them all) ---
+            # exec_actions = self.data_preprocessor.denormalize_actions(actions)
+            # rollout_obses, rollout_states = self.env.rollout(
+            #     self.eval_seed, init_state, exec_actions.numpy()
+            # )
+            # self.obs_0 = {k: np.expand_dims(arr[:, 0], axis=1) for k, arr in rollout_obses.items()}
+            # self.obs_g = {k: np.expand_dims(arr[:, -1], axis=1) for k, arr in rollout_obses.items()}
+            # self.state_g = rollout_states[:, -1]
+            goal_state = np.array([x[-1] for x in states])
+            obs_0_env, _ = self.env.prepare(self.eval_seed, init_state)
+            obs_g_env, _ = self.env.prepare(self.eval_seed, goal_state)
+            self.obs_0 = {k: np.expand_dims(v, axis=1) for k, v in obs_0_env.items()}
+            self.obs_g = {k: np.expand_dims(v, axis=1) for k, v in obs_g_env.items()}
+            self.state_g = goal_state  # (b, d)
+            ### END HARNESS EDIT ###
             self.state_0 = init_state  # (b, d)
-            self.state_g = rollout_states[:, -1]  # (b, d)
             self.gt_actions = wm_actions
 
     def sample_traj_segment_from_dset(self, traj_len):
@@ -336,7 +360,13 @@ class PlanWorkspace:
                 obs, act, state, e_info = self.dset[traj_id]
                 max_offset = obs["visual"].shape[0] - traj_len
             state = state.numpy()
-            offset = random.randint(0, max_offset)
+            offset = random.randint(0, min(max_offset, self.max_offset))  ### HARNESS EDIT ### cap start depth (default 50)
+            ### HARNESS EDIT ### report which val episode + frame range each eval's init/goal came from
+            print(
+                f"  [eval {i}] episode {traj_id}: frames {offset}..{offset + traj_len - 1} "
+                f"(init=frame {offset}, goal=frame {offset + traj_len - 1})"
+            )
+            ### END HARNESS EDIT ###
             obs = {
                 key: arr[offset : offset + traj_len]
                 for key, arr in obs.items()
@@ -385,8 +415,15 @@ class PlanWorkspace:
             obs_g=self.obs_g,
             actions=actions_init,
         )
+        ### HARNESS EDIT ### reuse MPC's cached executed frames for the final video/metrics (no full re-roll)
+        precomputed_env = None
+        if getattr(self.planner, "executed_obses", None) is not None:
+            precomputed_env = (self.planner.executed_obses, self.planner.executed_states)
+        ### END HARNESS EDIT ###
         logs, successes, _, _ = self.evaluator.eval_actions(
-            actions.detach(), action_len, save_video=True, filename="output_final"
+            actions.detach(), action_len, save_video=True, filename="output_final",
+            full_video=True,  ### HARNESS EDIT ### one video spanning the whole trajectory
+            precomputed_env=precomputed_env,  ### HARNESS EDIT ###
         )
         logs = {f"final_eval/{k}": v for k, v in logs.items()}
         self.wandb_run.log(logs)
@@ -405,7 +442,10 @@ class PlanWorkspace:
 
 def load_ckpt(snapshot_path, device):
     with snapshot_path.open("rb") as f:
-        payload = torch.load(f, map_location=device)
+        # weights_only=False: checkpoints store full pickled nn.Module objects
+        # (e.g. ViTPredictor), not plain state-dicts. Safe here because these
+        # are our own locally-trained checkpoints. Do NOT use for untrusted files.
+        payload = torch.load(f, map_location=device, weights_only=False)
     loaded_keys = []
     result = {}
     for k, v in payload.items():
@@ -482,7 +522,10 @@ class DummyWandbRun:
 
 def planning_main(cfg_dict):
     output_dir = cfg_dict["saved_folder"]
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    ### HARNESS EDIT ### single device for WM + sim/renderer (override with device=cuda:7); was hardcoded cuda:0
+    sim_device = cfg_dict.get("device") or "cuda:0"
+    device = torch.device(sim_device if torch.cuda.is_available() else "cpu")
+    ### END HARNESS EDIT ###
     if cfg_dict["wandb_logging"]:
         wandb_run = wandb.init(
             project=f"plan_{cfg_dict['planner']['name']}", config=cfg_dict
@@ -501,6 +544,15 @@ def planning_main(cfg_dict):
 
     with open(os.path.join(model_path, "hydra.yaml"), "r") as f:
         model_cfg = OmegaConf.load(f)
+
+    # Optionally override the dataset data_path baked into the training config.
+    # The training run stores an absolute path (e.g. /newdata2/...) that may not
+    # exist when planning in a container where the repo is mounted elsewhere.
+    data_path_override = cfg_dict.get("data_path")
+    if data_path_override:
+        with open_dict(model_cfg):
+            model_cfg.env.dataset.data_path = data_path_override
+        print(f"Overriding dataset data_path -> {data_path_override}")
 
     seed(cfg_dict["seed"])
     _, dset = hydra.utils.call(
@@ -523,7 +575,15 @@ def planning_main(cfg_dict):
         from env.isaaclab.grid_venv import GridVectorEnv
         kwargs = dict(model_cfg.env.kwargs)
         kwargs.pop("num_envs", None)
-        env = GridVectorEnv(num_envs=cfg_dict["n_evals"], **kwargs)
+        ### HARNESS EDIT ### pin the sim/renderer GPU to the same device as the WM
+        kwargs.pop("device", None)
+        env = GridVectorEnv(num_envs=cfg_dict["n_evals"], device=sim_device, **kwargs)
+        ### END HARNESS EDIT ###
+        ### HARNESS EDIT ### Ctrl+C -> force clean exit (Kit ignores SIGINT and hangs, leaking GPU mem)
+        import signal
+        from env.isaaclab.app_launcher import close_or_exit as _close_or_exit
+        signal.signal(signal.SIGINT, lambda *_a: _close_or_exit(env))
+        ### END HARNESS EDIT ###
     # use dummy vector env for wall and deformable envs
     elif model_cfg.env.name == "wall" or model_cfg.env.name == "deformable_env":
         from env.serial_vector_env import SerialVectorEnv
@@ -556,6 +616,12 @@ def planning_main(cfg_dict):
     )
 
     logs = plan_workspace.perform_planning()
+    ### HARNESS EDIT ### force clean exit for isaaclab; Kit's teardown hangs otherwise and leaks GPU mem.
+    # close_or_exit = env.close() + os._exit(0) with a watchdog that force-exits if close hangs. Does not return.
+    if model_cfg.env.name.startswith("isaaclab_"):
+        from env.isaaclab.app_launcher import close_or_exit
+        close_or_exit(env)
+    ### END HARNESS EDIT ###
     return logs
 
 

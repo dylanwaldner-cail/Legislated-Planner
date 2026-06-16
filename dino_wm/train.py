@@ -535,9 +535,14 @@ class Trainer:
             obs, act, state = data
             plot = i == 0
             self.model.eval()
-            z_out, visual_out, visual_reconstructed, loss, loss_components = self.model(
-                obs, act
-            )
+            # no_grad: validation never backprops, so don't build the autograd
+            # graph. eval() alone does NOT disable grad — without this the forward
+            # (esp. the VQVAE decoder reconstructing 224x224) retains all
+            # activations, and two batches' graphs coexist -> CUDA OOM.
+            with torch.no_grad():
+                z_out, visual_out, visual_reconstructed, loss, loss_components = self.model(
+                    obs, act
+                )
 
             loss = self.accelerator.gather_for_metrics(loss).mean()
 

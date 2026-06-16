@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - env: point_maze
+  - env: isaaclab_grid
   - encoder: dino
   - action_encoder: proprio
   - proprio_encoder: proprio

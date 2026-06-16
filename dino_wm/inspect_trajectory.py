@@ -123,10 +123,9 @@ def main():
                     "demo videos are clean.")
     ap.add_argument("--label_test", action="store_true",
                     help="Diagnostic: render a colored sphere 6cm above each "
-                    "cube at the position reported for that label (red/blue). "
-                    "If the colored sphere floats above the visually "
-                    "wrong-colored cube, the wrapper's cube_red/blue "
-                    "label-to-prim mapping is swapped.")
+                    "cube at the position reported for that label (black/blue). "
+                    "If the colored sphere floats above the wrong cube, the "
+                    "wrapper's cube_black/blue label-to-prim mapping is swapped.")
     args = ap.parse_args()
 
     out = Path(args.output_dir)
@@ -170,6 +169,7 @@ def main():
         expert = ExpertPickPlace(rng, env=env,
                                   chase_random=(args.policy == "noisy_expert"),
                                   fixed_cells=fixed_cells)
+        expert.noise_std = args.noise_std if args.policy == "noisy_expert" else 0.0
         expert.reset()
 
     # Visualization markers for per-arm IK targets and cube positions.
@@ -210,7 +210,9 @@ def main():
         # label-to-prim mapping inside the wrapper is wrong.
         label_markers = {}
         _LABEL_COLORS = {
-            "cube_red": (1.0, 0.0, 0.0),
+            # cube_black renders near-black; use a mid-gray marker so the
+            # diagnostic sphere is actually visible above it.
+            "cube_black": (0.4, 0.4, 0.4),
             "cube_blue": (0.0, 0.3, 1.0),  # slightly less pure blue so it's distinguishable from the blue cube under it
         }
         for cube_name, color in _LABEL_COLORS.items():
@@ -238,24 +240,17 @@ def main():
         step += 1
 
     for _ in range(args.num_steps):
+        # Exploration noise (noisy_expert) is applied inside the expert, scaled
+        # per phase (full on transit/place, a little on the pickup); rotation/
+        # gripper channels stay clean. See expert.noise_std / PHASE_NOISE_SCALE.
         actions = expert(env.get_ee_positions(), env.get_cube_positions())
-        if args.policy == "noisy_expert":
-            # Add gaussian noise to the position deltas (action[:3]).
-            # Rotation deltas (action[3:6]) and gripper (action[6])
-            # stay deterministic — perturbing them risks breaking the
-            # grasp or knocking the wrist into bad orientations.
-            for side in ("left", "right"):
-                a = actions[side]
-                noise = rng.normal(0.0, args.noise_std, size=a[:, :3].shape).astype(np.float32)
-                a[:, :3] = np.clip(a[:, :3] + noise, -1.0, 1.0)
-                actions[side] = a
 
         obs, _, _, _ = env.step(actions)
         _save(step)
 
         # Label-test markers: float a color-matched sphere above each cube
         # at the position the wrapper reports for that cube name. This is
-        # the visual sanity check for cube_red/blue prim-to-label
+        # the visual sanity check for cube_black/blue prim-to-label
         # mapping. Updated every step so the marker tracks moving cubes.
         if label_markers is not None:
             cubes_now = env.get_cube_positions()

@@ -10,7 +10,10 @@ dataset:
   _target_: "datasets.isaaclab_grid_dset.load_isaaclab_grid_slice_train_val"
   n_rollout: null
   normalize_action: ${normalize_action}
-  data_path: ${oc.env:DATASET_DIR}/isaaclab_grid
+  # Absolute path (Hydra changes cwd at startup, so a relative ./data would
+  # resolve under the output dir). ckpt_base_path is the repo root, so this is
+  # <repo>/data/isaaclab_grid. Override with env.dataset.data_path=... if moved.
+  data_path: ${ckpt_base_path}/data/isaaclab_grid
   split_ratio: 0.9
   cooperative: True
   camera: left  # or "right"; one model per robot, two training configs

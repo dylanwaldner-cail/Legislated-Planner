@@ -4,7 +4,7 @@ On-disk schema (scripts/collect_isaaclab_grid_data.py):
   states.pth         (E, T, 62)
   actions_left.pth   (E, T, 7)        actions_right.pth   (E, T, 7)
   proprio_left.pth   (E, T, 18)       proprio_right.pth   (E, T, 18)
-  cell_labels.pth    (E, T, 2) int64  (optional; per-cube: red, blue)
+  cell_labels.pth    (E, T, 2) int64  (optional; per-cube: black, blue)
   seq_lengths.pth    (E,) int64
   obses/left/episode_NNN.pth   (T, H, W, 3) uint8
   obses/right/episode_NNN.pth  (T, H, W, 3) uint8

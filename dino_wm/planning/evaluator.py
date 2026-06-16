@@ -137,7 +137,9 @@ class PlanEvaluator:  # evaluator for planning
         return result
 
     def eval_actions(
-        self, actions, action_len=None, filename="output", save_video=False
+        self, actions, action_len=None, filename="output", save_video=False,
+        full_video=False,  ### HARNESS EDIT ### True = show whole rollout, skip post-success masking (visuals only)
+        precomputed_env=None,  ### HARNESS EDIT ### (e_obses, e_states) from MPC's incremental rolls -> skip the full env re-roll
     ):
         """
         actions: detached torch tensors on cuda
@@ -162,11 +164,16 @@ class PlanEvaluator:  # evaluator for planning
         i_final_z_obs = self._get_trajdict_last(i_z_obses, action_len + 1)
 
         # rollout in env
-        exec_actions = rearrange(
-            actions.cpu(), "b t (f d) -> b (t f) d", f=self.frameskip
-        )
-        exec_actions = self.preprocessor.denormalize_actions(exec_actions).numpy()
-        e_obses, e_states = self.env.rollout(self.seed, self.state_0, exec_actions)
+        ### HARNESS EDIT ### reuse MPC's already-rendered frames if provided (avoids re-rolling the whole trajectory)
+        if precomputed_env is not None:
+            e_obses, e_states = precomputed_env
+        else:
+            exec_actions = rearrange(
+                actions.cpu(), "b t (f d) -> b (t f) d", f=self.frameskip
+            )
+            exec_actions = self.preprocessor.denormalize_actions(exec_actions).numpy()
+            e_obses, e_states = self.env.rollout(self.seed, self.state_0, exec_actions)
+        ### END HARNESS EDIT ###
         e_visuals = e_obses["visual"]
         e_final_obs = self._get_trajdict_last(e_obses, action_len * self.frameskip + 1)
         e_final_state = self._get_traj_last(e_states, action_len * self.frameskip + 1)[
@@ -183,11 +190,13 @@ class PlanEvaluator:  # evaluator for planning
         # plot trajs
         if self.wm.decoder is not None:
             i_visuals = self.wm.decode_obs(i_z_obses)[0]["visual"]
-            i_visuals = self._mask_traj(
-                i_visuals, action_len + 1
-            )  # we have action_len + 1 states
+            ### HARNESS EDIT ### full_video shows whole rollout; else mask after success
+            if not full_video:
+                i_visuals = self._mask_traj(i_visuals, action_len + 1)
             e_visuals = self.preprocessor.transform_obs_visual(e_visuals)
-            e_visuals = self._mask_traj(e_visuals, action_len * self.frameskip + 1)
+            if not full_video:
+                e_visuals = self._mask_traj(e_visuals, action_len * self.frameskip + 1)
+            ### END HARNESS EDIT ###
             self._plot_rollout_compare(
                 e_visuals=e_visuals,
                 i_visuals=i_visuals,
@@ -398,14 +407,6 @@ class PlanEvaluator:  # evaluator for planning
                 for frame in frames:
                     frame = frame * 2 - 1 if frame.min() >= 0 else frame
                     uint8_frame = (((np.clip(frame, -1, 1) + 1) / 2) * 255).astype(np.uint8)
-                    # === HARNESS EDIT: draw illegal-region outline + cell-boundary grid ===
-                    # Composite layout (after the cat ops above) is a grid of
-                    # 224x224 panels: [env, goal] top row, [imagined, goal] bottom row.
-                    # Both helpers iterate by panel_h/panel_w so we annotate every
-                    # panel uniformly. Grid first so the illegal outline draws on top.
-                    uint8_frame = self._draw_grid_uint8(uint8_frame, panel_h=224, panel_w=224)
-                    self._draw_illegal_outline_uint8(uint8_frame, panel_h=224, panel_w=224)
-                    # === END HARNESS EDIT ===
                     video_writer.append_data(uint8_frame)
                 video_writer.close()
 

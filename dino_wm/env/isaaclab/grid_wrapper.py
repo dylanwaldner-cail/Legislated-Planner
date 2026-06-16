@@ -6,7 +6,7 @@ Wrapper concatenates per-agent actions into IsaacLab's 14-D action.
 State layout (62-D); cube positions stored in env-local frame (root_pos_w minus
 env_origins) so cell-label math is correct for any num_envs:
     [left_jpos(9), left_jvel(9), right_jpos(9), right_jvel(9),
-     cube_red(13), cube_blue(13)]
+     cube_black(13), cube_blue(13)]
 each cube block = [pos(3) env-local, quat(4 wxyz), linvel(3), angvel(3)].
 
 cooperative=True  -> obs["proprio"] = {"left": both(36), "right": both(36)}
@@ -28,7 +28,7 @@ from .grid_metadata import GRID_CENTER_XY
 
 _ARM_JOINT_DIM = 9
 _CUBE_DIM = 13
-_CUBE_KEYS = ("cube_red", "cube_blue")
+_CUBE_KEYS = ("cube_black", "cube_blue")
 # Cube placement zones (env-local x offset from grid center): left / right —
 # one per cube now that there are two. Each reset randomly permutes the 2 cubes
 # across these zones so which colour the left/right robots grab rotates
@@ -44,12 +44,14 @@ _CAMERA_KEYS = ("camera_left", "camera_right")
 _VIS_KEYS = ("left", "right")
 # Per-robot cameras looking at the grid center. Left cam is front-left;
 # right cam is mirrored across the robot-to-robot line (the x-axis) to the
-# back-right (y: -0.75 -> +0.75), so each camera frames its own robot's side
-# from opposite y-sides. Same xy-radius (0.901m), height (z=1.0), and
-# down-angle for both — only camera_right's y is flipped.
+# back-right, so each camera frames its own robot's side from opposite y-sides.
+# Eyes moved ~20% closer (was ±0.5/±0.75/1.0, now ±0.4/±0.6/0.8): uniform
+# scaling toward the target keeps the same viewing direction/down-angle but
+# enlarges the grid+cubes in the image. Paired with the wider 19mm lens
+# (env cfg) so both arms + full grid stay in frame at the closer distance.
 _CAM_VIEWS = {
-    "camera_left":  ((-0.5, -0.75, 1.0), (0.0, 0.0, 0.0)),
-    "camera_right": (( 0.5,  0.75, 1.0), (0.0, 0.0, 0.0)),
+    "camera_left":  ((-0.4, -0.6, 0.8), (0.0, 0.0, 0.0)),
+    "camera_right": (( 0.4,  0.6, 0.8), (0.0, 0.0, 0.0)),
 }
 
 PROPRIO_DIM_OWN = 2 * _ARM_JOINT_DIM  # 18
@@ -79,7 +81,7 @@ class GridWrapper:
         # (noisier, faster). Both are RTX modes; IsaacLab Camera needs RTX.
         # spp: samples-per-pixel for PathTracing — 128 for collection, 256+
         # for demo videos. Ignored when render_mode is RaytracedLighting.
-        get_app(headless=headless, enable_cameras=True, render_mode=render_mode, spp=spp)
+        get_app(headless=headless, enable_cameras=True, render_mode=render_mode, spp=spp, device=device)  ### HARNESS EDIT ### renderer/physics GPU follows the wrapper's device
 
         import gymnasium as gym
         import isaaclab_tasks  # noqa: F401
@@ -169,6 +171,20 @@ class GridWrapper:
             self._scene[k].write_root_state_to_sim(block)
             i += _CUBE_DIM
 
+    ### HARNESS EDIT ### commit a just-written state to the sim + refresh cameras
+    def _materialize_state(self):
+        """write_*_to_sim / _randomize_cube_zones update target buffers but do NOT
+        re-render or refresh the cached .data that _scene_outputs reads — so the
+        camera returns the stale pre-write (reset-randomized) frame and the written
+        state may not even reach PhysX. Flush to PhysX, step+render once, and refresh
+        sensor buffers so obs actually reflect the written state. (One physics_dt
+        advance is negligible for a settled scene; rigid cubes don't drift.)"""
+        self._scene.write_data_to_sim()
+        sim = self._env.unwrapped.sim
+        sim.step(render=True)
+        self._scene.update(sim.get_physics_dt())
+    ### END HARNESS EDIT ###
+
     def _action_tensor(self, action_dict):
         left = np.atleast_2d(np.asarray(action_dict["left"], dtype=np.float32))
         right = np.atleast_2d(np.asarray(action_dict["right"], dtype=np.float32))
@@ -200,7 +216,7 @@ class GridWrapper:
         return out
 
     def get_cube_positions(self) -> dict:
-        """Returns {cube_red: (N,3), cube_blue: (N,3)} env-local cube xyz positions."""
+        """Returns {cube_black: (N,3), cube_blue: (N,3)} env-local cube xyz positions."""
         origins = self._scene.env_origins
         return {
             k: (self._scene[k].data.root_pos_w - origins).detach().cpu().numpy()
@@ -296,6 +312,7 @@ class GridWrapper:
     def reset(self):
         self._env.reset()
         self._randomize_cube_zones()
+        self._materialize_state()  ### HARNESS EDIT ### render the randomized cubes so obs isn't the stale pre-randomize frame
         return self._scene_outputs()
 
     def step(self, action_dict):
@@ -308,6 +325,7 @@ class GridWrapper:
     def set_init_state(self, init_state):
         self._env.reset()
         self._write_state(np.asarray(init_state))
+        self._materialize_state()  ### HARNESS EDIT ### render the written state so obs isn't the stale reset frame
         return self._scene_outputs()[0]
 
     def prepare(self, seed, init_state):
