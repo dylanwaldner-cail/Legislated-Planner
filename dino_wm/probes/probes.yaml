@@ -1,0 +1,22 @@
+# Probe registry manifest — each probe reads one aspect of the scene off a WM latent.
+# probes/registry.py loads the enabled ones. `kind` and `source` are read from each .pth
+# (source = which latent the probe was trained on: 'encoded' = phi(real frame),
+# 'predicted' = WM-rolled latent). The registry groups by source so the caller feeds the
+# matching latent to each group. To add a probe: train it, drop the .pth here, flip enabled.
+
+probes:
+  - name: cube_position          # continuous cube (x,y) in meters   [regression, encoded]
+    path: probes/probe_cube_1500.pth
+    enabled: true
+
+  - name: cube_position_pred     # cube (x,y) read off predicted latents   [regression, predicted]
+    path: probes/probe_cube_pred.pth
+    enabled: false               # the 1-5 mix was a wash at h<=2 (chaining diag); enable when retrained per-horizon
+
+  - name: cube_cells             # per-cell occupancy, 9-d multi-label   [multilabel, encoded]
+    path: probes/probe_cube_cells.pth
+    enabled: false               # train first: python probes/probe_cube_cells.py --save_path probes/probe_cube_cells.pth
+
+  # - name: cube_cells_pred      # per-cell occupancy on predicted latents   [multilabel, predicted]
+  #   path: probes/probe_cube_cells_pred.pth   # train: probe_cube_cells.py --source predicted --pred_horizons 1,2,3,4,5
+  #   enabled: false

@@ -1,0 +1,62 @@
+# Legal database — laws for the robot domain, in Defeasible Deontic Logic (DDL).
+#
+# Modular, human-authored norms. legislation/reasoner.py renders this to Governatori DDL
+# .dl text, compiles it with Defeasible-Deontic-Logic/Python/parser.py, and runs clingo to
+# derive what is obligatory / permitted / violated (and any constitutive facts) from a state.
+#
+# The law language is FULL DDL — it is NOT limited to geometry/obstacle prohibitions. It can
+# express conditional, conflicting (priority-resolved), contrary-to-duty, constitutive
+# ("counts-as"), and permissive norms over ARBITRARY predicates. Literal syntax:
+#   x        atom (any predicate, e.g. near(fragile), pushing, in_cell(4))
+#   ~x       negation
+#   [O]x     obligation of x        [O]~x  obligation of ~x  (a prohibition of x)
+#   [P]x     permission of x        ~[O]x  absence of an obligation (usable in antecedents)
+# A law -> `<label>: <antecedent...> => <consequent...>`:
+#   - leading [O]/[P] in the consequent => prescriptive (obligation) / permissive rule;
+#     no deontic operator => a constitutive rule that derives a (defeasible) fact.
+#   - multiple [O] consequents => a compensation (contrary-to-duty) chain.
+# Conflicts are resolved by `superiority` (defeasibility), NOT by code.
+
+# Vocabulary the reasoner may ground (clingo ranges like in_cell(0..8) are allowed).
+atoms:
+  - cube
+  - in_cell(0..8)
+
+laws:
+  # PLACEHOLDER (trivial; just anchors the schema + lets the pipeline run): cube ought not
+  # occupy the centre cell. NOTE: a bare prohibition like this is only DDL-as-obstacle — the
+  # point of the framework is the richer forms illustrated below.
+  - label: no_centre_cell
+    antecedent: [cube]
+    consequent: ["[O]~in_cell(4)"]
+
+  # ---- Illustrative forms the schema ALREADY supports (commented; not active norms) ----
+  #
+  # Conditional + non-geometric predicate:
+  #   - label: gentle_near_fragile
+  #     antecedent: [near(fragile)]
+  #     consequent: ["[O]push_gently"]
+  #
+  # Constitutive "counts-as" (derives a fact), then a prohibition over the derived concept:
+  #   - label: counts_as_trespass
+  #     antecedent: [in_cell(4)]
+  #     consequent: [trespass]            # no [O]/[P] -> constitutive: in_cell(4) counts as trespass
+  #   - label: no_trespass
+  #     antecedent: []
+  #     consequent: ["[O]~trespass"]
+  #
+  # Contrary-to-duty / compensation (if the primary obligation is violated, a secondary one
+  # kicks in): obligation to not displace; failing that, obligation to restore:
+  #   - label: restore_displaced
+  #     antecedent: [displaced(a)]
+  #     consequent: ["[O]~displaced(a)", "[O]in_place(a)"]
+  #
+  # Conflicting rules resolved by priority (defeasibility): a general permission overridden
+  # by a specific prohibition — see `superiority` below.
+  #   - label: may_enter
+  #     antecedent: []
+  #     consequent: ["[P]in_cell(4)"]
+
+# Superiority relation for defeasibility — [stronger_label, weaker_label]. e.g. make the
+# specific prohibition defeat the general permission:  [["no_centre_cell", "may_enter"]]
+superiority: []

@@ -34,7 +34,7 @@ _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from probe_cube_position import MLP, _spatial_pool_grid  # same probe head + pooling
+from probes.probe_cube_position import MLP, _spatial_pool_grid  # same probe head + pooling
 
 CUBE_OFF = 18  # cube xy in the 31-D state
 
@@ -85,7 +85,7 @@ def main():
     ap.add_argument("--model_dir", default="outputs/2026-06-25/16-46-57")
     ap.add_argument("--epoch", default="20")
     ap.add_argument("--data_dir", default="data/isaaclab_stroke_1500")
-    ap.add_argument("--probe", default="probe_cube_1500.pth")
+    ap.add_argument("--probe", default="probes/probe_cube_1500.pth")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--n_windows", type=int, default=256)
     ap.add_argument("--batch", type=int, default=32)

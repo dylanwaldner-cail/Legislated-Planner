@@ -59,6 +59,6 @@ objective:
   mode: last
   probe_lambda: 1.0 # legislation P(illegal) penalty (separate probe; inert in GD, used in cem.py)
   use_probe: true # probe gives a SHARP cube-position objective (latent MSE alone barely weights the few cube patches)
-  pos_probe_path: probe_cube_1500.pth # trained on data/isaaclab_stroke_1500 (interior cell-acc 0.999, L2 ~0.015m)
+  pos_probe_path: probes/probe_cube_1500.pth # trained on data/isaaclab_stroke_1500 (interior cell-acc 0.999, L2 ~0.015m)
   pos_probe_weight: 50.0 # PRIMARY. squared-L2 in m^2 (~0.03 for a 1-cell error); large so cube term dominates latent MSE (O(0.1-1))
   visual_weight: 0.1 # weak manifold regularizer only (limits probe-gaming); demoted so the cube-position probe dominates
