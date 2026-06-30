@@ -110,6 +110,10 @@ def main():
     ap.add_argument("--batch_size", type=int, default=256)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--shuffle_labels", action="store_true",
+                    help="CONTROL: scramble the color labels across episodes (break the "
+                    "image<->color link). Real signal -> accuracy collapses to ~chance; "
+                    "if it stays high there's a leak/bug.")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -125,6 +129,17 @@ def main():
     print(f"[data] class counts (frames): "
           + ", ".join(f"{names[c]}={int((y == c).sum())}" for c in range(n_cls)))
 
+    if args.shuffle_labels:
+        # Reassign each episode a label via a permutation of the per-episode labels
+        # (keeps class balance, destroys the image<->color correspondence).
+        uniq = np.unique(ep)
+        orig = np.array([y[ep == e][0] for e in uniq])
+        shuffled = np.random.RandomState(args.seed + 1).permutation(orig)
+        remap = {int(e): int(shuffled[i]) for i, e in enumerate(uniq)}
+        y = np.array([remap[int(e)] for e in ep], dtype=np.int64)
+        print("[CONTROL] labels shuffled across episodes — expect ~chance "
+              f"({1.0 / n_cls:.2f}); anything high means a leak/bug.")
+
     # --- split BY EPISODE (no frame leakage) ---
     ep_ids = np.unique(ep)
     rng = np.random.RandomState(args.seed)
@@ -138,31 +153,44 @@ def main():
 
     # --- standardize on train stats ---
     Xt = torch.from_numpy(X)
-    mu = Xt[train_mask].mean(0, keepdim=True)
-    sd = Xt[train_mask].std(0, keepdim=True) + 1e-6
-    Xn = ((Xt - mu) / sd).to(device)
     yt = torch.from_numpy(y).to(device)
     tr = torch.from_numpy(np.where(train_mask)[0])
     te = torch.from_numpy(np.where(test_mask)[0])
+    # Standardize on TRAIN frames only (integer-indexed, not np-bool) so no test
+    # statistics leak into the normalization.
+    mu = Xt[tr].mean(0, keepdim=True)
+    sd = Xt[tr].std(0, keepdim=True) + 1e-6
+    Xn = ((Xt - mu) / sd).to(device)
 
     probe = MLP(X.shape[1], n_cls).to(device)
     opt = torch.optim.Adam(probe.parameters(), lr=args.lr, weight_decay=1e-4)
     lossf = nn.CrossEntropyLoss()
 
+    # pred/ycpu/te_ep are all in the same ascending test-frame order (np.where and
+    # bool-mask indexing both ascend), so frame acc and the episode grouping align.
     def evaluate():
         probe.eval()
         with torch.no_grad():
             pred = probe(Xn[te]).argmax(1)
-        acc = (pred == yt[te]).float().mean().item()
-        # episode-level majority vote
-        te_ep = ep[test_mask]
         pcpu, ycpu = pred.cpu().numpy(), yt[te].cpu().numpy()
+        acc = float((pcpu == ycpu).mean())
+        # Balanced accuracy = mean per-class recall. Immune to a probe inflating
+        # plain accuracy by favoring the majority class on a skewed test set.
+        recalls = [float((pcpu[ycpu == c] == c).mean()) for c in range(n_cls) if (ycpu == c).any()]
+        bal = float(np.mean(recalls)) if recalls else 0.0
+        # episode-level majority vote (the runtime-relevant metric)
+        te_ep = ep[test_mask]
         ep_correct = []
         for e in np.unique(te_ep):
             m = te_ep == e
             maj = np.bincount(pcpu[m], minlength=n_cls).argmax()
             ep_correct.append(maj == ycpu[m][0])
-        return acc, float(np.mean(ep_correct)), pcpu, ycpu
+        return acc, bal, float(np.mean(ep_correct)), pcpu, ycpu
+
+    te_counts = np.bincount(y[test_mask], minlength=n_cls)
+    print("[split] test-frame class counts: "
+          + ", ".join(f"{names[c]}={int(te_counts[c])}" for c in range(n_cls))
+          + "  (skew here is why we also report balanced acc)")
 
     best = 0.0
     for epoch in range(1, args.epochs + 1):
@@ -175,13 +203,16 @@ def main():
             loss.backward()
             opt.step()
         if epoch % 10 == 0 or epoch == args.epochs:
-            acc, ep_acc, _, _ = evaluate()
+            acc, bal, ep_acc, _, _ = evaluate()
             best = max(best, acc)
-            print(f"[probe] epoch {epoch:3d}  test frame-acc {acc:.3f}  episode-acc {ep_acc:.3f}")
+            print(f"[probe] epoch {epoch:3d}  frame-acc {acc:.3f}  bal-acc {bal:.3f}  episode-acc {ep_acc:.3f}")
 
-    acc, ep_acc, pcpu, ycpu = evaluate()
-    print(f"\n[RESULT] best frame-acc {max(best, acc):.3f} | final frame-acc {acc:.3f} | "
-          f"episode-acc {ep_acc:.3f}  (chance = {1.0 / n_cls:.2f})")
+    acc, bal, ep_acc, pcpu, ycpu = evaluate()
+    print(f"\n[RESULT] frame-acc {acc:.3f} | balanced-acc {bal:.3f} | episode-acc {ep_acc:.3f}  "
+          f"(chance {1.0 / n_cls:.2f})")
+    print(f"         balanced-acc is the inflation-proof one; episode-acc is the runtime metric.")
+    print(f"         best test frame-acc during training = {max(best, acc):.3f}  "
+          f"(optimistic — peeks at test to pick the epoch)")
     cm = np.zeros((n_cls, n_cls), dtype=int)
     for t, pdt in zip(ycpu, pcpu):
         cm[t, pdt] += 1

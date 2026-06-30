@@ -163,6 +163,10 @@ class PlanWorkspace:
             proprio_mean=self.dset.proprio_mean,
             proprio_std=self.dset.proprio_std,
             transform=self.dset.transform,
+            # Optional raw action range -> planners clamp to the training range
+            # (None for datasets without it, keeping the legacy [-1,1] clamp).
+            action_min=getattr(self.dset, "action_min", None),
+            action_max=getattr(self.dset, "action_max", None),
         )
 
         if self.cfg_dict["goal_source"] == "file":
@@ -182,6 +186,9 @@ class PlanWorkspace:
             preprocessor=self.data_preprocessor,
             n_plot_samples=self.cfg_dict["n_plot_samples"],
         )
+        self.evaluator.video = self.cfg_dict.get("video", False)  ### HARNESS EDIT ### gate per-step (smooth) video capture
+        self.evaluator.gt_actions = self.gt_actions  ### HARNESS EDIT ### GT (dataset) actions for cem_debug scoring
+        self.evaluator.cem_debug = self.cfg_dict.get("cem_debug", False)  ### per-solve CEM score-spread + GT-vs-winner debug
 
         if self.wandb_run is None or isinstance(
             self.wandb_run, wandb.sdk.lib.disabled.RunDisabled
@@ -211,25 +218,17 @@ class PlanWorkspace:
             self.planner.horizon = cfg_dict["goal_H"]
         ### END HARNESS EDIT ###
 
-        ### HARNESS EDIT ### RIGHT-ROBOT FREEZE: test the LEFT robot only.
-        # Hand the GD optimizer each eval's recorded expert action sequence (gt_actions,
-        # already aligned to the per-eval episode+frames sampled in prepare_targets). The
-        # optimizer then overwrites the right-arm dims with the expert's, so the right robot
-        # replays its real trajectory (instead of flopping) while only the left arm is planned.
-        # Gated by cfg `freeze_right` (default True); set freeze_right=false for joint planning.
-        if cfg_dict.get("freeze_right", True) and self.gt_actions is not None:
-            _gd = self.planner.sub_planner if isinstance(self.planner, MPCPlanner) else self.planner
-            _gd.freeze_right_gt = self.gt_actions
-            print("[freeze_right] right robot replays its recorded expert trajectory; planning LEFT arm only")
-        ### END HARNESS EDIT ###
+        # (Single-robot: no second arm to freeze — the planner optimizes all 7
+        # action dims. The two-arm freeze-right glue was removed.)
 
         self.dump_targets()
 
+    @staticmethod
+    def _add_time_dim(obs):
+        """Insert a singleton time axis: each obs array (b, ...) -> (b, 1, ...)."""
+        return {k: np.expand_dims(v, axis=1) for k, v in obs.items()}
+
     def prepare_targets(self):
-        states = []
-        actions = []
-        observations = []
-        
         if self.goal_source == "random_state":
             # update env config from val trajs
             observations, states, actions, env_info = (
@@ -247,13 +246,8 @@ class PlanWorkspace:
             obs_0, state_0 = self.env.prepare(self.eval_seed, rand_init_state)
             obs_g, state_g = self.env.prepare(self.eval_seed, rand_goal_state)
 
-            # add dim for t
-            for k in obs_0.keys():
-                obs_0[k] = np.expand_dims(obs_0[k], axis=1)
-                obs_g[k] = np.expand_dims(obs_g[k], axis=1)
-
-            self.obs_0 = obs_0
-            self.obs_g = obs_g
+            self.obs_0 = self._add_time_dim(obs_0)
+            self.obs_g = self._add_time_dim(obs_g)
             self.state_0 = rand_init_state  # (b, d)
             self.state_g = rand_goal_state
             self.gt_actions = None
@@ -290,12 +284,8 @@ class PlanWorkspace:
             obs_0, state_0 = self.env.prepare(self.eval_seed, fixed_init)
             obs_g, state_g = self.env.prepare(self.eval_seed, fixed_goal)
 
-            for k in obs_0.keys():
-                obs_0[k] = np.expand_dims(obs_0[k], axis=1)
-                obs_g[k] = np.expand_dims(obs_g[k], axis=1)
-
-            self.obs_0 = obs_0
-            self.obs_g = obs_g
+            self.obs_0 = self._add_time_dim(obs_0)
+            self.obs_g = self._add_time_dim(obs_g)
             self.state_0 = fixed_init
             self.state_g = fixed_goal
             self.gt_actions = None
@@ -330,8 +320,8 @@ class PlanWorkspace:
             goal_state = np.array([x[-1] for x in states])
             obs_0_env, _ = self.env.prepare(self.eval_seed, init_state)
             obs_g_env, _ = self.env.prepare(self.eval_seed, goal_state)
-            self.obs_0 = {k: np.expand_dims(v, axis=1) for k, v in obs_0_env.items()}
-            self.obs_g = {k: np.expand_dims(v, axis=1) for k, v in obs_g_env.items()}
+            self.obs_0 = self._add_time_dim(obs_0_env)
+            self.obs_g = self._add_time_dim(obs_g_env)
             self.state_g = goal_state  # (b, d)
             ### END HARNESS EDIT ###
             self.state_0 = init_state  # (b, d)
@@ -353,30 +343,56 @@ class PlanWorkspace:
             raise ValueError("No trajectory in the dataset is long enough.")
 
         # sample init_states from dset
-        for i in range(self.n_evals):
+        ### HARNESS EDIT ### require the cube to CHANGE CELL between init and goal. Otherwise
+        # the goal is a no-op: the cube-position objective has ~zero gradient (nothing to push
+        # toward) and GD can't shape the random action init into a push -> jittery, goal-less
+        # rollouts. Retry (traj, offset) until the cube changes cell; keep the max-displacement
+        # candidate as a fallback if none is found within the cap. Toggle with
+        # planning cfg goal_require_cube_move=false.
+        from env.isaaclab.grid_metadata import cell_labels_from_states_single
+        require_move = self.cfg_dict.get("goal_require_cube_move", True)
+        MAX_TRIES = 300
+
+        def draw_candidate():
+            """Sample one (trajectory, offset) segment of length traj_len and summarize it."""
             max_offset = -1
-            while max_offset < 0:  # filter out traj that are not long enough
+            while max_offset < 0:  # redraw until we hit a trajectory long enough
                 traj_id = random.randint(0, len(self.dset) - 1)
                 obs, act, state, e_info = self.dset[traj_id]
                 max_offset = obs["visual"].shape[0] - traj_len
-            state = state.numpy()
-            offset = random.randint(0, min(max_offset, self.max_offset))  ### HARNESS EDIT ### cap start depth (default 50)
-            ### HARNESS EDIT ### report which val episode + frame range each eval's init/goal came from
-            print(
-                f"  [eval {i}] episode {traj_id}: frames {offset}..{offset + traj_len - 1} "
-                f"(init=frame {offset}, goal=frame {offset + traj_len - 1})"
-            )
-            ### END HARNESS EDIT ###
-            obs = {
-                key: arr[offset : offset + traj_len]
-                for key, arr in obs.items()
+            state_np = state.numpy()
+            offset = random.randint(0, min(max_offset, self.max_offset))  # cap start depth (default 50)
+            s0, sg = state_np[offset], state_np[offset + traj_len - 1]
+            c0 = int(cell_labels_from_states_single(s0))
+            cg = int(cell_labels_from_states_single(sg))
+            return {
+                "traj_id": traj_id, "offset": offset, "obs": obs, "act": act,
+                "state": state_np, "e_info": e_info, "c0": c0, "cg": cg,
+                "cube_l2": float(np.linalg.norm(sg[18:20] - s0[18:20])),
             }
-            state = state[offset : offset + traj_len]
-            act = act[offset : offset + self.frameskip * self.goal_H]
-            actions.append(act)
-            states.append(state)
-            observations.append(obs)
-            env_info.append(e_info)
+
+        for i in range(self.n_evals):
+            best = None  # highest-cube_l2 candidate seen, used as the fallback
+            for _try in range(MAX_TRIES):
+                seg = draw_candidate()
+                if best is None or seg["cube_l2"] > best["cube_l2"]:
+                    best = seg
+                cube_changed_cell = seg["c0"] != seg["cg"] and seg["c0"] != -1 and seg["cg"] != -1
+                if not require_move or cube_changed_cell:
+                    break  # accept this segment
+            else:
+                # no cell-changing segment within MAX_TRIES -> fall back to max displacement
+                seg = best
+                print(f"  [eval {i}] WARN: no cell-changing segment in {MAX_TRIES} tries; "
+                      f"using max-displacement fallback")
+
+            o = seg["offset"]
+            print(f"  [eval {i}] episode {seg['traj_id']}: frames {o}..{o + traj_len - 1}  "
+                  f"cube cell {seg['c0']}->{seg['cg']}  cube_l2={seg['cube_l2']:.3f} m")
+            observations.append({key: arr[o:o + traj_len] for key, arr in seg["obs"].items()})
+            states.append(seg["state"][o:o + traj_len])
+            actions.append(seg["act"][o:o + self.frameskip * self.goal_H])
+            env_info.append(seg["e_info"])
         return observations, states, actions, env_info
 
     def prepare_targets_from_file(self, file_path):
@@ -535,7 +551,15 @@ def planning_main(cfg_dict):
         wandb_run = None
 
     ckpt_base_path = cfg_dict["ckpt_base_path"]
-    model_path = os.path.join(get_original_cwd(), f"checkpoints/outputs/{cfg_dict['model_name']}/")
+    ### HARNESS EDIT ### resolve the run dir robustly: training now writes to
+    # outputs/<model_name>/ (hydra.yaml + checkpoints/ directly under it). Try that
+    # first; fall back to the legacy checkpoints/outputs/<model_name> symlink layout.
+    _cwd = get_original_cwd()
+    model_path = os.path.join(_cwd, "outputs", cfg_dict["model_name"])
+    if not os.path.exists(os.path.join(model_path, "hydra.yaml")):
+        model_path = os.path.join(_cwd, "checkpoints", "outputs", cfg_dict["model_name"])
+    model_path = model_path + "/"
+    ### END HARNESS EDIT ###
 
     print("cwd:", os.getcwd())
     print("model_path:", model_path)

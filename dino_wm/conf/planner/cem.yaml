@@ -5,5 +5,6 @@ num_samples: 300
 var_scale: 1
 opt_steps: 30
 eval_every: 1
+env_eval: false  # HARNESS EDIT: off = planning never touches the sim (WM-only); true re-enables in-opt diagnostic rollouts (1 env.rollout per opt step)
 
 name: cem

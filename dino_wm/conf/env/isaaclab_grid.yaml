@@ -1,22 +1,19 @@
 name: isaaclab_grid
 args: []
 kwargs:
-  task_id: Isaac-DinoWMGrid-v0
+  task_id: Isaac-DinoWMGrid-Single-v0
   num_envs: 1
   device: "cuda:0"
-  cooperative: True
 
 dataset:
-  _target_: "datasets.isaaclab_grid_dset.load_isaaclab_grid_slice_train_val"
+  _target_: "datasets.isaaclab_grid_dset.load_isaaclab_single_slice_train_val"
   n_rollout: null
   normalize_action: ${normalize_action}
   # Absolute path (Hydra changes cwd at startup, so a relative ./data would
-  # resolve under the output dir). ckpt_base_path is the repo root, so this is
-  # <repo>/data/isaaclab_grid. Override with env.dataset.data_path=... if moved.
-  data_path: ${ckpt_base_path}/data/isaaclab_grid
+  # resolve under the output dir). ckpt_base_path is the repo root.
+  # Planar-stroke dataset (actions (E,T,4)); collected by collect_isaaclab_grid_data.py.
+  data_path: ${ckpt_base_path}/data/isaaclab_stroke_1500
   split_ratio: 0.9
-  cooperative: True
-  camera: left  # or "right"; one model per robot, two training configs
   transform:
     _target_: "datasets.img_transforms.default_transform"
     img_size: ${img_size}

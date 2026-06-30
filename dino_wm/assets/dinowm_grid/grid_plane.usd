@@ -39,7 +39,7 @@ def Xform "GridPlane"
 
     def Mesh "Mesh"
     {
-        point3f[] points = [(-0.3375, -0.3375, 0), (0.3375, -0.3375, 0), (0.3375, 0.3375, 0), (-0.3375, 0.3375, 0)]
+        point3f[] points = [(-0.2, -0.2, 0), (0.2, -0.2, 0), (0.2, 0.2, 0), (-0.2, 0.2, 0)]
         int[] faceVertexCounts = [4]
         int[] faceVertexIndices = [0, 1, 2, 3]
         texCoord2f[] primvars:st = [(0, 1), (1, 1), (1, 0), (0, 0)] (interpolation = "vertex")

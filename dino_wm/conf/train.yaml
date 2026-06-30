@@ -8,7 +8,11 @@ defaults:
   - predictor: vit
 
 # base path to save model outputs. Checkpoints will be saved to ${ckpt_base_path}/outputs.
-ckpt_base_path: /newdata2/dylantw/Legislative-Harness/dino_wm/ # put absolute path here
+# Use the CONTAINER's bind-mounted repo path (/workspace/dino_wm), NOT the host path
+# (/newdata2/...): training runs in the container, where /newdata2 is the ephemeral
+# overlay (host-invisible, lost on recreate) and /workspace/dino_wm is the bind mount
+# (== host /newdata2/.../dino_wm). Override if you ever train outside the container.
+ckpt_base_path: /workspace/dino_wm/
 
 hydra:
   run:
@@ -19,18 +23,21 @@ hydra:
 
 training:
   seed: 0
-  epochs: 100
-  batch_size: 64 # should >= nodes * tasks_per_node
+  epochs: 50  # val bottomed ~epoch 22-35 then overfit on the 500-ep run; 50 is plenty (checkpoints every 5)
+  batch_size: 128 # HARNESS EDIT (speedup): bumped 64->128 — decoder VRAM is freed (has_decoder False) and bf16 halves activation memory. Lower to 64 if OOM.
   save_every_x_epoch: 5
   reconstruct_every_x_batch: 500
   num_reconstruct_samples: 6
   encoder_lr: 1e-6
   decoder_lr: 3e-4
-  predictor_lr: 5e-4
-  action_encoder_lr: 5e-4
+  predictor_lr: 1e-3 # HARNESS EDIT: linear scaling from 5e-4 for the 2x batch (64->128). Drop to ~7e-4 if bf16+high-LR oscillates in the first ~5 epochs.
+  action_encoder_lr: 1e-3 # HARNESS EDIT: scaled with predictor_lr (same 2x-batch reason).
 
 img_size: 224 # should be a multiple of 224
-frameskip: 5
+# frameskip=1 for the planar-stroke action: one stroke == one model frame (no
+# multi-step action concat). The generic slicer/rollout einops "(n f) d -> n (f d)"
+# all collapse to identity at f=1. The isaaclab stroke dataset loader asserts this.
+frameskip: 1
 concat_dim: 1
 
 normalize_action: True
@@ -46,7 +53,10 @@ num_proprio_repeat: 1
 num_hist: 3
 num_pred: 1 # only supports 1
 has_predictor: True # set this to False for only training a decoder
-has_decoder: True # set this to False for only training a predictor
+# HARNESS EDIT (speedup): decoder is detached from the predictor (viz-only, unused in
+# latent-space planning) and runs 2 heavy VQVAE decodes/step. Off = train predictor only.
+# Re-enable + train a decoder separately when we want imagination viz back. See memory.
+has_decoder: False # set this to False for only training a predictor
 
 model:
   _target_: models.visual_world_model.VWorldModel
@@ -55,7 +65,7 @@ model:
   num_pred: ${num_pred}
   train_encoder: False
   train_predictor: True
-  train_decoder: True
+  train_decoder: False # HARNESS EDIT (speedup): keep consistent with has_decoder: False
 
 debug: False 
 

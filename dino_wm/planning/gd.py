@@ -41,18 +41,6 @@ class GDPlanner(BasePlanner):
         self.eval_every = eval_every
         ### HARNESS EDIT ### env_eval gates the in-optimization REAL-sim diagnostic rollout (logging + early-stop only; the GD gradient is WM-only). Default off so planning never touches the sim.
         self.env_eval = kwargs.get("env_eval", False)
-        ### HARNESS EDIT ### RIGHT-ROBOT FREEZE (two-arm grid env only)
-        # We test ONLY the LEFT robot. The RIGHT robot must replay its recorded expert
-        # trajectory (so it does its real task instead of flopping around and getting in
-        # the left robot's way). freeze_right_gt is the per-eval recorded action sequence
-        # (normalized, WM-grouped: (b, goal_H, frameskip*14), per-env action = [left7, right7]),
-        # set externally by PlanWorkspace. gt_offset aligns it to the executed step (MPC sets
-        # it = current iter each replan). When set, the right-arm dims of every planned action
-        # are overwritten with the expert's, so the planner only optimizes the left arm.
-        # None => normal joint planning (both arms optimized). See _apply_right_gt.
-        self.freeze_right_gt = None
-        self.gt_offset = 0
-        ### END HARNESS EDIT ###
         self.logging_prefix = logging_prefix
 
     def init_actions(self, obs_0, actions=None):
@@ -77,28 +65,6 @@ class GDPlanner(BasePlanner):
                 new_actions = self.preprocessor.normalize_actions(new_actions)
                 new_actions = rearrange(new_actions, "... f d -> ... (f d)")
             actions = torch.cat([actions, new_actions.to(device)], dim=1)
-        return self._apply_right_gt(actions)  ### HARNESS EDIT ### seed right arm with its expert trajectory
-
-    ### HARNESS EDIT ### overwrite the RIGHT robot's action dims with its recorded expert trajectory
-    def _apply_right_gt(self, actions):
-        """Replace the right-arm dims of `actions` (normalized, WM-grouped
-        (b, T, frameskip*14); per-env action = [left7, right7]) with the recorded
-        expert trajectory in self.freeze_right_gt, aligned at self.gt_offset. Leaves
-        the left arm untouched -> planner optimizes left only. No-op if not set.
-        Holds the last expert frame if the lookahead runs past the recorded segment."""
-        if self.freeze_right_gt is None:
-            return actions
-        fs = self.evaluator.frameskip
-        env_dim = self.action_dim // fs       # 14 (= left7 + right7)
-        agent = env_dim // 2                  # 7
-        T = actions.shape[1]
-        seg = self.freeze_right_gt.to(actions.device)[:, self.gt_offset:self.gt_offset + T]
-        if seg.shape[1] < T:                  # ran past the recorded segment -> hold last
-            seg = torch.cat([seg, seg[:, -1:].repeat(1, T - seg.shape[1], 1)], dim=1)
-        actions = actions.clone()
-        for f in range(fs):
-            b0 = f * env_dim
-            actions[:, :, b0 + agent: b0 + env_dim] = seg[:, :, b0 + agent: b0 + env_dim]
         return actions
 
     def get_action_optimizer(self, actions):
@@ -125,6 +91,27 @@ class GDPlanner(BasePlanner):
         optimizer = self.get_action_optimizer(actions)
         n_evals = actions.shape[0]
 
+        ### HARNESS EDIT ### action clamp bounds = the WM's TRAINING range, so
+        # unclamped GD (lr=1, many steps) can't drive actions OOD -> WM extrapolation
+        # -> garbage rollouts -> the executed arm spazzing. If the preprocessor carries
+        # a raw action range (e.g. the stroke dataset's per-dim min/max) clamp to that
+        # (already full action_dim at frameskip=1); else keep the legacy [-1,1] bounds
+        # (raw actions were [-1,1]-clipped), tiled over frameskip.
+        _amean = self.preprocessor.action_mean.to(self.device).reshape(-1)
+        _astd = self.preprocessor.action_std.to(self.device).reshape(-1)
+        _amin = getattr(self.preprocessor, "action_min", None)
+        _amax = getattr(self.preprocessor, "action_max", None)
+        if _amin is not None and _amax is not None:
+            _raw_lo = torch.as_tensor(_amin, device=self.device, dtype=_astd.dtype).reshape(-1)
+            _raw_hi = torch.as_tensor(_amax, device=self.device, dtype=_astd.dtype).reshape(-1)
+            act_lo = (_raw_lo - _amean) / _astd
+            act_hi = (_raw_hi - _amean) / _astd
+        else:
+            _fs = self.evaluator.frameskip
+            act_lo = ((-1.0 - _amean) / _astd).repeat(_fs)
+            act_hi = ((1.0 - _amean) / _astd).repeat(_fs)
+        ### END HARNESS EDIT ###
+
         for i in range(self.opt_steps):
             optimizer.zero_grad()
             i_z_obses, i_zs = self.wm.rollout(
@@ -139,7 +126,7 @@ class GDPlanner(BasePlanner):
                 actions_new += (
                     torch.randn_like(actions_new) * self.action_noise
                 )  # Add Gaussian noise
-                actions_new = self._apply_right_gt(actions_new)  ### HARNESS EDIT ### keep right arm on its expert trajectory (left-only optimization)
+                actions_new = torch.clamp(actions_new, act_lo, act_hi)  ### HARNESS EDIT ### keep planned actions in the WM's training range (prevents OOD spazzing)
                 actions.copy_(actions_new)
 
             self.wandb_run.log(

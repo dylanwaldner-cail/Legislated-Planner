@@ -9,18 +9,15 @@ hydra:
     dir: plan_outputs/${now:%Y%m%d%H%M%S}_${replace_slash:${model_name}}_gH${goal_H}
     subdir: ${hydra.job.num}
 
-# model to load for planning
+# model to load for planning. Resolves to <cwd>/outputs/<model_name>/ (hydra.yaml
+# + checkpoints/model_<epoch>.pth). 2026-06-17 = the single-robot WM (15 epochs).
 ckpt_base_path: ./ # put absolute path here. Checkpoints will be loaded from ${ckpt_base_path}/outputs
-model_name: null
-model_epoch: latest
+model_name: 2026-06-25/16-46-57  # 1500-ep set (data/isaaclab_stroke_1500), parked-arm + mixed sampler
+model_epoch: 20  # best saved: one-step val ~0.058, visual rollout val ~0.142 (~2x sharper than the 300-ep WM's 0.25)
 
 # GPU for the WM + sim/renderer. HARNESS: AppLauncher derives the renderer's
 # active_gpu + physics_gpu from this, so e.g. device=cuda:7 puts rendering on GPU 7.
 device: cuda:0
-
-# HARNESS: right robot replays its recorded expert trajectory (test the LEFT robot only).
-# true = right arm follows the dataset expert (no flopping); false = joint planning (both arms).
-freeze_right: true
 
 # HARNESS: cap how deep into an episode a sampled segment can start (offset in [0, max_offset]).
 # Smaller = init nearer the episode start (cleaner teleport); large = can start mid-trajectory.
@@ -33,19 +30,35 @@ max_offset: 50
 data_path: null
 
 seed: 99
-n_evals: 10
+n_evals: 3
 goal_source: 'dset' # 'random_state' or 'dset' or 'random_action' 
 goal_H: 5 # specifies how far away the goal is if goal_source is 'dset'
 n_plot_samples: 10
 
+# Render EVERY internal sim step into the executed video (smooth playback) instead of
+# only stroke-boundary frames. Off by default (per-step PathTracing is slow); turn on to
+# eyeball what the planner did. Hydra syntax: `video=true` (this is a Hydra app, not argparse).
+video: false
+
+# CEM diagnostic (Hydra: `cem_debug=true`): per sub-planner solve, print the SPREAD of
+# objective scores across sampled actions (tiny spread => WM/objective can't tell actions
+# apart) and the GT (dataset) action's score vs the winner (does the objective rate the
+# truly-good action best?). Off by default.
+cem_debug: false
+
 debug_dset_init: False
 
 objective:
-  _target_: planning.objectives.create_objective_fn
-  alpha: 1
+  # HARNESS EDIT: probe-based objective (independent of create_objective_fn).
+  # A/B the probe vs the MSE baseline with one flag:
+  #   probe-driven : python plan.py ... objective.use_probe=true   (default)
+  #   MSE baseline : python plan.py ... objective.use_probe=false
+  _target_: planning.objectives.create_probe_objective_fn
+  alpha: 0.0 # proprio (arm-pose) term OFF: arm is parked/task-irrelevant, and its embedding-MSE scale (~26) was swamping the cube term
   base: 2 # coeff base for weighting all frames. Only applies when mode == 'all'
   mode: last
-  # HARNESS EDIT: probe penalty weight. 0.0 = MSE-only baseline (probe still
-  # runs for logging but doesn't affect ranking). Override from CLI:
-  #   python plan.py ... objective.probe_lambda=0.0
-  probe_lambda: 1.0
+  probe_lambda: 1.0 # legislation P(illegal) penalty (separate probe; inert in GD, used in cem.py)
+  use_probe: true # probe gives a SHARP cube-position objective (latent MSE alone barely weights the few cube patches)
+  pos_probe_path: probe_cube_1500.pth # trained on data/isaaclab_stroke_1500 (interior cell-acc 0.999, L2 ~0.015m)
+  pos_probe_weight: 50.0 # PRIMARY. squared-L2 in m^2 (~0.03 for a 1-cell error); large so cube term dominates latent MSE (O(0.1-1))
+  visual_weight: 0.1 # weak manifold regularizer only (limits probe-gaming); demoted so the cube-position probe dominates

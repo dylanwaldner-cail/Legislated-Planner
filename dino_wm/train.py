@@ -34,7 +34,11 @@ class Trainer:
         model_name = cfg_dict["saved_folder"].split("outputs/")[-1]
         model_name += f"_{self.cfg.env.name}_f{self.cfg.frameskip}_h{self.cfg.num_hist}_p{self.cfg.num_pred}"
 
-        self.accelerator = Accelerator(log_with="wandb")
+        # HARNESS EDIT (speedup): bf16 autocast. accelerate wraps each prepared module's
+        # forward (encoder/predictor) in autocast + converts outputs back to fp32, so the
+        # heavy ViT forwards run in bf16 (~1.5-2x on Ampere/Ada) while the MSE loss stays fp32.
+        # bf16 needs no GradScaler. Set to "no" to revert to full fp32.
+        self.accelerator = Accelerator(log_with="wandb", mixed_precision="bf16")
         log.info(
             f"rank: {self.accelerator.local_process_index}  model_name: {model_name}"
         )
@@ -203,6 +207,10 @@ class Trainer:
         print(f"Proprio encoder type: {type(self.proprio_encoder)}")
         self.proprio_encoder = self.accelerator.prepare(self.proprio_encoder)
 
+        # in_chans is DATASET-DERIVED (not hardcoded): the isaaclab stroke task is a
+        # 4-D action [x0,y0,x1,y1] at frameskip=1 (action_dim = base*frameskip = 4);
+        # the old low-level task was 7*frameskip. Same code trains either — don't
+        # hardcode a width here.
         self.action_encoder = hydra.utils.instantiate(
             self.cfg.action_encoder,
             in_chans=self.datasets["train"].action_dim,
@@ -266,9 +274,12 @@ class Trainer:
             if not self.train_decoder:
                 for param in self.decoder.parameters():
                     param.requires_grad = False
-        self.encoder, self.predictor, self.decoder = self.accelerator.prepare(
-            self.encoder, self.predictor, self.decoder
-        )
+        # HARNESS EDIT: prepare each submodule individually so a None decoder
+        # (has_decoder: False) doesn't get passed to accelerator.prepare.
+        self.encoder = self.accelerator.prepare(self.encoder)
+        self.predictor = self.accelerator.prepare(self.predictor)
+        if self.decoder is not None:
+            self.decoder = self.accelerator.prepare(self.decoder)
         self.model = hydra.utils.instantiate(
             self.cfg.model,
             encoder=self.encoder,
@@ -719,8 +730,15 @@ class Trainer:
             to_log = sum / count
             epoch_log[key] = to_log
         epoch_log["epoch"] = step
-        log.info(f"Epoch {self.epoch}  Training loss: {epoch_log['train_loss']:.4f}  \
-                Validation loss: {epoch_log['val_loss']:.4f}")
+        _g = lambda k: epoch_log.get(k, float("nan"))
+        log.info(
+            f"Epoch {self.epoch}  train_loss: {_g('train_loss'):.4f}  "
+            f"val_loss: {_g('val_loss'):.4f}  "
+            f"rollout_err visual(tr/val): {_g('train_z_visual_err_rollout'):.3f}/"
+            f"{_g('val_z_visual_err_rollout'):.3f}  "
+            f"proprio(tr/val): {_g('train_z_proprio_err_rollout'):.3f}/"
+            f"{_g('val_z_proprio_err_rollout'):.3f}"
+        )
 
         if self.accelerator.is_main_process:
             self.wandb_run.log(epoch_log)

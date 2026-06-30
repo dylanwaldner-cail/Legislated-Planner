@@ -43,12 +43,7 @@ register(
     reward_threshold=1.0,
 )
 
-# Opt-in: only register when ISAACLAB_AVAILABLE is set. Entry point is a string
-# so importing env/__init__.py does not import IsaacLab or boot Omniverse.
-import os
-if os.environ.get("ISAACLAB_AVAILABLE"):
-    register(
-        id="isaaclab_grid",
-        entry_point="env.isaaclab.grid_wrapper:GridWrapper",
-        max_episode_steps=300,
-    )
+# The single-robot IsaacLab grid task (Isaac-DinoWMGrid-Single-v0) is registered
+# inside IsaacLab (isaaclab_tasks/dinowm_grid) and driven directly via
+# env.isaaclab.grid_venv.GridVectorEnv -- not through a gym.make() registration
+# here. (The retired two-arm GridWrapper registration was removed.)

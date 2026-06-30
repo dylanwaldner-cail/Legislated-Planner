@@ -147,6 +147,7 @@ class PlanEvaluator:  # evaluator for planning
             metrics, and feedback from env
         """
         n_evals = actions.shape[0]
+        frame_sink = None   ### HARNESS EDIT ### holds per-step frames for a smooth decoder-free video
         if action_len is None:
             action_len = np.full(n_evals, np.inf)
         # rollout in wm
@@ -172,7 +173,14 @@ class PlanEvaluator:  # evaluator for planning
                 actions.cpu(), "b t (f d) -> b (t f) d", f=self.frameskip
             )
             exec_actions = self.preprocessor.denormalize_actions(exec_actions).numpy()
-            e_obses, e_states = self.env.rollout(self.seed, self.state_0, exec_actions)
+            ### HARNESS EDIT ### capture per-step frames for a SMOOTH video when there's no
+            # decoder (else the video is boundary-only -> looks static with the arm parked).
+            # Gated by the `video` flag (per-step PathTracing is slow); off -> boundary-only.
+            if save_video and self.wm.decoder is None and getattr(self, "video", False):
+                frame_sink = []
+            e_obses, e_states = self.env.rollout(
+                self.seed, self.state_0, exec_actions, frame_sink=frame_sink
+            )
         ### END HARNESS EDIT ###
         e_visuals = e_obses["visual"]
         e_final_obs = self._get_trajdict_last(e_obses, action_len * self.frameskip + 1)
@@ -204,8 +212,37 @@ class PlanEvaluator:  # evaluator for planning
                 save_video=save_video,
                 filename=filename,
             )
+        elif save_video:
+            ### HARNESS EDIT ### no decoder (has_decoder=False) -> can't render the IMAGINED
+            # rollout, but the EXECUTED real-sim frames need no decoder. Write a sim-only
+            # video (executed | goal) so planning is still judgeable. Prefer the per-step
+            # frames (smooth) captured during the rollout; fall back to boundary frames.
+            if frame_sink:
+                vis = np.stack(frame_sink, axis=1)   # list of (N,H,W,3) -> (N, n_steps, H, W, 3)
+            else:
+                vis = e_obses["visual"]
+            self._save_executed_video(vis, successes, filename)
 
         return logs, successes, e_obses, e_states
+
+    def _save_executed_video(self, e_visuals, successes, filename):
+        """Decoder-free video: the REAL executed sim rollout per eval, each frame the
+        executed camera image with the goal frame appended on the right. e_visuals:
+        (b, T, H, W, c) raw uint8 camera frames (one per executed stroke / env step)."""
+        e = np.asarray(e_visuals)                       # (b, T, H, W, c)
+        goal = np.asarray(self.obs_g["visual"])         # (b, 1, H, W, c)
+        n = min(self.n_plot_samples, e.shape[0])
+        for idx in range(n):
+            tag = "success" if successes[idx] else "failure"
+            g = goal[idx, 0]
+            writer = imageio.get_writer(f"{filename}_{idx}_{tag}.mp4", fps=8)
+            for t in range(e.shape[1]):
+                frame = np.concatenate([e[idx, t], g], axis=1)   # [executed | goal]
+                if frame.dtype != np.uint8:
+                    frame = (np.clip(frame, 0, 1) * 255).astype(np.uint8) if frame.max() <= 1.0 \
+                        else frame.astype(np.uint8)
+                writer.append_data(frame[..., :3])
+            writer.close()
 
     def _compute_rollout_metrics(self, e_state, e_obs, i_z_obs):
         """

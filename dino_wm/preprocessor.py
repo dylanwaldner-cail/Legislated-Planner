@@ -2,7 +2,7 @@ import torch
 from einops import rearrange
 
 class Preprocessor:
-    def __init__(self, 
+    def __init__(self,
         action_mean,
         action_std,
         state_mean,
@@ -10,6 +10,8 @@ class Preprocessor:
         proprio_mean,
         proprio_std,
         transform,
+        action_min=None,
+        action_max=None,
     ):
         self.action_mean = action_mean
         self.action_std = action_std
@@ -18,6 +20,11 @@ class Preprocessor:
         self.proprio_mean = proprio_mean
         self.proprio_std = proprio_std
         self.transform = transform
+        # Optional raw per-dim action range (training data min/max). When present,
+        # planners clamp samples to this range instead of assuming raw [-1,1];
+        # None for datasets that don't provide it (legacy [-1,1] clamp kept).
+        self.action_min = action_min
+        self.action_max = action_max
 
     def normalize_actions(self, actions):
         '''

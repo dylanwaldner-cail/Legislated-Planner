@@ -1,12 +1,18 @@
 import yaml
 import torch
-import decord
 import numpy as np
 from einops import rearrange
 from pathlib import Path
 from typing import Callable, Optional
 from .traj_dset import TrajDataset, get_train_val_sliced
-decord.bridge.set_bridge("torch")
+
+# decord is only needed for video-based deformable data; granular reads obses.pth via
+# torch.load, so make it optional (the IsaacLab container python doesn't ship decord).
+try:
+    import decord
+    decord.bridge.set_bridge("torch")
+except ImportError:
+    decord = None
 
 def load_yaml(filename):
     # load YAML file

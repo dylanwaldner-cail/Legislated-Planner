@@ -11,17 +11,23 @@ from __future__ import annotations
 
 import numpy as np
 
-GRID_HALF = 0.2581875  # ~51.6cm grid (shrunk ~23.5%; kept in sync with grid_assets.py)
-CELL = 0.172125        # = 2*GRID_HALF/3
+GRID_HALF = 0.20  # 40cm grid. Sized for a comfortable frame while staying ~within the
+                  # single arm's recover reach. The on-grid problem was cube OVERSHOOT
+                  # (low friction + hard pushes launching it off), now fixed via cube
+                  # friction + a gentle push cap -- not grid size. MUST match grid_assets.py.
+CELL = 0.13333    # = 2*GRID_HALF/3
 # Grid center in env-local coords. Must match _GRID_CENTER_XY in
 # IsaacLab/.../dinowm_grid/dinowm_grid_env_cfg.py.
 GRID_CENTER_XY = (0.0, 0.0)
-### HARNESS EDIT ### single-robot reachable zone: keep the cube out of the near-
-# base column (x < this). The robot base is at x=-0.45; a cube in the nearest
-# column (x~-0.17) can't be pushed because "behind" it is into the base. The
-# spawn (wrapper) and push waypoints (expert) both clamp x >= REACH_X_MIN.
-# Tune toward 0 if more of the near area is reachable, more negative if less.
-REACH_X_MIN = -0.04
+### HARNESS EDIT ### single-robot reachable-x floor for cube SPAWN + stroke
+# endpoints. Re-enabled the near-base column (was -0.04, which excluded the 3
+# cells closest to the robot): reach-calibration (scripts/reach_calibration.py,
+# 5 repeats) confirmed every cell is pushable from >=7/8 directions, including the
+# near column. The only genuine reach limits are 4 +x-ward (push-away-from-base)
+# (cell,dir) combos -- (3,+0),(4,-45),(5,+45),(8,+45) -- inherent to one arm at the
+# -x edge; those just yield occasional no-op strokes, which is fine training data.
+# -GRID_HALF = no artificial x exclusion (the cube-rand / stroke margin governs).
+REACH_X_MIN = -GRID_HALF
 # Legacy per-column colour order — superseded by CELL_COLORS for cell labels.
 # Kept only so existing imports don't break; not used for labeling anymore.
 COLOR_ORDER = ("black", "blue")

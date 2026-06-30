@@ -58,16 +58,21 @@ class MPCPlanner(BasePlanner):
         self.iter = 0
         self.planned_actions = []
 
-    def _apply_success_mask(self, actions):
+    def _apply_success_mask(self, actions, cur_state):
+        """Succeeded envs hold: execute a zero-DISPLACEMENT stroke at the CURRENT cube
+        xy (start=cube, disp=0), a near no-op that doesn't disturb a solved cube. (The
+        old behavior wrote a raw-zero action = a stroke at the grid ORIGIN, which
+        could tap a center-cell cube.) frameskip=1, so each taken step is one 4-D
+        stroke [x_start, y_start, dx, dy]; the hold is broadcast over the
+        n_taken_actions horizon. cur_state: (N, 31) env-local, cube xy at [18:20]."""
         device = actions.device
         mask = torch.tensor(self.is_success).bool()
-        actions[mask] = 0
-        masked_actions = rearrange(
-            actions[mask], "... (f d) -> ... f d", f=self.evaluator.frameskip
-        )
-        masked_actions = self.preprocessor.normalize_actions(masked_actions.cpu())
-        masked_actions = rearrange(masked_actions, "... f d -> ... (f d)")
-        actions[mask] = masked_actions.to(device)
+        if not mask.any():
+            return actions
+        cube_xy = np.asarray(cur_state)[:, 18:20].astype(np.float32)          # (N,2)
+        raw_hold = np.concatenate([cube_xy, np.zeros_like(cube_xy)], axis=1)[:, None, :]  # (N,1,4) [start, 0-disp]
+        norm_hold = self.preprocessor.normalize_actions(torch.from_numpy(raw_hold))
+        actions[mask] = norm_hold[mask].to(device=device, dtype=actions.dtype)  # broadcast over taken steps
         return actions
 
     def plan(self, obs_0, obs_g, actions=None):
@@ -87,19 +92,35 @@ class MPCPlanner(BasePlanner):
         ### HARNESS EDIT ### accumulate executed frames so the final video/metrics reuse them (no full re-roll)
         self.executed_obses = None
         self.executed_states = None
+        self._smooth_frames = []  # per-step (N,H,W,3) frames across iters -> smooth MPC video
         ### END HARNESS EDIT ###
         while not np.all(self.is_success) and self.iter < self.max_iter:
             self.sub_planner.logging_prefix = f"plan_{self.iter}"
-            self.sub_planner.gt_offset = self.iter * self.n_taken_actions  ### HARNESS EDIT ### align right-arm expert trajectory to the executed offset
             _t_plan = time.perf_counter()  ### HARNESS EDIT ### timing
+            ### HARNESS EDIT ### warm-start the stroke START at the cube ESTIMATED FROM THE
+            # CURRENT OBSERVATION via the probe (obs-only -- NO ground-truth state). The CEM's
+            # default init is the data-mean (~grid center); for an off-center cube ~all samples
+            # start far from it and MISS -> frozen/no-op. Seeding [start=cube_est, disp=0]
+            # centers the search on the cube so it samples CONTACTING strokes.
+            probe = getattr(self.objective_fn, "position_probe", None)
+            if probe is not None and (memo_actions is None or memo_actions.shape[1] == 0):
+                _trans = self.preprocessor.transform_obs(cur_obs_0)
+                with torch.no_grad():
+                    _z = self.wm.encode_obs({"visual": _trans["visual"].to(self.device),
+                                             "proprio": _trans["proprio"].to(self.device)})
+                    _cube = probe(_z["visual"][:, -1]).detach().cpu().numpy()   # (b,2) meters, from OBS
+                _warm = np.concatenate([_cube, np.zeros_like(_cube)], axis=1)[:, None, :]  # (b,1,4)
+                seed_actions = self.preprocessor.normalize_actions(torch.from_numpy(_warm.astype(np.float32)))
+            else:
+                seed_actions = memo_actions
             actions, _ = self.sub_planner.plan(
                 obs_0=cur_obs_0,
                 obs_g=obs_g,
-                actions=memo_actions,
+                actions=seed_actions,
             )  # (b, t, act_dim)
             _t_plan = time.perf_counter() - _t_plan  ### HARNESS EDIT ### timing
             taken_actions = actions.detach()[:, : self.n_taken_actions]
-            self._apply_success_mask(taken_actions)
+            self._apply_success_mask(taken_actions, cur_state)
             memo_actions = actions.detach()[:, self.n_taken_actions :]
             self.planned_actions.append(taken_actions)
 
@@ -112,7 +133,14 @@ class MPCPlanner(BasePlanner):
             _t_eval = time.perf_counter()
             exec_taken = rearrange(taken_actions.cpu(), "b t (f d) -> b (t f) d", f=ev.frameskip)
             exec_taken = ev.preprocessor.denormalize_actions(exec_taken).numpy()
-            e_obses, e_states = ev.env.rollout(ev.seed, cur_state, exec_taken)
+            ### DEBUG ### is the planned stroke even near the cube? (diagnose frozen/no-op)
+            _cxy = np.asarray(cur_state)[:, 18:20]
+            for _i in range(min(3, exec_taken.shape[0])):
+                _s = exec_taken[_i, 0]
+                print(f"  [dbg e{_i}] cube=({_cxy[_i][0]:+.3f},{_cxy[_i][1]:+.3f})  start=({_s[0]:+.3f},{_s[1]:+.3f})"
+                      f"  disp=({_s[2]:+.3f},{_s[3]:+.3f})  |start-cube|={np.linalg.norm(_s[:2]-_cxy[_i]):.3f}")
+            _fs = self._smooth_frames if getattr(ev, "video", False) else None  # per-step frames only when video=true
+            e_obses, e_states = ev.env.rollout(ev.seed, cur_state, exec_taken, frame_sink=_fs)
             _t_eval = time.perf_counter() - _t_eval
             ### HARNESS EDIT ### stitch executed frames (drop the duplicate boundary frame on later rolls)
             if self.executed_obses is None:
@@ -138,7 +166,7 @@ class MPCPlanner(BasePlanner):
             }
             print("Success rate: ", logs["success_rate"])
             print(
-                f"[TIMING iter {self.iter}] GD sub_plan={_t_plan:.1f}s  "
+                f"[TIMING iter {self.iter}] {self.sub_planner.__class__.__name__} sub_plan={_t_plan:.1f}s  "
                 f"observe(incremental {exec_taken.shape[1]} env-steps)={_t_eval:.1f}s"
             )
             ### END HARNESS EDIT ###
@@ -185,5 +213,11 @@ class MPCPlanner(BasePlanner):
             obs_0=init_obs_0,
             state_0=init_state_0,
         )
+
+        ### HARNESS EDIT ### smooth MPC video: every internal sim step captured across iters
+        # (decoder-free, [executed | goal]). Writes output_mpc_smooth_<eval>_<tag>.mp4.
+        if self._smooth_frames:
+            vis = np.stack(self._smooth_frames, axis=1)  # (N, n_steps, H, W, 3)
+            self.evaluator._save_executed_video(vis, self.is_success, "output_mpc_smooth")
 
         return planned_actions, self.action_len

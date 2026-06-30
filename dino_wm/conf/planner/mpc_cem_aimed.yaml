@@ -1,0 +1,25 @@
+_target_: planning.mpc.MPCPlanner
+max_iter: 8 # finite so it can't loop forever on never-success (goal_H=5 + correction margin)
+n_taken_actions: 1 # CLOSED-LOOP: execute ONE stroke, re-observe, re-plan -> corrects WM drift each step
+sub_planner:
+  target: planning.cem_aimed_contact.AimedContactCEMPlanner
+  horizon: 1 # WM is only accurate for ONE step (diag: 1-step cube err 0.029m, 2-step 0.080m > CELL/2).
+  topk: 30
+  num_samples: 300
+  var_scale: 1
+  opt_steps: 30
+  eval_every: 1
+  env_eval: false  # off = sub-planner optimizes WM-only, never touches the sim
+  # AIMED-CONTACT reparam: the CEM optimizes ONLY the push (dx,dy); the stroke START is
+  # DERIVED as cube_est - aim_back*dir(push), so every sample starts behind the cube and
+  # pushes through it (misses are unrepresentable). Replaces start_window (the near-cube
+  # box trust region) -- not set here, so the base no-ops its box clamp.
+  aim_back: 0.12     # standoff (m) behind the cube; 0.12 = top of the data sampler back_range (0.08-0.12), still in-distribution
+  aim_min_disp: 0.01 # below this push magnitude (m) -> treat as a hold (start==cube), no div-by-0
+  # keep-off-barrier: when the cube is within aim_barrier_eps of the grid edge (+/-aim_grid_half),
+  # flip any push pointing further outward so the planner can't jam it into the clamp. Mirrors
+  # grid_metadata.GRID_HALF (0.20) + stroke_sampler._BARRIER_EPS (0.03).
+  aim_grid_half: 0.20
+  aim_barrier_eps: 0.03
+
+name: mpc_cem_aimed

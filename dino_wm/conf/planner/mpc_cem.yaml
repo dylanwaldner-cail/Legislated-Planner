@@ -1,13 +1,18 @@
 _target_: planning.mpc.MPCPlanner
-max_iter: null # unlimited if null
-n_taken_actions: 5
+max_iter: 8 # finite so it can't loop forever on never-success (goal_H=5 + correction margin)
+n_taken_actions: 1 # CLOSED-LOOP: execute ONE stroke, re-observe, re-plan -> corrects WM drift each step
 sub_planner:
   target: planning.cem.CEMPlanner
-  horizon: 5
+  horizon: 1 # WM is only accurate for ONE step (diag: 1-step cube err 0.029m, 2-step 0.080m > CELL/2).
+             # Plan greedily 1 step, let MPC re-observe + chain. Also ~5x cheaper than horizon=5.
   topk: 30
   num_samples: 300
   var_scale: 1
+  start_window: 0.12 # TRUST REGION (m): sampled stroke STARTS clamped to within this of the
+                     # MPC's probe-estimated cube (~1.3 cube-widths, covers the back-reach), so
+                     # the CEM can't pick far-start MISSES the WM hallucinates about. Push free.
   opt_steps: 30
   eval_every: 1
+  env_eval: false  # HARNESS EDIT: off = sub-planner optimizes WM-only, never touches the sim; true re-enables in-opt diagnostic rollouts (1 env.rollout per opt step)
 
 name: mpc_cem

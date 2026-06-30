@@ -1,14 +1,16 @@
 _target_: planning.mpc.MPCPlanner
-max_iter: null # unlimited if null
-n_taken_actions: 1
+max_iter: 8 # finite so it can't loop forever on never-success (goal_H=5 + correction margin)
+n_taken_actions: 1 # CLOSED-LOOP: execute ONE stroke, re-observe, re-plan
 sub_planner:
   target: planning.gd.GDPlanner
-  horizon: 5
+  horizon: 1 # WM accurate for 1 step only; MPC warm-starts the action at the probe-estimated
+             # cube, GD refines LOCALLY along the gradient (vs CEM's global sampling that selects
+             # far WM-fooling strokes). GD clamps actions to the WM training range (anti-OOD).
   action_noise: 0.003
   sample_type: 'randn' # 'zero' or 'randn'
-  lr: 1 
-  opt_steps: 1000
-  eval_every: 10
+  lr: 1
+  opt_steps: 300 # fewer than the standalone gd (1000); MPC re-plans every step
+  eval_every: 50
   env_eval: false  # HARNESS EDIT: off = sub-planner optimizes WM-only, never touches the sim; true re-enables in-opt diagnostics
 
 name: mpc_gd

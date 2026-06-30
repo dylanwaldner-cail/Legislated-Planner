@@ -1,0 +1,23 @@
+_target_: planning.mpc.MPCPlanner
+max_iter: 8 # finite so it can't loop forever on never-success
+n_taken_actions: 1 # CLOSED-LOOP: 3-step LOOKAHEAD informs the FIRST stroke, then re-observe + re-plan
+sub_planner:
+  target: planning.cem_aimed_chained.ChainedAimedCEMPlanner
+  horizon: 3 # multi-step aimed-contact: every stroke re-anchors on the cube PREDICTED after the
+             # prior stroke (chaining validated reliable to ~h5: residual WM drift < CELL/2).
+             # NOTE: rolls O(H^2) -> several x slower per CEM iter than the horizon-1 aimed planner.
+  topk: 30
+  num_samples: 300
+  var_scale: 1
+  opt_steps: 30
+  eval_every: 1
+  env_eval: false
+  # aimed-contact reparam (start derived from the push direction) + keep-off-barrier.
+  # Intermediate anchors use the ENCODED probe (objective_fn.position_probe), which is the
+  # most accurate on h<=3 predicted latents.
+  aim_back: 0.12     # standoff (m) behind the cube; 0.12 = top of the data sampler back_range, still in-distribution
+  aim_min_disp: 0.01
+  aim_grid_half: 0.20
+  aim_barrier_eps: 0.03
+
+name: mpc_cem_aimed_chained

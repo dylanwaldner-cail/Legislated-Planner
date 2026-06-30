@@ -1,13 +1,14 @@
-"""Smoke test for the single-robot base-case env.
+"""Smoke test / visualizer for the single-robot base-case env (PLANAR-STROKE action).
 
 Instantiates GridWrapperSingle (num_envs=1), renders frames, checks shapes, and
-exercises the runtime sign-color API. Save PNGs to eyeball framing (single
-robot + 3x3 colored grid + octagonal sign to the robot's right, ~45deg down)
-and to confirm the sign recolors.
+exercises the runtime sign-color API. With --policy strokes it rolls out a
+sequence of high-level push strokes (the same primitive the WM/planner use) via
+GridWrapperSingle.execute_stroke and saves one boundary frame per stroke, so you
+can eyeball that the blade faces each push direction and the cube tracks it.
 
 Usage:
     ./IsaacLab/isaaclab.sh -p inspect_single.py
-    ./IsaacLab/isaaclab.sh -p inspect_single.py --seed 3 --num_steps 20
+    ./IsaacLab/isaaclab.sh -p inspect_single.py --seed 3 --policy strokes --traj_steps 12
 """
 from __future__ import annotations
 
@@ -24,8 +25,10 @@ from PIL import Image
 
 from env.isaaclab.app_launcher import close_or_exit
 from env.isaaclab.grid_metadata import STATE_DIM_SINGLE, which_cell
-from env.isaaclab.grid_wrapper_single import ACTION_DIM, GridWrapperSingle
-from env.isaaclab.expert_policy import PushExpert
+from env.isaaclab.grid_wrapper_single import GridWrapperSingle
+from env.isaaclab.stroke_sampler import StrokeSampler
+
+_CUBE_XY = slice(18, 20)  # cube (x,y) within the 31-D state
 
 
 def main():
@@ -33,28 +36,16 @@ def main():
     ap.add_argument("--task_id", default="Isaac-DinoWMGrid-Single-v0")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cuda:0")
-    ap.add_argument("--num_steps", type=int, default=10,
-                    help="hold-action steps in the static-check section")
-    ap.add_argument("--policy", choices=("none", "random", "noisy_random", "cells"),
-                    default="random",
-                    help="none = just static checks; random/noisy_random = cube "
-                    "random-walk push (the data-collection driver); cells = "
-                    "goal-directed Manhattan push to --target_cell. Rolls out the "
-                    "expert and saves a frame per step to <out>/traj/")
-    ap.add_argument("--traj_steps", type=int, default=250,
-                    help="expert rollout length")
-    ap.add_argument("--target_cell", type=int, default=None,
-                    help="--policy cells: pin the push target cell (0-8); default random")
-    ap.add_argument("--noise_std", type=float, default=0.1,
-                    help="exploration-noise std for --policy noisy_random")
-    ap.add_argument("--debug", action="store_true",
-                    help="per-step expert diagnostics (heading, orientation error, "
-                    "EE/cube progress, joints near their limits) — to diagnose freezes")
-    ap.add_argument("--warmup", action=argparse.BooleanOptionalAction, default=True,
-                    help="drive the EE to the cube (unrecorded) before the rollout so "
-                    "it starts engaged at the block; --no-warmup to disable")
-    ap.add_argument("--warmup_max", type=int, default=10,
-                    help="cap on unrecorded warmup steps")
+    ap.add_argument("--policy", choices=("none", "strokes"), default="strokes",
+                    help="none = static checks only; strokes = roll a sequence of "
+                    "push strokes and save one boundary frame per stroke to <out>/traj/")
+    ap.add_argument("--traj_steps", type=int, default=12, help="number of strokes to roll")
+    ap.add_argument("--aimed_frac", type=float, default=1.0,
+                    help="fraction of strokes that aim at the cube; 1.0 = always aim (clear viz)")
+    ap.add_argument("--push_max", type=float, default=0.08,
+                    help="per-axis push displacement bound (m) for the uniform strokes")
+    ap.add_argument("--stroke_max_steps", type=int, default=320,
+                    help="cap on internal IK sim steps per stroke (4 phases incl. retract)")
     ap.add_argument("--output_dir", default=str(_REPO_ROOT / "single_inspect"))
     ap.add_argument("--render_mode", default="PathTracing",
                     choices=("PathTracing", "RaytracedLighting"))
@@ -68,7 +59,7 @@ def main():
 
     env = GridWrapperSingle(
         task_id=args.task_id, num_envs=1, device=args.device,
-        render_mode=args.render_mode, spp=args.spp,
+        render_mode=args.render_mode, spp=args.spp, stroke_max_steps=args.stroke_max_steps,
     )
     env.seed(args.seed)
 
@@ -96,66 +87,46 @@ def main():
         save(name)
         print(f"[sign] set {rgb} -> saved {name}.png")
 
-    # --- step a few hold actions (no-op: zero delta, gripper open) ---
-    hold = np.zeros((1, ACTION_DIM), dtype=np.float32)
-    hold[0, 6] = 1.0  # gripper open
-    for i in range(args.num_steps):
-        obs, _, _, info = env.step(hold)
-        if i == args.num_steps - 1:
-            save("04_after_steps")
-    print(f"[steps] held {args.num_steps} steps; cube(local)={env.get_cube_positions()[0]}")
+    # --- one zero-displacement "hold" stroke at the cube (near no-op): confirms step() ---
+    cube_xy = state[0, _CUBE_XY]
+    obs, _, _, info = env.step(np.concatenate([cube_xy, np.zeros(2)]).astype(np.float32))
+    save("04_after_hold")
+    print(f"[hold] zero-length stroke; cube(local)={env.get_cube_positions()[0]}")
 
     if args.policy == "none":
         print(f"[done] saved PNGs to {out}")
         close_or_exit(env)
         return
 
-    # --- push-expert rollout: one frame per step to <out>/traj/ ---
+    # --- stroke rollout: one frame per stroke to <out>/traj/ ---
     traj = out / "traj"
     traj.mkdir(parents=True, exist_ok=True)
     for f in traj.glob("frame_*.png"):
         f.unlink()
 
     rng = np.random.RandomState(args.seed)
+    sampler = StrokeSampler(rng, aimed_frac=args.aimed_frac, push_max=args.push_max)
     obs, state = env.reset()  # fresh episode for the rollout
-    cells_mode = (args.policy == "cells")
-    expert = PushExpert(rng, env=env, push_mode=("cells" if cells_mode else "random"))
-    expert.noise_std = args.noise_std if args.policy == "noisy_random" else 0.0
-    expert.debug = args.debug
-    expert.reset(target_cell=args.target_cell if cells_mode else None)
-
-    # Unrecorded warmup: drive the EE to the cube so the recording starts engaged.
-    if not cells_mode and args.warmup:
-        for w in range(args.warmup_max):
-            a = expert(env.get_ee_positions(), env.get_cube_positions())
-            obs, _, _, _ = env.step(a)
-            if expert.PHASES[expert.state["phase_idx"]] == "push":
-                print(f"[push] warmup engaged the cube in {w + 1} steps")
-                break
-
-    start_cell = int(which_cell(env.get_cube_positions()[0][:2]))
-    print(f"[push] rollout ({args.policy}): cube starts in cell {start_cell}")
+    mode = sampler.reset_episode()
+    start_cell = int(which_cell(state[0, _CUBE_XY]))
+    print(f"[strokes] rollout ({mode}): cube starts in cell {start_cell}")
     Image.fromarray(obs["visual"][0]).save(traj / "frame_0000.png")
     last_cell = start_cell
     for t in range(1, args.traj_steps + 1):
-        action = expert(env.get_ee_positions(), env.get_cube_positions())
-        obs, _, _, info = env.step(action)
+        stroke = sampler.sample(state[0, _CUBE_XY])
+        before = state[0, _CUBE_XY].copy()
+        obs, _, _, info = env.step(stroke)
+        state = info["state"]
+        moved = float(np.linalg.norm(state[0, _CUBE_XY] - before))
         Image.fromarray(obs["visual"][0]).save(traj / f"frame_{t:04d}.png")
-        cell = int(which_cell(env.get_cube_positions()[0][:2]))
-        if cell != last_cell:
-            print(f"[push] step {t}: cube entered cell {cell}")
-            last_cell = cell
-        if expert.state["done"]:
-            print(f"[push] expert done at step {t}; cube in cell {cell}")
-            break
+        cell = int(which_cell(state[0, _CUBE_XY]))
+        tag = f" -> cell {cell}" if cell != last_cell else ""
+        print(f"[strokes] stroke {t}: cube moved {moved:.3f}m{tag}")
+        last_cell = cell
 
-    final_cell = int(which_cell(env.get_cube_positions()[0][:2]))
-    if cells_mode:
-        print(f"[push] final cube cell {final_cell} (target {expert.state['target_cell']}) "
-              f"-> {'HIT' if final_cell == expert.state['target_cell'] else 'miss'}")
-    else:
-        print(f"[push] final cube cell {final_cell} after {args.traj_steps} random pushes")
-    print(f"[done] saved static PNGs to {out}, trajectory frames to {traj}")
+    final_cell = int(which_cell(state[0, _CUBE_XY]))
+    print(f"[strokes] final cube cell {final_cell} after {args.traj_steps} strokes")
+    print(f"[done] saved static PNGs to {out}, stroke frames to {traj}")
     close_or_exit(env)
 
 
