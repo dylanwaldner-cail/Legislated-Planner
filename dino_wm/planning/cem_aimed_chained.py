@@ -115,12 +115,46 @@ class ChainedAimedCEMPlanner(AimedContactCEMPlanner):
                 with torch.no_grad():
                     i_z_obses, realized = self._chained_rollout(cur_obs, action, cube0)
                 loss = self.objective_fn(i_z_obses, cur_g)
-                topk_idx = torch.argsort(loss)[: self.topk]
+                # legislation: HARD-PRUNE candidates whose PREDICTED trajectory breaks a law-derived
+                # prohibition (social agent) -- they are REMOVED from the elite set, so mu is refined
+                # from LEGAL candidates only. (NB: merely setting their loss to +inf would be identical
+                # to the old soft penalty -- same elites, same mu; the point of pruning is that illegal
+                # candidates never enter the mean even when too few legal ones were sampled.)
+                # Constraint injected by plan.py; None = selfish (no pruning).
+                order = torch.argsort(loss)
+                constraint = getattr(self, "constraint", None)
+                if constraint is not None:
+                    viol = constraint.violations(i_z_obses["visual"], self.horizon)   # (num_samples,) bool
+                    order = order[~viol[order]]                                        # drop violators, keep loss order
+                topk_idx = order[: self.topk]
+                if topk_idx.numel() == 0:                                 # no legal candidate this step
+                    losses.append(float("inf"))                          # -> hold mu/sigma (don't move toward illegal)
+                    continue
                 topk_action = realized[topk_idx]                          # realized -> carries derived starts + flipped pushes
                 losses.append(loss[topk_idx[0]].item())
                 mu[traj] = topk_action.mean(dim=0)
-                sigma[traj] = topk_action.std(dim=0)
+                if topk_idx.numel() > 1:                                  # std of a single elite collapses sigma -> keep prior
+                    sigma[traj] = topk_action.std(dim=0)
             self.wandb_run.log({f"{self.logging_prefix}/loss": np.mean(losses), "step": i + 1})
 
         mu = self._realize_mu(trans_obs_0, mu)   # final action on the chained-aimed manifold
+
+        # legislation debug: report the COMMITTED trajectory's cost breakdown (objective vs penalty)
+        # + the predicted cube cell at each step, so we can see whether the constraint actually bit.
+        constraint = getattr(self, "constraint", None)
+        if constraint is not None:
+            from probes.probe_cube_position import gm
+            pos_probe = constraint.probes.get("cube_position")    # probe dict, not a bare attr
+            for traj in range(n_evals):
+                one_obs = {k: arr[traj:traj + 1] for k, arr in trans_obs_0.items()}
+                one_g = {k: arr[traj:traj + 1] for k, arr in z_obs_g.items()}
+                iz, _ = self._chained_rollout(one_obs, mu[traj:traj + 1], self._cube_hat_m[traj:traj + 1])
+                obj = float(self.objective_fn(iz, one_g).reshape(-1)[0])
+                viol = bool(constraint.violations(iz["visual"], self.horizon)[0].item())
+                vis = iz["visual"]; L = vis.shape[1]
+                cells = [int(gm.which_cell(pos_probe(vis[:, t])[0].detach().cpu().numpy()))
+                         for t in range(L - self.horizon, L)] if pos_probe is not None else "n/a"
+                note = "  <- NO legal plan found in horizon; committed plan STILL violates (refuse case)" if viol else ""
+                print(f"[legislation dbg {self.logging_prefix} e{traj}] obj={obj:.4f} committed_violates={viol} | "
+                      f"predicted cells {cells} | {constraint}{note}")
         return mu, np.full(n_evals, np.inf)

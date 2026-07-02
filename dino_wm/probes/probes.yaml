@@ -15,7 +15,7 @@ probes:
 
   - name: cube_cells             # per-cell occupancy, 9-d multi-label   [multilabel, encoded]
     path: probes/probe_cube_cells.pth
-    enabled: false               # train first: python probes/probe_cube_cells.py --save_path probes/probe_cube_cells.pth
+    enabled: true                # trained (macro-F1 0.975); used by the legislation CellConstraint
 
   # - name: cube_cells_pred      # per-cell occupancy on predicted latents   [multilabel, predicted]
   #   path: probes/probe_cube_cells_pred.pth   # train: probe_cube_cells.py --source predicted --pred_horizons 1,2,3,4,5

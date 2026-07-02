@@ -84,6 +84,10 @@ class MPCPlanner(BasePlanner):
         n_evals = obs_0["visual"].shape[0]
         self.is_success = np.zeros(n_evals, dtype=bool)
         self.action_len = np.full(n_evals, np.inf)
+        ### HARNESS EDIT ### closed-loop memory: clear the sub-planner's per-episode history (e.g. RRT's
+        # executed-trajectory memory) so temporal laws start fresh each episode. No-op for stateless planners.
+        if hasattr(self.sub_planner, "reset"):
+            self.sub_planner.reset()
         init_obs_0, init_state_0 = self.evaluator.get_init_cond()
 
         cur_obs_0 = obs_0

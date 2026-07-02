@@ -48,7 +48,7 @@ _DEONTIC_PREDICATES = ("obligation", "permission", "violation", "weakViolation")
 
 
 def load_legal_database(path=_DEFAULT_DB):
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:   # YAML has non-ascii (em dashes); container default is ascii
         return yaml.safe_load(f)
 
 

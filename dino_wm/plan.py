@@ -138,6 +138,22 @@ class PlanWorkspace:
         self.wandb_run = wandb_run
         self.device = next(wm.parameters()).device
 
+        ### HARNESS EDIT ### scene_filter: enumerate matching (episode, init, goal) segments over the
+        # SAME valid-split episodes the sampler uses (self.dset), so pool indices line up with
+        # self.dset[i]. (Building from the full states.pth would mis-index the valid TrajSubset.)
+        self.scene_pool = None
+        _sf = {k: v for k, v in (cfg_dict.get("scene_filter") or {}).items() if v is not None}
+        if _sf:
+            from scripts.scene_index import select_pairs_from_states
+            _base = getattr(self.dset, "dataset", self.dset)             # TrajSubset -> base dataset
+            _idxs = list(getattr(self.dset, "indices", range(len(self.dset))))
+            _states = _base.states[_idxs].numpy()
+            _seq = np.asarray(_base.seq_lengths)[_idxs]
+            self.scene_pool = select_pairs_from_states(_states, _seq, cfg_dict["goal_H"], **_sf)
+            print(f"[scene_filter] {len(self.scene_pool)} matching (episode,init,goal) for {_sf}")
+            if not self.scene_pool:
+                raise ValueError(f"scene_filter {_sf} matched 0 segments (goal_H={cfg_dict['goal_H']}); loosen it.")
+
         # have different seeds for each planning instances
         self.eval_seed = [cfg_dict["seed"] * n + 1 for n in range(cfg_dict["n_evals"])]
         print("eval_seed: ", self.eval_seed)
@@ -220,6 +236,23 @@ class PlanWorkspace:
 
         # (Single-robot: no second arm to freeze — the planner optimizes all 7
         # action dims. The two-arm freeze-right glue was removed.)
+
+        ### HARNESS EDIT ### legislation: build the law-derived constraint + inject it into the
+        # planner (the "social" agent). enforce=false -> no constraint (the "selfish" agent).
+        leg = self.cfg_dict.get("legislation") or {}
+        if leg.get("enforce", False):
+            from probes.registry import ProbeRegistry
+            from legislation.reasoner import LegislativeReasoner
+            from legislation.constraint import Constraint
+            reg = ProbeRegistry(device=self.device)
+            constraint = Constraint.from_reasoner(
+                LegislativeReasoner(), leg.get("facts", ["cube"]), reg.probes)
+            penalty = float(leg.get("violation_penalty", 1e6))
+            target = getattr(self.planner, "sub_planner", self.planner)  # MPC -> sub_planner
+            target.constraint = constraint
+            target.violation_penalty = penalty
+            print(f"[legislation] enforcing {constraint} | violation_penalty={penalty:g}")
+        ### END HARNESS EDIT ###
 
         self.dump_targets()
 
@@ -353,38 +386,58 @@ class PlanWorkspace:
         require_move = self.cfg_dict.get("goal_require_cube_move", True)
         MAX_TRIES = 300
 
-        def draw_candidate():
-            """Sample one (trajectory, offset) segment of length traj_len and summarize it."""
-            max_offset = -1
-            while max_offset < 0:  # redraw until we hit a trajectory long enough
-                traj_id = random.randint(0, len(self.dset) - 1)
-                obs, act, state, e_info = self.dset[traj_id]
-                max_offset = obs["visual"].shape[0] - traj_len
+        # scene_filter (plan.yaml): planning_main pre-enumerates matching (episode, init, goal)
+        # segments via scripts/scene_index -> robust, deterministic selection of explicit/rare
+        # cell pairs that random sampling misses. Only the goal segment uses it (not the
+        # traj_len=2 env_info probe that random_state/fixed also call).
+        pool = getattr(self, "scene_pool", None)
+        use_pool = pool is not None and traj_len == self.frameskip * self.goal_H + 1
+
+        def seg_at(traj_id, offset):
+            obs, act, state, e_info = self.dset[traj_id]
             state_np = state.numpy()
-            offset = random.randint(0, min(max_offset, self.max_offset))  # cap start depth (default 50)
             s0, sg = state_np[offset], state_np[offset + traj_len - 1]
-            c0 = int(cell_labels_from_states_single(s0))
-            cg = int(cell_labels_from_states_single(sg))
             return {
                 "traj_id": traj_id, "offset": offset, "obs": obs, "act": act,
-                "state": state_np, "e_info": e_info, "c0": c0, "cg": cg,
+                "state": state_np, "e_info": e_info,
+                "c0": int(cell_labels_from_states_single(s0)),
+                "cg": int(cell_labels_from_states_single(sg)),
                 "cube_l2": float(np.linalg.norm(sg[18:20] - s0[18:20])),
             }
 
+        picks = None
+        if use_pool:
+            picks = list(pool); random.shuffle(picks)
+
         for i in range(self.n_evals):
-            best = None  # highest-cube_l2 candidate seen, used as the fallback
-            for _try in range(MAX_TRIES):
-                seg = draw_candidate()
-                if best is None or seg["cube_l2"] > best["cube_l2"]:
-                    best = seg
-                cube_changed_cell = seg["c0"] != seg["cg"] and seg["c0"] != -1 and seg["cg"] != -1
-                if not require_move or cube_changed_cell:
-                    break  # accept this segment
+            if use_pool:
+                e, f0, _fg = picks[i % len(picks)]          # pre-filtered explicit-cell segment
+                seg = seg_at(e, f0)
             else:
-                # no cell-changing segment within MAX_TRIES -> fall back to max displacement
-                seg = best
-                print(f"  [eval {i}] WARN: no cell-changing segment in {MAX_TRIES} tries; "
-                      f"using max-displacement fallback")
+                best = None  # highest-cube_l2 candidate, the require_move fallback
+                for _try in range(MAX_TRIES):
+                    max_offset = -1
+                    while max_offset < 0:
+                        traj_id = random.randint(0, len(self.dset) - 1)
+                        obs, act, state, e_info = self.dset[traj_id]
+                        max_offset = obs["visual"].shape[0] - traj_len
+                    state_np = state.numpy()
+                    offset = random.randint(0, min(max_offset, self.max_offset))
+                    s0, sg = state_np[offset], state_np[offset + traj_len - 1]
+                    seg = {"traj_id": traj_id, "offset": offset, "obs": obs, "act": act,
+                           "state": state_np, "e_info": e_info,
+                           "c0": int(cell_labels_from_states_single(s0)),
+                           "cg": int(cell_labels_from_states_single(sg)),
+                           "cube_l2": float(np.linalg.norm(sg[18:20] - s0[18:20]))}
+                    if best is None or seg["cube_l2"] > best["cube_l2"]:
+                        best = seg
+                    moved = seg["c0"] != seg["cg"] and seg["c0"] != -1 and seg["cg"] != -1
+                    if not require_move or moved:
+                        break
+                else:
+                    seg = best
+                    print(f"  [eval {i}] WARN: no cell-changing segment in {MAX_TRIES} tries; "
+                          f"using max-displacement fallback")
 
             o = seg["offset"]
             print(f"  [eval {i}] episode {seg['traj_id']}: frames {o}..{o + traj_len - 1}  "
@@ -489,11 +542,11 @@ def load_model(model_ckpt, train_cfg, num_action_repeat, device):
         base_path = os.path.dirname(os.path.abspath(__file__))
         if train_cfg.env.decoder_path is not None:
             decoder_path = os.path.join(base_path, train_cfg.env.decoder_path)
-            ckpt = torch.load(decoder_path)
+            ckpt = torch.load(decoder_path, weights_only=False)  # our ckpt; torch>=2.6 defaults weights_only=True
             if isinstance(ckpt, dict):
                 result["decoder"] = ckpt["decoder"]
             else:
-                result["decoder"] = torch.load(decoder_path)
+                result["decoder"] = torch.load(decoder_path, weights_only=False)
         else:
             raise ValueError(
                 "Decoder path not found in model checkpoint \

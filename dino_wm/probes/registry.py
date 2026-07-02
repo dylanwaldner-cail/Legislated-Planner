@@ -75,7 +75,7 @@ class ProbeRegistry:
 
     def __init__(self, manifest=_DEFAULT_MANIFEST, device="cpu", root=_REPO):
         self.device = device
-        with open(manifest, "r") as f:
+        with open(manifest, "r", encoding="utf-8") as f:   # YAML has non-ascii (em dashes); container default is ascii
             spec = yaml.safe_load(f) or {}
         self.probes = {}
         for entry in spec.get("probes", []) or []:

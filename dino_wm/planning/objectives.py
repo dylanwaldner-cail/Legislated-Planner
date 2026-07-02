@@ -141,7 +141,7 @@ class _PositionProbe:
     if it shows up."""
 
     def __init__(self, ckpt_path, device):
-        ck = torch.load(ckpt_path, map_location=device)
+        ck = torch.load(ckpt_path, map_location=device, weights_only=False)  # our probe ckpt (has numpy); torch>=2.6 defaults weights_only=True
         self.grid = int(ck["pool_grid"])
         self.mlp = _ProbeMLP(int(ck["d_in"])).to(device).eval()
         self.mlp.load_state_dict(ck["state_dict"])

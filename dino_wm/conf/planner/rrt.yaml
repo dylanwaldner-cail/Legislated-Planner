@@ -1,0 +1,14 @@
+_target_: planning.rrt.RRTPlanner
+# Kinodynamic RRT over the WM. Same state (cube xy via probe) + action (aimed 4-D stroke) space
+# as the CEM planners. Plain RRT (no rewiring), constraints NOT applied yet. Open-loop: plans a
+# root->goal path and the evaluator executes it.
+max_samples: 256     # max tree nodes (extends) before best-effort return
+batch_size: 64       # aimed strokes sampled per extend; keep the one whose result is closest to the target
+goal_tol: 0.06       # reached when cube within this (m) of the goal cube (< CELL/2 = 0.067)
+goal_bias: 0.2       # P(extend toward the goal vs a random grid point)
+push_min: 0.05       # per-stroke cube-travel range (matches the data sampler aim_push_range)
+push_max: 0.09
+max_path: 20         # cap on path length (strokes)
+aim_back: 0.12       # standoff behind the cube (matches mpc_cem_aimed)
+
+name: rrt

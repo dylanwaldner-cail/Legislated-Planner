@@ -48,6 +48,26 @@ cem_debug: false
 
 debug_dset_init: False
 
+# Legislation: enforce DDL-derived constraints in the planner (the "social" agent).
+# enforce=false reproduces the unconstrained planner (the "selfish" agent). facts = the base
+# facts that fire the laws (the centre-cell law's antecedent is `cube`). Wired into the chained
+# aimed planner (planner=mpc_cem_aimed_chained). See legislation/{reasoner,constraint}.py.
+legislation:
+  enforce: true
+  facts: [cube]
+  violation_penalty: 1.0e6
+
+# Scene filter: restrict goal selection to episodes with chosen properties so a law test gets
+# relevant scenarios. via_cell = the straight init->goal path must cross this cell (set 4 = centre
+# so the centre-cell law actually forces a detour). null = off. (scripts/scene_index aggregates
+# these offline; this applies them in plan.py's sampler.)
+scene_filter:
+  via_cell: null      # e.g. 4 (centre) for the centre-cell law test
+  goal_color: null    # e.g. yellow
+  goal_cell: null
+  init_color: null
+  init_cell: null
+
 objective:
   # HARNESS EDIT: probe-based objective (independent of create_objective_fn).
   # A/B the probe vs the MSE baseline with one flag:

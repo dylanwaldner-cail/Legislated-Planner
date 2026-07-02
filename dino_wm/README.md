@@ -1,176 +1,83 @@
-# **DINO-WM**: World Models on Pre-trained Visual Features enable Zero-shot Planning
-[[Paper]](https://arxiv.org/abs/2411.04983) [[Code]]() [[Data]](https://osf.io/bmw48/?view_only=a56a296ce3b24cceaf408383a175ce28) [[Project Website]](https://dino-wm.github.io/) 
+# Legislative-Harness
 
-[Gaoyue Zhou](https://gaoyuezhou.github.io/), [Hengkai Pan](https://hengkaipan.github.io/), [Yann LeCun](https://yann.lecun.com/) and [Lerrel Pinto](https://www.lerrelpinto.com/), New York University, Meta AI
+A neurosymbolic planner: **Defeasible Deontic Logic (DDL) norms shape a world-model planner.**
+Learned probes read facts from a frozen-DINO world model, a DDL reasoner turns human-authored laws
+into obligations/prohibitions, and those verdicts prune the planner's search — so the *same*
+scenario yields a law-abiding agent (detours around a forbidden cell) or a selfish one (goes
+straight through), just by toggling enforcement.
 
-![teaser_figure](assets/intro.png)
+Built on DINO-WM (frozen DINOv2 + ViT predictor) over an IsaacLab single-Franka cube-pushing task.
+For the base world-model / training / dataset docs see **[DINOREADME.md](DINOREADME.md)**.
 
-# Getting Started
+## Pipeline
 
-1. [Installation](#installation)
-2. [Datasets](#datasets)
-3. [Train a DINO-WM](#train-a-dino-wm)
-4. [Plan with a DINO-WM](#plan-with-a-dino-wm)
+```
+legal_database.yaml  ──►  reasoner.py (clingo)  ──►  constraint.py  ──►  planner prune
+   (laws in DDL)          obligations /               DDL prohibitions      reject any candidate
+                          prohibitions               → footprint check      trajectory that violates
+        ▲
+   probes ──► grounding.py (probe outputs → normative facts: in_cell, passed_through, …)
+```
 
-## Installation
+Geometry lives in Python (grounding/constraint); the laws stay declarative in one YAML.
 
-Setup an environment
+## File structure
+
+```
+legislation/              DDL layer — norms → planner constraint
+  legal_database.yaml       laws in Defeasible Deontic Logic (the ONLY place laws are defined)
+  reasoner.py               renders YAML → DDL text, runs clingo → obligations/prohibitions/permissions
+  grounding.py              probe outputs → normative facts (in_cell, stroke/passed_through, …)
+  constraint.py             DDL prohibitions → per-candidate violation check (extensible @checker registry)
+
+probes/                   perception — frozen-DINO latent → world facts
+  registry.py               loads probes from probes.yaml (kind + encoded/predicted source schema)
+  probe_cube_position.py    cube (x,y) regression
+  probe_cube_cells.py       per-cell occupancy + swept_cells() footprint sweep ("any part of the cube")
+  probes.yaml               probe manifest
+
+planning/                 planners over the DINO world model
+  rrt.py                    closed-loop kinodynamic RRT: law + off-grid footprint prune, node facts
+                            (pos/cell/age/law), executed-trajectory memory
+  cem_aimed_chained.py      multi-step aimed-contact CEM (horizon>1); also law-prunes
+  cem_aimed_contact.py      1-step aimed-contact CEM (stroke start derived from push direction)
+  mpc.py                    receding-horizon wrapper (execute 1 stroke, re-observe, re-plan)
+  objectives.py             probe-based cost (cube-L2 in probe space)
+
+conf/
+  plan.yaml                 legislation: {enforce, facts, violation_penalty}; scene_filter
+  planner/mpc_rrt.yaml      closed-loop RRT (MPC-wrapped)  ← main config
+  planner/rrt.yaml          open-loop RRT
+  planner/mpc_cem_aimed_chained.yaml   chained CEM baseline
+
+plan.py                   entry point — builds Constraint from the reasoner, injects it onto the planner
+scripts/scene_index.py    select dataset episodes by init/goal cell/color for a specific law test
+
+Defeasible-Deontic-Logic/ vendored DDL→ASP engine (clingo)
+models/ datasets/ env/ preprocessor.py   DINO-WM + IsaacLab base (see DINOREADME.md)
+```
+
+## Run
+
+The law in `legal_database.yaml` forbids the centre cell (`[O]~in_cell(4)`). For a 3→5 push whose
+direct path crosses the centre:
+
 ```bash
-git clone https://github.com/gaoyuezhou/dino_wm.git
-cd dino_wm
-conda env create -f environment.yaml
-conda activate dino_wm
+# social agent — obeys the law: RRT detours around cell 4
+python plan.py planner=mpc_rrt scene_filter.init_cell=3 scene_filter.goal_cell=5 video=true n_evals=1
+
+# selfish agent — ignores the law: goes straight through
+python plan.py planner=mpc_rrt scene_filter.init_cell=3 scene_filter.goal_cell=5 video=true n_evals=1 legislation.enforce=false
 ```
 
-### Install Mujoco
-                    
-Create the `.mujoco` directory and download Mujoco210 using `wget`:
+To change the law (forbid a different cell, add contrary-to-duty / conditional / permissive rules),
+edit **only** `legislation/legal_database.yaml` — no code changes.
 
-```bash
-mkdir -p ~/.mujoco
-wget https://mujoco.org/download/mujoco210-linux-x86_64.tar.gz -P ~/.mujoco/
-cd ~/.mujoco
-tar -xzvf mujoco210-linux-x86_64.tar.gz
-```
+## Status / limits
 
-Append the following lines to your `~/.bashrc`:
-
-```bash
-# Mujoco Path. Replace `<username>` with your actual username if necessary.
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/<username>/.mujoco/mujoco210/bin
-
-# NVIDIA Library Path (if using NVIDIA GPUs)
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia
-```
-
-Reload your shell configuration to apply the environment variable changes:
-
-```bash
-source ~/.bashrc
-```
-
-#### Notes
-- For GPU-accelerated simulations, ensure the NVIDIA drivers are correctly installed.
-- If you encounter issues, confirm that the paths in your `LD_LIBRARY_PATH` are correct.
-- If problems persist, refer to these GitHub issue pages for potential solutions: [openai/mujoco-py#773](https://github.com/openai/mujoco-py/issues/773), [ethz-asl/reinmav-gym#35](https://github.com/ethz-asl/reinmav-gym/issues/35).
-
-
-The following are optional installation steps for planning in the deformable environments.
-
-### Install PyFlex (optional for deformable environments)
-
-Install PyFleX if you need to plan within the deformable environments. These installation instructions are adapted from [AdaptiGraph](https://github.com/Boey-li/AdaptiGraph/tree/main).
-
-We are using a docker image to compile PyFleX. Make sure you have the following packages:
-- [docker-ce](https://docs.docker.com/engine/install/ubuntu/)
-- [nvidia-docker](https://github.com/NVIDIA/nvidia-docker#quickstart)
-
-Full installation:
-```bash
-pip install "pybind11[global]"
-sudo docker pull xingyu/softgym
-```
-Run `bash install_pyflex.sh`. You may need to `source ~/.bashrc` to `import PyFleX`.
-
-Or you can manually run
-```bash
-# compile pyflex in docker image
-# re-compile if source code changed
-# make sure ${PWD}/PyFleX is the pyflex root path when re-compiling
-sudo docker run \
-    -v ${PWD}/PyFleX:/workspace/PyFleX \
-    -v ${CONDA_PREFIX}:/workspace/anaconda \
-    -v /tmp/.X11-unix:/tmp/.X11-unix \
-    --gpus all \
-    -e DISPLAY=$DISPLAY \
-    -e QT_X11_NO_MITSHM=1 \
-    -it xingyu/softgym:latest bash \
-    -c "export PATH=/workspace/anaconda/bin:$PATH; cd /workspace/PyFleX; export PYFLEXROOT=/workspace/PyFleX; export PYTHONPATH=/workspace/PyFleX/bindings/build:$PYTHONPATH; export LD_LIBRARY_PATH=$PYFLEXROOT/external/SDL2-2.0.4/lib/x64:$LD_LIBRARY_PATH; cd bindings; mkdir build; cd build; /usr/bin/cmake ..; make -j"
-
-# import to system paths. run these if you do not have these paths yet in ~/.bashrc
-echo '# PyFleX' >> ~/.bashrc
-echo "export PYFLEXROOT=${PWD}/PyFleX" >> ~/.bashrc
-echo 'export PYTHONPATH=${PYFLEXROOT}/bindings/build:$PYTHONPATH' >> ~/.bashrc
-echo 'export LD_LIBRARY_PATH=${PYFLEXROOT}/external/SDL2-2.0.4/lib/x64:$LD_LIBRARY_PATH' >> ~/.bashrc
-echo '' >> ~/.bashrc
-```
-
-# Datasets
-
-Dataset for each task can be downloaded [here](https://osf.io/bmw48/?view_only=a56a296ce3b24cceaf408383a175ce28). 
-
-Once the datasets are downloaded, unzip them. For the deformable dataset, you need to combine all parts and then unzip:
-```
-zip -s- deformable.zip -O deformable_full.zip
-unzip deformable_full.zip
-```
-
-Set an environment variable pointing to your dataset folder:
-```bash
-# Replace /path/to/data with the actual path to your dataset folder.
-export DATASET_DIR=/path/to/data
-```
-Inside the dataset folder, you should find the following structure:
-```
-data
-├── deformable
-│   ├── granular
-│   └── rope
-├── point_maze
-├── pusht_noise
-└── wall_single
-```
-
-
-# Train a DINO-WM
-Once you have completed the above steps, you can check whether you could launch training with an example command like this:
-
-```
-python train.py --config-name train.yaml env=point_maze frameskip=5 num_hist=3
-```
-You may specify models' output directory at `ckpt_base_path` in `conf/train.yaml`.
-
-# Plan with a DINO-WM
-Once a world model has been trained, you may use it for planning with an example command like this:
-
-```
-python plan.py model_name=<model_name> n_evals=5 planner=cem goal_H=5 goal_source='random_state' planner.opt_steps=30
-```
-
-where the model is saved at folder `<ckpt_base_path>/outputs/<model_name>`, and `<ckpt_base_path>` can be specified in `conf/plan.yaml`.
-
-<!-- ## Acknowledgement
-TODO -->
-
-# Pre-trained Model Checkpoints
-
-We have uploaded our trained world model checkpoints for PointMaze, PushT, and Wall [here](https://osf.io/bmw48/?view_only=a56a296ce3b24cceaf408383a175ce28) under `checkpoints`. You can launch planning jobs with their respective configs in the repo:
-
-First, update `ckpt_base_path` to where the checkpoints are saved in the plan configs.
-
-Then launch planning runs with the following commands:
-```bash
-# PointMaze
-python plan.py --config-name plan_point_maze.yaml model_name=point_maze
-# PushT
-python plan.py --config-name plan_pusht.yaml model_name=pusht
-# Wall
-python plan.py --config-name plan_wall.yaml model_name=wall
-```
-
-Planning logs and visualizations can be found in `./plan_outputs`.
-
-
-## Citation
-
-```
-@misc{zhou2024dinowmworldmodelspretrained,
-      title={DINO-WM: World Models on Pre-trained Visual Features enable Zero-shot Planning}, 
-      author={Gaoyue Zhou and Hengkai Pan and Yann LeCun and Lerrel Pinto},
-      year={2024},
-      eprint={2411.04983},
-      archivePrefix={arXiv},
-      primaryClass={cs.RO},
-      url={https://arxiv.org/abs/2411.04983}, 
-}
-```
+- WM is reliable to ~4 chained steps, so RRT runs **closed-loop** (MPC-wrapped): each step rebuilds
+  the tree from a fresh observation and commits only the first stroke.
+- The prune is **footprint-based** (cube half-extent), enforced on every stroke endpoint; frame 0
+  (current position) is exempt so the agent isn't frozen on the boundary it's leaving.
+- Temporal/CTD laws are scaffolded (RRT keeps executed-trajectory memory + per-node `age`/`law`),
+  but the per-step grounder→reasoner rebuild that consumes it is not wired yet.
