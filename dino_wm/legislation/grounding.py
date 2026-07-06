@@ -82,8 +82,20 @@ class Grounder:
             for c in np.where(swept_cells(c0[i], c1[i], self.cube_half))[0]:
                 self.facts.add(f"passed_through({cube},{int(c)})")
 
+    # --- atomic: sign colour from the sign-colour classifier (scene fact for conditional laws) ---
+    def sign_color(self, key="sign_color", names=("white", "red", "yellow", "green")):
+        """sign-colour probe (class probs) -> sign(<colour>) for the argmax class. Enables laws
+        conditioned on the sign, e.g. `sign(red) => [O]~in_cell(4)`. No-op if the probe is absent
+        (not yet registered in probes.yaml). `names` must match the sign probe's class order."""
+        probs = self.out.get(key)
+        if probs is None:
+            return
+        for row in _as_cube_rows(probs):
+            self.facts.add(f"sign({names[int(np.argmax(row))]})")
+
     def ground(self):
         """Run every grounder method and return the sorted DDL fact list."""
         self.in_cell()
         self.stroke_overlap()
+        self.sign_color()
         return sorted(self.facts)

@@ -37,6 +37,13 @@ laws:
   #     antecedent: [near(fragile)]
   #     consequent: ["[O]push_gently"]
   #
+  # State-dependent on a PERCEIVED sign colour (needs a registered `sign_color` probe; the grounder
+  # emits sign(<colour>) each step, so the verdict re-derives as the sign changes):
+  #   atoms:  add  sign(white;red;yellow;green)
+  #   - label: red_sign_forbids_centre
+  #     antecedent: [sign(red)]
+  #     consequent: ["[O]~in_cell(4)"]
+  #
   # Constitutive "counts-as" (derives a fact), then a prohibition over the derived concept:
   #   - label: counts_as_trespass
   #     antecedent: [in_cell(4)]

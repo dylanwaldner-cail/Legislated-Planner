@@ -9,13 +9,14 @@ resulting cube via the probe, and keep the one closest to the target. The tree t
 diverse multi-step pushes -- the breadth that escapes the local minima a distance-greedy CEM
 gets stuck in.
 
-This is plain RRT (no rewiring). LAW PRUNING is applied: when a Constraint is injected, every
-predicted frame of every candidate is read by the probe, and the ENTIRE candidate is pruned if the
-cube footprint ever overlaps an illegal cell (rest or transit). It plans an open-loop root->goal
-path and returns it like the CEM planners (padded actions + per-eval length) for the evaluator.
+This is plain RRT (no rewiring). LAW ENFORCEMENT is DELEGATED to the legislation pipeline -- RRT does
+NO legal reasoning of its own: it calls constraint.violations() (constraint.py) to prune candidates,
+and a per-step LawEvaluator.observe() perceives + records + re-derives the Constraint. The executed
+normative memory lives in the legislation LEDGER (per eval), not here. Plans an open-loop root->goal
+path, returned like the CEM planners (padded actions + per-eval length) for the evaluator.
 
 Adapted from the pytorch_rrt KinodynamicRRT structure (sample target -> nearest -> batched
-propagate -> PRUNE illegal -> pick-closest -> add node -> goal check).
+propagate -> PRUNE via constraint.violations -> pick-closest -> add node -> goal check).
 """
 import math
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from einops import repeat
 from utils import move_to_device
 from .cem_aimed_contact import AimedContactCEMPlanner
 
+from probes.probe_cube_position import gm  # grid extent for sampling + which_cell
 
 @dataclass
 class Node:
@@ -39,7 +41,7 @@ class Node:
     pos: np.ndarray        # cube (x,y) meters, from objective_fn.position_probe  (the probe fact)
     cell: int              # which_cell(pos)                                      (the cell fact)
     age: int               # creation order (0 = root); placeholder for a real temporal age
-    law: tuple             # illegal cells in effect at creation                  (the law at the time)
+    law: str               # str(Constraint) verdict in effect at creation        (the law at the time)
     prefix: torch.Tensor   # (T,4) normalized actions, root -> this node
     parent: int            # parent node index (-1 for root)
 
@@ -63,78 +65,27 @@ class RRTPlanner(AimedContactCEMPlanner):
         self.push_min = float(push_min)
         self.push_max = float(push_max)
         self.max_path = int(max_path)
-        # closed-loop MEMORY: the executed trajectory so far (one entry per re-plan step). The root
-        # of each re-plan is the current REAL cube, so appending roots == the executed path. Kept so
-        # temporally-dependent laws (CTD / "at most once" / "having entered X you must now Y") can be
-        # grounded over the FULL history+future, not just the current frame. Reset per episode.
-        self._mem_cubes = []      # list of (n_evals, 2) np arrays, oldest first
-        self._mem_latents = []    # list of (n_evals, P, D) tensors (encoded real frames)
+        # Normative MEMORY now lives in the legislation LEDGER (LawEvaluator.ledger, per eval), NOT
+        # here -- the planner is stateless about law. RRT keeps only an episode step counter for logs.
+        self._step = 0
 
     def reset(self):
-        """Clear the closed-loop memory at the start of a new episode (called by MPCPlanner)."""
-        self._mem_cubes = []
-        self._mem_latents = []
-
-    @property
-    def memory(self):
-        """The executed history so far, per eval. cubes (n_evals, T_hist, 2);
-        latents (n_evals, T_hist, P, D). T_hist = number of re-plan steps taken. None if empty."""
-        if not self._mem_cubes:
-            return {"cubes": None, "latents": None}
-        return {"cubes": np.stack(self._mem_cubes, axis=1),
-                "latents": torch.stack(self._mem_latents, dim=1)}
-
-    def _illegal_cells(self):
-        """Cells forbidden by the CURRENT law (parsed from the injected Constraint's prohibitions),
-        as a set of ints. Empty if no constraint -> RRT does not prune (selfish agent)."""
-        c = getattr(self, "constraint", None)
-        if c is None:
-            return set()
-        out = set()
-        for name, args in getattr(c, "prohibitions", []):
-            if name in ("in_cell", "passed_through") and args:
-                try:
-                    out.add(int(args[-1]))
-                except (ValueError, TypeError):
-                    pass
-        return out
-
-    @torch.no_grad()
-    def _legal_mask(self, z_full):
-        """Footprint law check: read every predicted frame with the probe and reject a candidate if
-        the cube FOOTPRINT (half-extent, via swept_cells -> 'any part of the cube', not just the
-        center) overlaps an illegal cell at any STROKE ENDPOINT or in transit between stroke
-        endpoints. z_full: (B,L,P,D). Returns (legal (B,) bool, end_pos (B,2)).
-
-        FRAME 0 (the cube's CURRENT position at the re-plan root) is deliberately NOT counted: the
-        law governs where the cube GOES, and the 9cm footprint straddles the boundary of the cell it
-        is leaving, so counting frame 0 would freeze the agent. (The old code instead grandfathered
-        the whole cell out of enforcement -- which turned the prohibition OFF the moment the footprint
-        grazed the illegal cell from the adjacent one, letting the cube walk straight through.)"""
-        from probes.probe_cube_cells import swept_cells, CUBE_HALF
-        B, L = z_full.shape[:2]
-        pp = self.objective_fn.position_probe
-        pos = np.stack([pp(z_full[:, t]).detach().cpu().numpy() for t in range(L)], axis=1)  # (B,L,2)
-        end_pos = pos[:, -1]
-        illegal = self._illegal
-        if not illegal or L <= 1:
-            return np.ones(B, dtype=bool), end_pos
-        legal = np.ones(B, dtype=bool)
-        for b in range(B):
-            ok = True
-            for t in range(1, L):                                                    # frames 1..L-1: where strokes LAND (skip root frame 0)
-                occ = swept_cells(pos[b, t], pos[b, min(t + 1, L - 1)], CUBE_HALF)    # footprint over [frame t .. next]: endpoint + transit
-                if any(occ[c] for c in illegal):
-                    ok = False
-                    break
-            legal[b] = ok
-        return legal, end_pos
+        """New episode (called by MPCPlanner): reset the step counter and the legislation ledger."""
+        self._step = 0
+        law_fn = getattr(self, "law_fn", None)
+        if law_fn is not None:
+            law_fn.reset()
 
     @torch.no_grad()
     def _extend(self, obs_e, near, target):
-        """Sample batch_size aimed strokes from near.pos, roll them through the WM, PRUNE any whose
-        predicted trajectory enters an illegal cell (every frame analyzed -- see _legal_mask), and
-        return (end_pos, new_prefix) for the legal candidate closest to target. None if none legal."""
+        """Sample batch_size aimed strokes from near.pos, roll them through the WM, ask the
+        LEGISLATION PIPELINE which candidates are legal, and return (end_pos, new_prefix) for the
+        legal candidate closest to target. None if none are legal.
+
+        RRT does NO legal reasoning of its own: legality is entirely self.constraint.violations(...)
+        (constraint.py / the DDL pipeline). n_pred = ALL frames -- no frame-0 skip; the current
+        DINO-WM frame is handed to the constraint as data like any other. The end-of-stroke cube
+        position is still probed HERE, but only for TREE geometry (nearest / target / goal), not law."""
         B = self.batch_size
         dev = self.device
         base = torch.as_tensor(near.pos, dtype=torch.float32, device=dev)             # (2,)
@@ -151,16 +102,21 @@ class RRTPlanner(AimedContactCEMPlanner):
         act = torch.cat([pref_b, strokes.unsqueeze(1)], dim=1)                        # (B,len+1,4)
         obs_b = {k: repeat(v, "1 ... -> b ...", b=B) for k, v in obs_e.items()}
         z_full = self.wm.rollout(obs_0=obs_b, act=act)[0]["visual"]                   # (B,L,P,D) full trajectory
-        legal, end_pos = self._legal_mask(z_full)                                     # PRUNE law-violating candidates (DDL)
-        ongrid = np.all(np.abs(end_pos) <= self._grid_bound, axis=1)                 # keep the cube footprint on the grid (workspace bound)
-        self._considered += int(legal.size)                                          # cumulative prune tally (per MPC iter)
-        self._pruned += int((~legal).sum())                                          # law-pruned
-        self._offgrid += int((legal & ~ongrid).sum())                                # off-grid-pruned (feasibility, not law)
-        feasible = legal & ongrid
+        end_pos = self.objective_fn.position_probe(z_full[:, -1]).detach().cpu().numpy()  # (B,2) cube after stroke -- TREE geometry only
+
+        # LEGALITY: delegated entirely to the injected Constraint (constraint.py). No constraint =
+        # selfish (no pruning). n_pred = full length -> the constraint sees every frame, current included.
+        constraint = getattr(self, "constraint", None)
+        if constraint is not None:
+            viol = constraint.violations(z_full, z_full.shape[1]).detach().cpu().numpy()  # (B,) bool
+        else:
+            viol = np.zeros(B, dtype=bool)
+        self._considered += int(viol.size)                                           # cumulative prune tally (per MPC iter)
+        self._pruned += int(viol.sum())
         tdist = np.linalg.norm(end_pos - target, axis=1)
-        tdist[~feasible] = np.inf
+        tdist[viol] = np.inf
         if not np.isfinite(tdist).any():
-            return None                                                              # no legal + on-grid extension toward target
+            return None                                                              # every extension violates the law
         best = int(tdist.argmin())
         new_prefix = torch.cat([near.prefix, strokes[best:best + 1]], dim=0)          # (len+1,4)
         return end_pos[best], new_prefix
@@ -168,10 +124,9 @@ class RRTPlanner(AimedContactCEMPlanner):
     @torch.no_grad()
     def _build_tree(self, trans_obs_0, e, root_cube, goal_cube):
         """Grow one tree for eval e; return (path actions (T,4) tensor, final cube (2,), nodes)."""
-        from probes.probe_cube_position import gm  # grid extent for sampling + which_cell
         lo, hi = gm.GRID_CENTER_XY[0] - gm.GRID_HALF, gm.GRID_CENTER_XY[0] + gm.GRID_HALF
         obs_e = {k: v[e:e + 1] for k, v in trans_obs_0.items()}                       # (1, ...)
-        law = tuple(sorted(self._illegal))
+        law = str(getattr(self, "constraint", None))     # the verdict in effect for this eval's tree
         root = Node(pos=np.asarray(root_cube, dtype=np.float32),
                     cell=int(gm.which_cell(np.asarray(root_cube, dtype=np.float32))),
                     age=0, law=law, prefix=torch.zeros(0, self.action_dim, device=self.device), parent=-1)
@@ -213,31 +168,31 @@ class RRTPlanner(AimedContactCEMPlanner):
             goal_cube = probe(self.wm.encode_obs(trans_obs_g)["visual"][:, -1]).detach().cpu().numpy()
         n_evals = trans_obs_0["visual"].shape[0]
 
-        # MEMORY: append this step's REAL root to the executed-trajectory history (see __init__).
-        self._mem_cubes.append(root_cube)
-        self._mem_latents.append(z_root.detach())
+        self._step += 1                           # episode re-plan counter (memory itself lives in the ledger)
+        law_fn = getattr(self, "law_fn", None)    # per-step, per-eval legislation evaluator (holds the ledger)
 
-        from probes.probe_cube_cells import CUBE_HALF as _CUBE_HALF
-        from probes.probe_cube_position import gm as _gm
-        self._grid_bound = _gm.GRID_HALF - _CUBE_HALF   # cube-CENTER bound so the footprint stays on the grid
-        self._illegal = self._illegal_cells()    # cells the current law forbids (drives the prune)
-        self._trees = []                          # keep each eval's nodes (with pos/cell/age/law facts)
+        self._trees = []                          # keep each eval's search nodes (planner-side)
         self._pruned = 0                          # cumulative law-pruned candidate strokes this MPC iter
-        self._offgrid = 0                         # cumulative off-grid-pruned (feasibility bound)
         self._considered = 0
         paths, finals = [], []
         for e in range(n_evals):
+            # STATE-DEPENDENT LAW: perceive eval e's current frame, record it in eval e's LEDGER, and
+            # get the Constraint for eval e's current state. Legislation owns the memory + reasoning;
+            # RRT just receives the constraint and prunes on it (constraint.violations, in _extend).
+            if law_fn is not None:
+                self.constraint = law_fn.observe(z_root[e:e + 1], e)
+                print(f"  [rrt law e{e}] facts {law_fn.ledger(e).last_facts()} -> {self.constraint}")
             path, final, nodes = self._build_tree(trans_obs_0, e, root_cube[e], goal_cube[e])
             self._trees.append(nodes)
             paths.append(path)
             finals.append(final)
-            print(f"  [rrt e{e}] hist {len(self._mem_cubes)} steps | tree {len(nodes)} nodes | "
-                  f"path {len(path)} strokes | illegal cells {sorted(self._illegal)} | "
+            print(f"  [rrt e{e}] step {self._step} | tree {len(nodes)} nodes | path {len(path)} strokes | "
+                  f"law {getattr(self, 'constraint', None)} | "
                   f"start ({root_cube[e][0]:+.3f},{root_cube[e][1]:+.3f}) -> "
                   f"reached ({final[0]:+.3f},{final[1]:+.3f}) goal ({goal_cube[e][0]:+.3f},{goal_cube[e][1]:+.3f})")
         pct = (100.0 * self._pruned / self._considered) if self._considered else 0.0
-        print(f"[rrt prune] MPC iter {len(self._mem_cubes)}: {self._pruned} law-pruned ({pct:.0f}%) "
-              f"+ {self._offgrid} off-grid-pruned / {self._considered} candidates | law {sorted(self._illegal)}")
+        print(f"[rrt prune] step {self._step}: pruned {self._pruned}/{self._considered} "
+              f"candidate strokes ({pct:.0f}%) | law {getattr(self, 'constraint', None)}")
 
         # pad each path to T_max with a HOLD (zero-displacement stroke at the final cube)
         T_max = max((len(p) for p in paths), default=1) or 1

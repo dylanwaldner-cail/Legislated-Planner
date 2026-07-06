@@ -37,7 +37,7 @@ probes/                   perception — frozen-DINO latent → world facts
   probes.yaml               probe manifest
 
 planning/                 planners over the DINO world model
-  rrt.py                    closed-loop kinodynamic RRT: law + off-grid footprint prune, node facts
+  rrt.py                    closed-loop kinodynamic RRT: law footprint prune, node facts
                             (pos/cell/age/law), executed-trajectory memory
   cem_aimed_chained.py      multi-step aimed-contact CEM (horizon>1); also law-prunes
   cem_aimed_contact.py      1-step aimed-contact CEM (stroke start derived from push direction)
@@ -79,5 +79,10 @@ edit **only** `legislation/legal_database.yaml` — no code changes.
   the tree from a fresh observation and commits only the first stroke.
 - The prune is **footprint-based** (cube half-extent), enforced on every stroke endpoint; frame 0
   (current position) is exempt so the agent isn't frozen on the boundary it's leaving.
-- Temporal/CTD laws are scaffolded (RRT keeps executed-trajectory memory + per-node `age`/`law`),
-  but the per-step grounder→reasoner rebuild that consumes it is not wired yet.
+- State-dependent laws are **wired**: each re-plan re-runs perceive→ground→reason→Constraint
+  (`legislation/enforcement.py::LawEvaluator`, injected as the planner's `law_fn`), so verdicts
+  track the live state. Activate a sign-conditional law by registering a `sign_color` probe in
+  `probes.yaml` + adding a `sign(...)`-antecedent law to `legal_database.yaml`.
+- Temporal/CTD laws (verdict depends on HISTORY, e.g. "already passed through 4") are still pending:
+  RRT keeps executed-trajectory memory + per-node `age`/`law`, but the grounder currently grounds
+  only the CURRENT state, not the history.

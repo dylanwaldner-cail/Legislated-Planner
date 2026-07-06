@@ -47,3 +47,10 @@ calibration.py
 
 IsaacLab/
 data/
+
+*.usd
+*.log
+
+old_legislation/
+
+*.sh

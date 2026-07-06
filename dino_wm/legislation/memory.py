@@ -1,0 +1,37 @@
+"""Per-eval NORMATIVE MEMORY: the ledger of the executed trajectory in deontic terms.
+
+One StepRecord per real (executed) step -- the FACTS perceived + the VERDICT they produced. This is
+the persistent state temporal / contrary-to-duty laws read ("already passed through 4", "crossed
+twice", "having entered X you must now Y"). It lives in the legislation layer, NOT the planner, so
+it is portable across planners. FACTS ONLY -- no latents; the ledger is the derived, symbolic record,
+and re-grounding always uses the live probe on the current frame.
+"""
+
+
+class NormativeMemory:
+    """Append-only ledger of executed steps for ONE eval."""
+
+    def __init__(self):
+        self.records = []   # list of {"step": int, "facts": [str], "verdict": dict}
+
+    def append(self, facts, verdict):
+        self.records.append({"step": len(self.records), "facts": list(facts), "verdict": verdict})
+
+    def last_facts(self):
+        return self.records[-1]["facts"] if self.records else []
+
+    def derived_facts(self):
+        """Sticky / aggregate facts implied by the WHOLE history so far -- what turns a state-only
+        verdict into a TEMPORAL one. EXTEND this method to add temporal predicates (counts, decay,
+        CTD triggers...). Currently:
+          visited(cube,C) : the cube was in cell C at some past-or-current step (union of in_cell).
+        Backward-compatible: laws that don't reference these predicates simply ignore them."""
+        visited = set()
+        for rec in self.records:
+            for f in rec["facts"]:
+                if f.startswith("in_cell("):
+                    visited.add("visited(" + f[len("in_cell("):])   # in_cell(cube,4) -> visited(cube,4)
+        return sorted(visited)
+
+    def __len__(self):
+        return len(self.records)

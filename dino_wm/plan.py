@@ -244,14 +244,23 @@ class PlanWorkspace:
             from probes.registry import ProbeRegistry
             from legislation.reasoner import LegislativeReasoner
             from legislation.constraint import Constraint
+            from legislation.enforcement import LawEvaluator
             reg = ProbeRegistry(device=self.device)
-            constraint = Constraint.from_reasoner(
-                LegislativeReasoner(), leg.get("facts", ["cube"]), reg.probes)
+            base_facts = list(leg.get("facts", ["cube"]))
+            reasoner = LegislativeReasoner()
+            # per-step law: perceive -> ground -> reason -> Constraint, re-run each re-plan so the
+            # verdict tracks the live state (sign colour, cells already visited, ...).
+            evaluator = LawEvaluator(reasoner, reg, base_facts=base_facts)
             penalty = float(leg.get("violation_penalty", 1e6))
             target = getattr(self.planner, "sub_planner", self.planner)  # MPC -> sub_planner
-            target.constraint = constraint
+            target.law_fn = evaluator
             target.violation_penalty = penalty
-            print(f"[legislation] enforcing {constraint} | violation_penalty={penalty:g}")
+            # initial/static constraint from base facts only -- the setup verdict, and the fallback
+            # for planners that don't re-evaluate per step (e.g. the chained CEM). RRT overwrites
+            # target.constraint each step via law_fn.
+            target.constraint = Constraint.from_reasoner(reasoner, base_facts, reg.probes)
+            print(f"[legislation] per-step law evaluator ON | base facts {base_facts} | "
+                  f"initial {target.constraint} | violation_penalty={penalty:g}")
         ### END HARNESS EDIT ###
 
         self.dump_targets()
