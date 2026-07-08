@@ -1,0 +1,7 @@
+- planner=mpc_rrt
+- scene_filter.via_cell=4
+- legislation.enforce=true
+- n_evals=10
+- scene_offset=0
+- seed=99
+- video=false

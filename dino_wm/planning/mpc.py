@@ -1,3 +1,4 @@
+import os
 import torch
 import hydra
 import copy
@@ -98,6 +99,20 @@ class MPCPlanner(BasePlanner):
         self.executed_states = None
         self._smooth_frames = []  # per-step (N,H,W,3) frames across iters -> smooth MPC video
         ### END HARNESS EDIT ###
+        self._wm_pred_err = {}   ### HARNESS EDIT ### eval_index -> list of per-step WM 1-step cube-pred errors (m)
+        self._wm_latent_err = {} ### HARNESS EDIT ### eval_index -> list of per-step WM 1-step latent MSE (decoder-free)
+        self._imagined_regrounded = []   ### HARNESS EDIT ### per-step re-grounded decoded frames -> closed-loop output_final
+        ### HARNESS EDIT ### optional RRT/MPC introspection (rrt_introspect.enabled=true). OFF by default.
+        self._introspector = None
+        _icfg = getattr(self, "introspect_cfg", None)
+        if _icfg and _icfg.get("enabled"):
+            from planning.introspect import RRTIntrospector
+            self._introspector = RRTIntrospector(
+                out_dir=os.path.join(os.getcwd(), "rrt_introspect"),
+                top_k=int(_icfg.get("top_k", 5)),
+                resim=bool(_icfg.get("resim", True)),
+                max_evals=int(_icfg.get("max_evals", 3)))
+        ### END HARNESS EDIT ###
         while not np.all(self.is_success) and self.iter < self.max_iter:
             self.sub_planner.logging_prefix = f"plan_{self.iter}"
             _t_plan = time.perf_counter()  ### HARNESS EDIT ### timing
@@ -161,6 +176,33 @@ class MPCPlanner(BasePlanner):
             ### END HARNESS EDIT ###
             e_final_obs = slice_trajdict_with_t(e_obses, start_idx=-1)
             e_final_state = e_states[:, -1]
+            ### HARNESS EDIT ### closed-loop WM eval per committed step (planning/planning_metrics.py):
+            #   * 1-step cube-pred error vs the REAL executed cube (accumulated per eval)
+            #   * the RE-GROUNDED decoded imagined frame -> stitched into a CLOSED-LOOP output_final
+            #     (the open-loop rollout is misleading for a re-planning MPC system).
+            try:
+                from planning.planning_metrics import wm_regrounded_eval
+                _err, _lat, _imag = wm_regrounded_eval(
+                    self.wm, self.preprocessor, self.objective_fn, cur_obs_0, taken_actions,
+                    e_final_state, real_obs=e_final_obs,
+                    decode=(getattr(self.wm, "decoder", None) is not None))
+                if _err is not None:
+                    for _i in range(len(_err)):
+                        self._wm_pred_err.setdefault(_i, []).append(float(_err[_i]))
+                if _lat is not None:
+                    for _i in range(len(_lat)):
+                        self._wm_latent_err.setdefault(_i, []).append(float(_lat[_i]))
+                if _err is not None:
+                    print(f"[wm 1-step err] iter {self.iter}: probe {float(_err.mean()):.4f} m"
+                          + (f" | latent-mse {float(_lat.mean()):.4f}" if _lat is not None else "")
+                          + f" | per-eval probe {np.round(_err, 3).tolist()}")
+                if _imag is not None:
+                    if not self._imagined_regrounded:
+                        self._imagined_regrounded.append(_imag[:, 0])    # frame 0 = recon(initial obs), once
+                    self._imagined_regrounded.append(_imag[:, -1])       # this step's predicted frame
+            except Exception as _pe:  # noqa: BLE001
+                print(f"[wm regrounded eval] iter {self.iter} skipped: {_pe}")
+            ### END HARNESS EDIT ###
             eval_results = ev.env.eval_state(ev.state_g, e_final_state)
             successes = eval_results["success"]
             logs = {
@@ -188,6 +230,14 @@ class MPCPlanner(BasePlanner):
             except Exception as _diag_e:
                 print(f"[diag] per-iter plan{self.iter}.png skipped: {_diag_e}")
             ### END HARNESS EDIT ###
+            ### HARNESS EDIT ### introspection: dump tree + top-K branches + imagined-vs-realized
+            # (cur_state/cur_obs_0 still hold THIS iter's tree root here). Guarded internally.
+            if self._introspector is not None:
+                self._introspector.record_step(
+                    step=self.iter, sub_planner=self.sub_planner, wm=self.wm,
+                    evaluator=self.evaluator, objective_fn=self.objective_fn,
+                    cur_obs_0=cur_obs_0, cur_state=cur_state, obs_g=obs_g)
+            ### END HARNESS EDIT ###
             new_successes = successes & ~self.is_success  # Identify new successes
             self.is_success = (
                 self.is_success | successes
@@ -212,6 +262,24 @@ class MPCPlanner(BasePlanner):
             self.iter += 1
             self.sub_planner.logging_prefix = f"plan_{self.iter}"
 
+        if self._introspector is not None:
+            self._introspector.finalize()
+        # per-eval mean WM 1-step prediction error (surfaced in eval_metrics.json / the sweep summary)
+        self.wm_pred_err_mean = [
+            float(np.mean(self._wm_pred_err[i])) if self._wm_pred_err.get(i) else float("nan")
+            for i in range(n_evals)
+        ]
+        self.wm_latent_err_mean = [
+            float(np.mean(self._wm_latent_err[i])) if self._wm_latent_err.get(i) else float("nan")
+            for i in range(n_evals)
+        ]
+        # per-step (ragged: one list per eval, indexed by MPC step) so the sweep can aggregate BY
+        # STEP INDEX -- e.g. is step 0 (the first big contact push) systematically the worst?
+        self.wm_pred_err_steps = [self._wm_pred_err.get(i, []) for i in range(n_evals)]
+        self.wm_latent_err_steps = [self._wm_latent_err.get(i, []) for i in range(n_evals)]
+        # stitched re-grounded imagination (N, 1+n_steps, 3, H, W) -> closed-loop output_final
+        self.imagined_regrounded = (torch.stack(self._imagined_regrounded, dim=1)
+                                    if self._imagined_regrounded else None)
         planned_actions = torch.cat(self.planned_actions, dim=1)
         self.evaluator.assign_init_cond(
             obs_0=init_obs_0,

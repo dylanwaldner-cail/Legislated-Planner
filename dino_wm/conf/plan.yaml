@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - planner: gd
+  - planner: mpc_rrt
 
 hydra:
   run:
@@ -29,6 +29,15 @@ max_offset: 50
 # Leave null to use the path stored in the model's hydra.yaml.
 data_path: null
 
+# Optional: attach a standalone-trained decoder so the evaluator renders the IMAGINED
+# rollout (top=executed sim, bottom=decoded WM prediction) into output_final.png + .mp4.
+# The WM's own config has has_decoder=False; setting these overrides it at plan time
+# (mirrors the data_path override in plan.py). decoder_path is relative to the repo root.
+# Both null = no decoder (executed-only video). e.g.:
+#   has_decoder=true decoder_path=outputs/2026-07-08/16-26-03/checkpoints/model_20.pth
+has_decoder: true
+decoder_path: outputs/2026-07-08/16-26-03/checkpoints/model_15.pth
+
 seed: 99
 n_evals: 3
 goal_source: 'dset' # 'random_state' or 'dset' or 'random_action' 
@@ -40,11 +49,28 @@ n_plot_samples: 10
 # eyeball what the planner did. Hydra syntax: `video=true` (this is a Hydra app, not argparse).
 video: false
 
+# Render all envs into ONE tiled render product (TiledCamera) instead of a per-env Camera.
+# Far lower RTX memory + faster -> a much higher n_evals ceiling before render OOM. Each env
+# still sees only its own frame. OFF by default (data collection + standalone runs keep the
+# per-env Camera); eval_sweep.py sets it. Hydra: tiled_camera=true
+tiled_camera: false
+
 # CEM diagnostic (Hydra: `cem_debug=true`): per sub-planner solve, print the SPREAD of
 # objective scores across sampled actions (tiny spread => WM/objective can't tell actions
 # apart) and the GT (dataset) action's score vs the winner (does the objective rate the
 # truly-good action best?). Off by default.
 cem_debug: false
+
+# RRT/MPC introspection (planner=mpc_rrt). Per re-plan step, dump the top-K branches
+# (probe-xy path, predicted cell path, committed first stroke), a 2D tree plot, decoded
+# imagined strips, and -- if resim -- the top-K branches re-run through the REAL sim with
+# imagined-vs-realized disparity + ranking-inversion metrics. Writes rrt_introspect/ +
+# summary.json in the run dir. OFF by default (resim adds renders). Hydra: rrt_introspect.enabled=true
+rrt_introspect:
+  enabled: false
+  top_k: 5
+  resim: true      # Tier 2: re-simulate the top_k branches in the real sim (extra PathTracing renders)
+  max_evals: 3     # cap how many parallel evals to instrument
 
 debug_dset_init: False
 
@@ -67,6 +93,21 @@ scene_filter:
   goal_cell: null
   init_color: null
   init_cell: null
+  # Drop segments whose GOAL-cube FOOTPRINT overlaps any of these cells (not just its centroid).
+  # Cleans out goals that sit partly in a forbidden cell -- otherwise closing euclidean distance to
+  # them drags the cube INTO that cell, unfairly penalising the law. e.g. goal_not_in_cells=[4].
+  goal_not_in_cells: null
+
+# POOL SWEEP: when set (int), run the DETERMINISTIC slice pool[scene_offset : scene_offset+n_evals]
+# of matching segments -- one eval per distinct dataset scenario, no shuffle/seed-repeat. n_evals is
+# clamped to the available slice. The eval_sweep.py harness walks this offset to cover the whole
+# pool in OOM-safe batches. null = normal behaviour (shuffled pool / random sampling).
+scene_offset: null
+
+# Cell to SCORE entering for the law-abidance metric (eval_metrics.json), independent of the
+# scene_filter. Lets the SELFISH agent (no constraint) still be scored on the forbidden cell, and
+# lets one metric cell apply across many init/goal pairs. null = score only the constraint's cells.
+metric_cell: null
 
 objective:
   # HARNESS EDIT: probe-based objective (independent of create_objective_fn).
@@ -79,6 +120,6 @@ objective:
   mode: last
   probe_lambda: 1.0 # legislation P(illegal) penalty (separate probe; inert in GD, used in cem.py)
   use_probe: true # probe gives a SHARP cube-position objective (latent MSE alone barely weights the few cube patches)
-  pos_probe_path: probes/probe_cube_1500.pth # trained on data/isaaclab_stroke_1500 (interior cell-acc 0.999, L2 ~0.015m)
+  pos_probe_path: probes/weights/probe_cube_1500.pth # trained on data/isaaclab_stroke_1500 (interior cell-acc 0.999, L2 ~0.015m)
   pos_probe_weight: 50.0 # PRIMARY. squared-L2 in m^2 (~0.03 for a 1-cell error); large so cube term dominates latent MSE (O(0.1-1))
   visual_weight: 0.1 # weak manifold regularizer only (limits probe-gaming); demoted so the cube-position probe dominates

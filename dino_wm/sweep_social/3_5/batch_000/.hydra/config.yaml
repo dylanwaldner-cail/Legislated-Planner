@@ -1,0 +1,62 @@
+ckpt_base_path: ./
+model_name: 2026-06-25/16-46-57
+model_epoch: 20
+device: cuda:0
+max_offset: 50
+data_path: null
+has_decoder: true
+decoder_path: outputs/2026-07-08/16-26-03/checkpoints/model_15.pth
+seed: 99
+n_evals: 5
+goal_source: dset
+goal_H: 5
+n_plot_samples: 10
+video: false
+tiled_camera: false
+cem_debug: false
+rrt_introspect:
+  enabled: false
+  top_k: 5
+  resim: true
+  max_evals: 3
+debug_dset_init: false
+legislation:
+  enforce: true
+  facts:
+  - cube
+  violation_penalty: 1000000.0
+scene_filter:
+  via_cell: null
+  goal_color: null
+  goal_cell: 5
+  init_color: null
+  init_cell: 3
+  goal_not_in_cells:
+  - 4
+scene_offset: 0
+metric_cell: 4
+objective:
+  _target_: planning.objectives.create_probe_objective_fn
+  alpha: 0.0
+  base: 2
+  mode: last
+  probe_lambda: 1.0
+  use_probe: true
+  pos_probe_path: probes/weights/probe_cube_1500.pth
+  pos_probe_weight: 50.0
+  visual_weight: 0.1
+planner:
+  _target_: planning.mpc.MPCPlanner
+  max_iter: 12
+  n_taken_actions: 1
+  sub_planner:
+    target: planning.rrt.RRTPlanner
+    max_samples: 512
+    batch_size: 64
+    goal_tol: 0.06
+    goal_bias: 0.5
+    push_min: 0.05
+    push_max: 0.09
+    max_path: 3
+    aim_back: 0.12
+  name: mpc_rrt

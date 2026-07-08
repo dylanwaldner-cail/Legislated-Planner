@@ -95,6 +95,7 @@ class RRTPlanner(AimedContactCEMPlanner):
         start = base - self.aim_back * dirs                                           # behind the cube
         disp = dirs * (self.aim_back + L)[:, None]                                    # end = cube + dir*L
         strokes = torch.cat([start, disp], dim=-1)                                    # (B,4) raw meters
+        strokes_m = strokes                                                           # keep METERS for the action-space law (off_grid INTENT)
         strokes = (strokes - self._amean) / self._astd                               # normalize
         strokes = torch.clamp(strokes, self._aim_lo, self._aim_hi)                    # WM training range
 
@@ -108,7 +109,12 @@ class RRTPlanner(AimedContactCEMPlanner):
         # selfish (no pruning). n_pred = full length -> the constraint sees every frame, current included.
         constraint = getattr(self, "constraint", None)
         if constraint is not None:
-            viol = constraint.violations(z_full, z_full.shape[1]).detach().cpu().numpy()  # (B,) bool
+            # skip_current=True: frame 0 is the cube's CURRENT position (context), not a prediction --
+            # enforce the law on where the strokes GO, so a grazing current footprint can't freeze it.
+            # actions=strokes_m -> the off_grid checker can prune strokes whose INTENDED endpoint is
+            # off-grid, even when the WM/sim bounce the cube back on-grid (the outcome-only blind spot).
+            viol = constraint.violations(z_full, z_full.shape[1], skip_current=True,
+                                         actions=strokes_m).detach().cpu().numpy()
         else:
             viol = np.zeros(B, dtype=bool)
         self._considered += int(viol.size)                                           # cumulative prune tally (per MPC iter)
@@ -121,9 +127,22 @@ class RRTPlanner(AimedContactCEMPlanner):
         new_prefix = torch.cat([near.prefix, strokes[best:best + 1]], dim=0)          # (len+1,4)
         return end_pos[best], new_prefix
 
+    @staticmethod
+    def _route_cells(final_node, nodes):
+        """Cells along the planned path root->final_node (the agent's intended route) -- post-hoc."""
+        chain, n = [], final_node
+        while True:
+            chain.append(int(n.cell))
+            if n.parent < 0:
+                break
+            n = nodes[n.parent]
+        chain.reverse()
+        return chain
+
     @torch.no_grad()
     def _build_tree(self, trans_obs_0, e, root_cube, goal_cube):
-        """Grow one tree for eval e; return (path actions (T,4) tensor, final cube (2,), nodes)."""
+        """Grow one tree for eval e; return (final Node, nodes). Caller reads node.prefix / node.pos
+        and can parent-walk for the intended route."""
         lo, hi = gm.GRID_CENTER_XY[0] - gm.GRID_HALF, gm.GRID_CENTER_XY[0] + gm.GRID_HALF
         obs_e = {k: v[e:e + 1] for k, v in trans_obs_0.items()}                       # (1, ...)
         law = str(getattr(self, "constraint", None))     # the verdict in effect for this eval's tree
@@ -147,9 +166,9 @@ class RRTPlanner(AimedContactCEMPlanner):
                         prefix=prefix, parent=near_i)
             nodes.append(node)
             if float(np.linalg.norm(pos - goal_cube)) < self.goal_tol:
-                return node.prefix, node.pos, nodes                                  # reached goal
+                return node, nodes                                                   # reached goal
         best = min(nodes, key=lambda n: float(np.linalg.norm(n.pos - goal_cube)))    # best effort
-        return best.prefix, best.pos, nodes
+        return best, nodes
 
     def plan(self, obs_0, obs_g, actions=None):
         trans_obs_0 = move_to_device(self.preprocessor.transform_obs(obs_0), self.device)
@@ -182,7 +201,19 @@ class RRTPlanner(AimedContactCEMPlanner):
             if law_fn is not None:
                 self.constraint = law_fn.observe(z_root[e:e + 1], e)
                 print(f"  [rrt law e{e}] facts {law_fn.ledger(e).last_facts()} -> {self.constraint}")
-            path, final, nodes = self._build_tree(trans_obs_0, e, root_cube[e], goal_cube[e])
+            final_node, nodes = self._build_tree(trans_obs_0, e, root_cube[e], goal_cube[e])
+            path, final = final_node.prefix, final_node.pos
+            # POST-HOC: record the agent's INTENT (committed first stroke + predicted route) in the
+            # ledger. Analysis only -- never read during planning; compared offline against the next
+            # step's observed outcome (foreseeability / side-effect attribution).
+            if law_fn is not None:
+                law_fn.commit(e, {
+                    "action": path[0].detach().cpu().tolist() if len(path) else None,
+                    "intended_route_cells": self._route_cells(final_node, nodes),
+                    "predicted_final_cell": int(final_node.cell),
+                    "predicted_final_pos": [float(final[0]), float(final[1])],
+                    "path_len": int(len(path)),
+                })
             self._trees.append(nodes)
             paths.append(path)
             finals.append(final)

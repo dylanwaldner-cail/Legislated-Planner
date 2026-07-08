@@ -17,6 +17,14 @@ class NormativeMemory:
     def append(self, facts, verdict):
         self.records.append({"step": len(self.records), "facts": list(facts), "verdict": verdict})
 
+    def commit(self, data):
+        """Attach the agent's INTENT (chosen action + predicted outcome) to the latest step record.
+        POST-HOC ONLY -- never read during planning. It lets offline analysis compare what the agent
+        INTENDED / PREDICTED at step t against the ACTUAL outcome recorded (as observed facts) at
+        step t+1: foreseeability, side-effect attribution, knowing-vs-accidental violation."""
+        if self.records:
+            self.records[-1]["committed"] = data
+
     def last_facts(self):
         return self.records[-1]["facts"] if self.records else []
 

@@ -15,11 +15,13 @@ from .grid_metadata import cell_labels_from_states_single, STATE_FIRST_CUBE_OFFS
 
 class GridVectorEnv:
     def __init__(self, num_envs, task_id="Isaac-DinoWMGrid-Single-v0",
-                 device="cuda:0", **kwargs):
+                 device="cuda:0", tiled_camera=False, **kwargs):
         # **kwargs absorbs any legacy env-cfg keys (e.g. cooperative/camera) so an
-        # old training config doesn't break construction.
+        # old training config doesn't break construction. tiled_camera=True swaps the per-env
+        # Camera for a TiledCamera (eval-only render-memory speedup; see GridWrapperSingle).
         self.env_num = num_envs
-        self._w = GridWrapperSingle(task_id=task_id, num_envs=num_envs, device=device)
+        self._w = GridWrapperSingle(task_id=task_id, num_envs=num_envs, device=device,
+                                    tiled_camera=tiled_camera)
 
     def __len__(self):
         return self.env_num

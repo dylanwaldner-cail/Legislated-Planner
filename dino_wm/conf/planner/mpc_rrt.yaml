@@ -8,13 +8,19 @@ max_iter: 12         # finite cap; one stroke per iter, enough for a multi-strok
 n_taken_actions: 1   # commit only the first stroke, then re-observe + re-plan the tree
 sub_planner:
   target: planning.rrt.RRTPlanner
-  max_samples: 256   # tree nodes per re-plan (rebuilt every step; raise if it can't find a route)
+  max_samples: 512   # extend attempts per re-plan (rebuilt every step). Higher = tree completes the
+                     # detour to the goal more often -> less greedy best-effort fallback -> less
+                     # oscillation. NB: most attempts get pruned, so the tree stays ~10-40 nodes;
+                     # cost scales ~linearly (each is a WM rollout). BREADTH, not depth (max_path).
   batch_size: 64     # aimed strokes per extend; keep the one closest to the sampled target
   goal_tol: 0.06     # cube within this (m) of the goal cube == reached (< CELL/2 = 0.067)
-  goal_bias: 0.2     # P(extend toward the goal vs a random grid point)
+  goal_bias: 0.5     # P(extend toward the goal vs a random grid point)
   push_min: 0.05     # per-stroke cube-travel range (matches the data sampler band)
   push_max: 0.09
-  max_path: 20       # cap on path length (strokes)
+  max_path: 3        # cap on path length (strokes). Capped at WM reliable horizon H*~=4: deeper
+                     # branches are open-loop rollouts past the WM's capacity (garbage latents ->
+                     # meaningless geometry + drift-poisoned constraint checks). MPC re-plans every
+                     # step and commits only the first stroke, so far goals still solve across steps.
   aim_back: 0.12     # standoff behind the cube (matches mpc_cem_aimed)
 
 name: mpc_rrt

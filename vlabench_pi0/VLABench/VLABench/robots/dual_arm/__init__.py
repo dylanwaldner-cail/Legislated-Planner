@@ -1,1 +1,0 @@
-from VLABench.robots.dual_arm.base import DualArm

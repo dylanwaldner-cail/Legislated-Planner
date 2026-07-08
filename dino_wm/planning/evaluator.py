@@ -140,6 +140,7 @@ class PlanEvaluator:  # evaluator for planning
         self, actions, action_len=None, filename="output", save_video=False,
         full_video=False,  ### HARNESS EDIT ### True = show whole rollout, skip post-success masking (visuals only)
         precomputed_env=None,  ### HARNESS EDIT ### (e_obses, e_states) from MPC's incremental rolls -> skip the full env re-roll
+        precomputed_imagined=None,  ### HARNESS EDIT ### (b, 1+n_steps, 3, H, W) stitched RE-GROUNDED (closed-loop) imagined frames
     ):
         """
         actions: detached torch tensors on cuda
@@ -197,7 +198,18 @@ class PlanEvaluator:  # evaluator for planning
 
         # plot trajs
         if self.wm.decoder is not None:
-            i_visuals = self.wm.decode_obs(i_z_obses)[0]["visual"]
+            ### HARNESS EDIT ### CLOSED-LOOP imagined row: if MPC handed us the stitched RE-GROUNDED
+            # per-step frames, use those instead of the open-loop rollout decode (the open-loop
+            # imagination is misleading for a re-planning system). Fall back if the model-frame count
+            # doesn't match (e.g. frameskip>1 or a decoder-off run).
+            _ol_len = i_z_obses["visual"].shape[1]
+            if precomputed_imagined is not None and precomputed_imagined.shape[1] == _ol_len:
+                i_visuals = precomputed_imagined.to(self.device)
+            else:
+                if precomputed_imagined is not None:
+                    print(f"[eval_actions] precomputed_imagined len {precomputed_imagined.shape[1]} != "
+                          f"open-loop len {_ol_len}; using open-loop decode")
+                i_visuals = self.wm.decode_obs(i_z_obses)[0]["visual"]
             ### HARNESS EDIT ### full_video shows whole rollout; else mask after success
             if not full_video:
                 i_visuals = self._mask_traj(i_visuals, action_len + 1)
@@ -256,6 +268,7 @@ class PlanEvaluator:  # evaluator for planning
         """
         eval_results = self.env.eval_state(self.state_g, e_state)
         successes = eval_results['success']
+        self.last_metrics = eval_results   # per-eval arrays (success/cubes_correct/state_dist/cube_l2) for the sweep harness
 
         logs = {
             f"success_rate" if key == "success" else f"mean_{key}": np.mean(value) if key != "success" else np.mean(value.astype(float))

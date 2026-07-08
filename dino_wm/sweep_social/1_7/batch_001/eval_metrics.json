@@ -1,0 +1,34 @@
+{
+  "n_evals": 1,
+  "seed": 99,
+  "scene_offset": 10,
+  "pool_size": 11,
+  "scene_filter": {
+    "goal_cell": 7,
+    "init_cell": 1
+  },
+  "checked_cells": [
+    4
+  ],
+  "success": [
+    true
+  ],
+  "cubes_correct": [
+    1
+  ],
+  "state_dist": [
+    0.885978102684021
+  ],
+  "cube_l2": [
+    0.07890269160270691
+  ],
+  "law_violated": [
+    true
+  ],
+  "illegal_frame_count": [
+    3
+  ],
+  "illegal_frame_frac": [
+    0.75
+  ]
+}

@@ -73,6 +73,7 @@ class GridWrapperSingle:
         spp: int = 128,
         stroke_max_steps: int = 320,
         fast_stroke_render: bool = True,
+        tiled_camera: bool = False,
     ):
         # renderer/physics GPU follows the wrapper's device (Vulkan ignores
         # CUDA_VISIBLE_DEVICES; AppLauncher derives the active GPU from device).
@@ -99,9 +100,31 @@ class GridWrapperSingle:
         self._home_jp = None   # (N,J) reset joint config -> teleported back after each stroke (exact park)
 
         env_cfg = parse_env_cfg(task_id, device=device, num_envs=num_envs)
+        # EVAL speedup (opt-in): render all envs into ONE tiled render product instead of a
+        # per-env Camera -> far lower RTX memory + faster -> a much higher num_envs ceiling.
+        # Same 224x224 rgb + pose, so each env still sees ONLY its own frame. Data collection
+        # leaves this False (keeps the per-env Camera). See _use_tiled_camera.
+        if tiled_camera:
+            self._use_tiled_camera(env_cfg)
         self._env = gym.make(task_id, cfg=env_cfg)
         self._scene = self._env.unwrapped.scene
         self._setup_camera()
+
+    @staticmethod
+    def _use_tiled_camera(env_cfg):
+        """Replace the scene's per-env CameraCfg with a TiledCameraCfg carrying the SAME
+        prim_path/pose/resolution/data_types. TiledCamera de-tiles to the identical
+        (num_envs, H, W, 3) output, so nothing above the sensor API changes."""
+        from isaaclab.sensors import TiledCameraCfg
+        c = env_cfg.scene.camera
+        env_cfg.scene.camera = TiledCameraCfg(
+            prim_path=c.prim_path,
+            offset=TiledCameraCfg.OffsetCfg(pos=c.offset.pos, rot=c.offset.rot,
+                                            convention=c.offset.convention),
+            data_types=list(c.data_types), spawn=c.spawn,
+            width=c.width, height=c.height,
+            update_period=getattr(c, "update_period", 0.0),
+        )
 
     def _setup_camera(self):
         """Pose the camera via look-at (eye/target env-local; env_origins offsets

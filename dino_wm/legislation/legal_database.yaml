@@ -21,6 +21,9 @@
 atoms:
   - cube
   - in_cell(0..8)
+  - off_grid
+  - sign(white;red;yellow;green)   # perceived stop-sign colour (from the sign_color probe)
+  - moving                         # the robot is in motion (prohibited == a full stop / freeze)
 
 laws:
   # PLACEHOLDER (trivial; just anchors the schema + lets the pipeline run): cube ought not
@@ -29,6 +32,24 @@ laws:
   - label: no_centre_cell
     antecedent: [cube]
     consequent: ["[O]~in_cell(4)"]
+
+  # Workspace bound as a law: the cube must stay on the grid. Enforced by the `off_grid` checker
+  # (constraint.py) -- cube CENTRE within +/-GRID_HALF. Physical/feasibility, but modelled as a
+  # prohibition so ALL constraints flow through the one pipeline (the planner does no reasoning).
+  - label: no_off_grid
+    antecedent: [cube]
+    consequent: ["[O]~off_grid"]
+
+  # STOP SIGN: a RED sign obliges the robot to HALT. Modelled as a prohibition on `moving`
+  # (obligation of ~moving); the `moving` checker (constraint.py) flags EVERY candidate stroke as a
+  # motion, so this prunes ALL planner nodes -> the RRT can't extend -> the robot freezes in place.
+  # Conditional + state-dependent: the grounder emits sign(<colour>) from the sign_color probe each
+  # step, so the freeze engages when the sign is red and releases when it changes.
+  # DORMANT until a sign_color probe is trained + registered (probes.yaml): without it sign(red) is
+  # never grounded, so this law never fires and the planner is unaffected.
+  - label: red_sign_stop
+    antecedent: [sign(red)]
+    consequent: ["[O]~moving"]
 
   # ---- Illustrative forms the schema ALREADY supports (commented; not active norms) ----
   #

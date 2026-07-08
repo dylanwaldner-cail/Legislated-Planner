@@ -7,7 +7,7 @@ Expected pattern: a single marginally-clipped corner cell sitting near the 0.5 b
 
 Saves the worst mismatch frames (PNG) + GT/pred/probs grids to --out, plus verify_mismatch.json.
 
-    python probes/verify_cube_cells.py --probe probes/probe_cube_cells.pth --n 8
+    python probes/verify_cube_cells.py --probe probes/weights/probe_cube_cells.pth --n 8
     python probes/verify_cube_cells.py --min_cells 4 --n 8     # only corner (4-cell) frames
 """
 from __future__ import annotations
@@ -47,7 +47,7 @@ def episode_probs(encoder, probe, frames_uint8, resize, enc_batch, dev):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data_dir", default="data/isaaclab_stroke_1500")
-    ap.add_argument("--probe", default="probes/probe_cube_cells.pth")
+    ap.add_argument("--probe", default="probes/weights/probe_cube_cells.pth")
     ap.add_argument("--out", default="probes/cell_probe_mismatch")
     ap.add_argument("--n", type=int, default=8, help="how many mismatch frames to SAVE (worst first)")
     ap.add_argument("--scan_episodes", type=int, default=60, help="episodes to scan for mismatches")

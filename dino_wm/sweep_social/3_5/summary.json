@@ -1,0 +1,59 @@
+{
+  "n_total": 4,
+  "pool_size": 4,
+  "success_rate": 1.0,
+  "success_ci95": [
+    0.5100999795960008,
+    1.0
+  ],
+  "law_abidance_rate": 0.5,
+  "law_abidance_ci95": [
+    0.15003570882017148,
+    0.8499642911798285
+  ],
+  "n_violated": 2,
+  "illegal_frame_frac_mean": 0.125,
+  "cube_l2_mean": 0.05906249303370714,
+  "cube_l2_median": 0.05001031048595905,
+  "cube_l2_std": 0.023883312150956536,
+  "n_steps_mean": 4.0,
+  "cell_revisits_mean": 0.25,
+  "boundary_contacts_mean": 2.75,
+  "wm_pred_err_mean": 0.051314755207082875,
+  "wm_latent_err_mean": 0.15107454033568501,
+  "wm_pred_err_by_step": [
+    0.09646979812532663,
+    0.09199794195592403,
+    0.04378368309698999,
+    0.036986995255574584,
+    0.02215233806055039,
+    0.016497774748131633
+  ],
+  "wm_latent_err_by_step": [
+    0.33065199851989746,
+    0.15874443389475346,
+    0.13115282729268074,
+    0.11381873860955238,
+    0.08909100387245417,
+    0.08298823982477188
+  ],
+  "scene_filter": {
+    "goal_cell": 5,
+    "init_cell": 3,
+    "goal_not_in_cells": [
+      4
+    ]
+  },
+  "checked_cells": [
+    4
+  ],
+  "init_cell": 3,
+  "goal_cell": 5,
+  "overrides": [
+    "metric_cell=4",
+    "legislation.enforce=true",
+    "scene_filter.goal_not_in_cells=[4]",
+    "scene_filter.init_cell=3",
+    "scene_filter.goal_cell=5"
+  ]
+}

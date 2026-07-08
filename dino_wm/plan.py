@@ -143,19 +143,37 @@ class PlanWorkspace:
         # self.dset[i]. (Building from the full states.pth would mis-index the valid TrajSubset.)
         self.scene_pool = None
         _sf = {k: v for k, v in (cfg_dict.get("scene_filter") or {}).items() if v is not None}
-        if _sf:
+        _scene_offset = cfg_dict.get("scene_offset")
+        if _sf or _scene_offset is not None:            # build the pool for filtered runs OR pool sweeps
             from scripts.scene_index import select_pairs_from_states
             _base = getattr(self.dset, "dataset", self.dset)             # TrajSubset -> base dataset
             _idxs = list(getattr(self.dset, "indices", range(len(self.dset))))
             _states = _base.states[_idxs].numpy()
             _seq = np.asarray(_base.seq_lengths)[_idxs]
             self.scene_pool = select_pairs_from_states(_states, _seq, cfg_dict["goal_H"], **_sf)
-            print(f"[scene_filter] {len(self.scene_pool)} matching (episode,init,goal) for {_sf}")
+            print(f"[scene_filter] {len(self.scene_pool)} matching (episode,init,goal) for {_sf or 'ALL moving segments'}")
             if not self.scene_pool:
                 raise ValueError(f"scene_filter {_sf} matched 0 segments (goal_H={cfg_dict['goal_H']}); loosen it.")
 
-        # have different seeds for each planning instances
-        self.eval_seed = [cfg_dict["seed"] * n + 1 for n in range(cfg_dict["n_evals"])]
+        # POOL SWEEP: run the DETERMINISTIC slice pool[offset:offset+n_evals] (one eval per distinct
+        # segment, no shuffle). Clamp n_evals so the last batch doesn't over-run the pool.
+        if _scene_offset is not None:
+            _avail = max(0, len(self.scene_pool) - int(_scene_offset))
+            if _avail == 0:
+                raise ValueError(f"scene_offset {_scene_offset} >= pool size {len(self.scene_pool)} (pool exhausted)")
+            cfg_dict["n_evals"] = min(cfg_dict["n_evals"], _avail)
+
+        # DETERMINISM (fair cross-technique comparison): seed torch/np/python-random from cfg seed so
+        # the planner's sampling + any shuffles are reproducible. (Train/valid split is already fixed
+        # at seed 42, and scene_offset makes segment selection deterministic.)
+        random.seed(cfg_dict["seed"]); np.random.seed(cfg_dict["seed"])
+        torch.manual_seed(cfg_dict["seed"]); torch.cuda.manual_seed_all(cfg_dict["seed"])
+
+        # Per-eval env seeds. Under a pool sweep, index by the GLOBAL pool position (scene_offset + n)
+        # so a given segment gets the SAME env seed regardless of --batch -> the same episode is set
+        # up identically across techniques and batchings.
+        _off0 = int(_scene_offset) if _scene_offset is not None else 0
+        self.eval_seed = [cfg_dict["seed"] * (_off0 + n) + 1 for n in range(cfg_dict["n_evals"])]
         print("eval_seed: ", self.eval_seed)
         self.n_evals = cfg_dict["n_evals"]
         self.goal_source = cfg_dict["goal_source"]
@@ -205,6 +223,7 @@ class PlanWorkspace:
         self.evaluator.video = self.cfg_dict.get("video", False)  ### HARNESS EDIT ### gate per-step (smooth) video capture
         self.evaluator.gt_actions = self.gt_actions  ### HARNESS EDIT ### GT (dataset) actions for cem_debug scoring
         self.evaluator.cem_debug = self.cfg_dict.get("cem_debug", False)  ### per-solve CEM score-spread + GT-vs-winner debug
+        self._rrt_introspect_cfg = self.cfg_dict.get("rrt_introspect")  ### wired onto the planner below
 
         if self.wandb_run is None or isinstance(
             self.wandb_run, wandb.sdk.lib.disabled.RunDisabled
@@ -223,6 +242,11 @@ class PlanWorkspace:
             wandb_run=self.wandb_run,
             log_filename=self.log_filename,
         )
+
+        ### HARNESS EDIT ### hand the introspection config to the (MPC) planner. OFF unless
+        # rrt_introspect.enabled=true. Attribute lookup in mpc.py, so a no-op for other planners.
+        if self._rrt_introspect_cfg is not None:
+            self.planner.introspect_cfg = self._rrt_introspect_cfg
 
         # optional: assume planning horizon equals to goal horizon
         from planning.mpc import MPCPlanner
@@ -416,7 +440,11 @@ class PlanWorkspace:
 
         picks = None
         if use_pool:
-            picks = list(pool); random.shuffle(picks)
+            _off = self.cfg_dict.get("scene_offset")
+            if _off is not None:                            # pool sweep: deterministic slice, one seg per eval
+                picks = list(pool)[int(_off):]              # n_evals already clamped in __init__ to fit this slice
+            else:
+                picks = list(pool); random.shuffle(picks)
 
         for i in range(self.n_evals):
             if use_pool:
@@ -493,16 +521,47 @@ class PlanWorkspace:
             obs_g=self.obs_g,
             actions=actions_init,
         )
+        ### HARNESS EDIT ### post-hoc: dump the per-eval normative ledger (observed facts + verdicts +
+        # committed intents) to the output folder. Analysis only; does not affect planning.
+        _leg = getattr(getattr(self.planner, "sub_planner", self.planner), "law_fn", None)
+        if _leg is not None:
+            _leg.dump("normative_ledger.json")
+            print("Dumped normative ledger to", os.path.abspath("normative_ledger.json"))
         ### HARNESS EDIT ### reuse MPC's cached executed frames for the final video/metrics (no full re-roll)
         precomputed_env = None
         if getattr(self.planner, "executed_obses", None) is not None:
             precomputed_env = (self.planner.executed_obses, self.planner.executed_states)
         ### END HARNESS EDIT ###
-        logs, successes, _, _ = self.evaluator.eval_actions(
+        logs, successes, _, e_states = self.evaluator.eval_actions(
             actions.detach(), action_len, save_video=True, filename="output_final",
             full_video=True,  ### HARNESS EDIT ### one video spanning the whole trajectory
             precomputed_env=precomputed_env,  ### HARNESS EDIT ###
+            ### HARNESS EDIT ### closed-loop imagined row (re-grounded per-step frames) if MPC produced them
+            precomputed_imagined=getattr(self.planner, "imagined_regrounded", None),
         )
+        ### HARNESS EDIT ### dump per-eval metrics for scripts/eval_sweep.py. Computation lives in
+        # planning/planning_metrics.py to keep this workspace lean. Never let the dump crash a run.
+        try:
+            from planning.planning_metrics import build_eval_metrics
+            _tgt = getattr(self.planner, "sub_planner", self.planner)
+            _metrics = build_eval_metrics(
+                e_states=e_states, action_len=action_len,
+                last_metrics=getattr(self.evaluator, "last_metrics", {}),
+                constraint=getattr(_tgt, "constraint", None),
+                scene_filter=self.cfg_dict.get("scene_filter"),
+                metric_cell=self.cfg_dict.get("metric_cell"),
+                scene_offset=self.cfg_dict.get("scene_offset"),
+                pool_size=(len(self.scene_pool) if self.scene_pool is not None else None),
+                n_evals=self.n_evals, seed=self.cfg_dict["seed"],
+                wm_pred_err=getattr(self.planner, "wm_pred_err_mean", None),
+                wm_latent_err=getattr(self.planner, "wm_latent_err_mean", None),
+                wm_pred_err_steps=getattr(self.planner, "wm_pred_err_steps", None),
+                wm_latent_err_steps=getattr(self.planner, "wm_latent_err_steps", None))
+            with open("eval_metrics.json", "w") as _f:
+                json.dump(_metrics, _f, indent=2)
+            print("Dumped eval metrics to", os.path.abspath("eval_metrics.json"))
+        except Exception as _ex:  # noqa: BLE001
+            print("[eval_metrics] dump failed:", _ex)
         logs = {f"final_eval/{k}": v for k, v in logs.items()}
         self.wandb_run.log(logs)
         logs_entry = {
@@ -640,6 +699,22 @@ def planning_main(cfg_dict):
             model_cfg.env.dataset.data_path = data_path_override
         print(f"Overriding dataset data_path -> {data_path_override}")
 
+    # Optionally attach a standalone-trained decoder so the evaluator can render the
+    # IMAGINED rollout (decode_obs on the WM's predicted latents). The WM's saved config
+    # has has_decoder=False; these plan-time overrides flip it on and point load_model()
+    # at the decoder checkpoint. Mirrors the data_path override above; decoder_path is
+    # resolved relative to the repo root inside load_model().
+    has_decoder_override = cfg_dict.get("has_decoder")
+    if has_decoder_override is not None:
+        with open_dict(model_cfg):
+            model_cfg.has_decoder = bool(has_decoder_override)
+        print(f"Overriding has_decoder -> {bool(has_decoder_override)}")
+    decoder_path_override = cfg_dict.get("decoder_path")
+    if decoder_path_override is not None:
+        with open_dict(model_cfg):
+            model_cfg.env.decoder_path = decoder_path_override
+        print(f"Overriding decoder_path -> {decoder_path_override}")
+
     seed(cfg_dict["seed"])
     _, dset = hydra.utils.call(
         model_cfg.env.dataset,
@@ -648,6 +723,27 @@ def planning_main(cfg_dict):
         frameskip=model_cfg.frameskip,
     )
     dset = dset["valid"]
+
+    ### HARNESS EDIT ### clamp n_evals to the scene pool BEFORE building the env, so the IsaacLab
+    # env's num_envs matches the number of init states prepare_targets will produce. Without this a
+    # pool smaller than --batch (e.g. an init:goal pair with few matching segments) builds an
+    # N-env sim but only M<N init states -> write_joint_state size mismatch. PlanWorkspace
+    # re-clamps identically (this just moves the clamp ahead of env construction).
+    _sf = {k: v for k, v in (cfg_dict.get("scene_filter") or {}).items() if v is not None}
+    _soff = cfg_dict.get("scene_offset")
+    if _soff is not None:
+        from scripts.scene_index import select_pairs_from_states
+        _base = getattr(dset, "dataset", dset)
+        _idxs = list(getattr(dset, "indices", range(len(dset))))
+        _pool = select_pairs_from_states(_base.states[_idxs].numpy(),
+                                         np.asarray(_base.seq_lengths)[_idxs],
+                                         cfg_dict["goal_H"], **_sf)
+        _avail = max(0, len(_pool) - int(_soff))
+        if _avail == 0:
+            raise ValueError(f"scene_offset {_soff} >= pool size {len(_pool)} (pool exhausted)")
+        cfg_dict["n_evals"] = min(cfg_dict["n_evals"], _avail)
+        print(f"[pool clamp] n_evals -> {cfg_dict['n_evals']} (pool {len(_pool)}, offset {_soff})")
+    ### END HARNESS EDIT ###
 
     num_action_repeat = model_cfg.num_action_repeat
     model_ckpt = (
@@ -663,7 +759,8 @@ def planning_main(cfg_dict):
         kwargs.pop("num_envs", None)
         ### HARNESS EDIT ### pin the sim/renderer GPU to the same device as the WM
         kwargs.pop("device", None)
-        env = GridVectorEnv(num_envs=cfg_dict["n_evals"], device=sim_device, **kwargs)
+        env = GridVectorEnv(num_envs=cfg_dict["n_evals"], device=sim_device,
+                            tiled_camera=bool(cfg_dict.get("tiled_camera", False)), **kwargs)
         ### END HARNESS EDIT ###
         ### HARNESS EDIT ### Ctrl+C -> force clean exit (Kit ignores SIGINT and hangs, leaking GPU mem)
         import signal

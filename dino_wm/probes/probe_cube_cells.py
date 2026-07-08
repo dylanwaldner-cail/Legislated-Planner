@@ -15,7 +15,7 @@ Reuses the position probe's encoder + pooled-feature extraction (encode_dataset)
 MLP head (d_out=9). Saves with kind='multilabel' so probes/registry.py loads it generically.
 
     python probes/probe_cube_cells.py --data_dir data/isaaclab_stroke_1500 \
-        --save_path probes/probe_cube_cells.pth
+        --save_path probes/weights/probe_cube_cells.pth
 """
 from __future__ import annotations
 

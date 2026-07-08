@@ -1,2 +1,0 @@
-from VLABench.algorithms.path_smoothing.bezier_curve import bezier_smoothing
-from VLABench.algorithms.path_smoothing.polynomial_interpolation import polynomial_smoothing

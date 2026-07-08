@@ -1,0 +1,9 @@
+- planner=mpc_rrt
+- metric_cell=4
+- legislation.enforce=true
+- scene_filter.init_cell=1
+- scene_filter.goal_cell=7
+- n_evals=1
+- scene_offset=10
+- seed=99
+- video=false

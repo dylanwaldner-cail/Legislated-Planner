@@ -17,7 +17,7 @@ No sim needed: WM (frozen DINO + predictor) + probe + the .pth dataset. Run with
 container python OR the host conda env (torch + cached dinov2 hub):
     python scripts/wm_cube_pred_check.py \
         --model_dir outputs/2026-06-25/16-46-57 --epoch 20 \
-        --data_dir data/isaaclab_stroke_1500 --probe probe_cube_1500.pth
+        --data_dir data/isaaclab_stroke_1500 --probe probes/weights/probe_cube_1500.pth
 """
 from __future__ import annotations
 
@@ -74,9 +74,15 @@ def load_probe(path, device):
 def probe_xy(mlp, pinfo, tokens, device):
     """tokens (b, P, D) -> cube (x,y) meters, replicating probe_cube_position."""
     X = _spatial_pool_grid(tokens, pinfo["pool_grid"])              # (b, grid*grid*D)
+    # Two SEPARATE z-scores with two different stat sets (not "subtract then add back"):
+    # x_mu/x_sd are FEATURE stats -> standardize the input so the MLP sees the same
+    # distribution it trained on. y_mu/y_sd are LABEL stats.
     mu = torch.as_tensor(pinfo["x_mu"], device=device, dtype=X.dtype)
     sd = torch.as_tensor(pinfo["x_sd"], device=device, dtype=X.dtype)
     pn = mlp((X - mu) / sd).cpu().numpy()
+    # The MLP was TRAINED to predict z-scored targets (probe_cube_position.py:272-273,293),
+    # so its raw output is in standardized cube-position units, not meters. Invert that
+    # target z-score (* y_sd + y_mu) to recover physical meters (comparable to CELL=0.133 m).
     return pn * pinfo["y_sd"] + pinfo["y_mu"]                       # (b, 2) meters
 
 
@@ -85,7 +91,7 @@ def main():
     ap.add_argument("--model_dir", default="outputs/2026-06-25/16-46-57")
     ap.add_argument("--epoch", default="20")
     ap.add_argument("--data_dir", default="data/isaaclab_stroke_1500")
-    ap.add_argument("--probe", default="probes/probe_cube_1500.pth")
+    ap.add_argument("--probe", default="probes/weights/probe_cube_1500.pth")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--n_windows", type=int, default=256)
     ap.add_argument("--batch", type=int, default=32)

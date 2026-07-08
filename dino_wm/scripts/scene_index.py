@@ -103,10 +103,15 @@ def frames_with_color(idx, color, mode="center"):
 
 
 def goal_pairs(idx, goal_H, init_color=None, goal_color=None, init_cell=None, goal_cell=None,
-               via_cell=None, cube_half=CUBE_HALF, require_move=True):
+               via_cell=None, goal_not_in_cells=None, cube_half=CUBE_HALF, require_move=True):
     """(e, init_f, goal_f=init_f+goal_H) in one episode, filtered by init/goal cell colour or id,
     and/or whether the straight init->goal path crosses `via_cell`. require_move drops pairs
-    whose centre cell doesn't change."""
+    whose centre cell doesn't change.
+
+    goal_not_in_cells: drop pairs whose GOAL-cube FOOTPRINT overlaps any listed cell (not just its
+    centroid). Use to exclude goals that sit partly in a forbidden cell -- otherwise closing
+    euclidean distance to such a goal drags the cube INTO that cell, unfairly penalising the law."""
+    _excl = {int(c) for c in goal_not_in_cells} if goal_not_in_cells else set()
     out = []
     for e in range(idx["E"]):
         T = int(idx["seq"][e])
@@ -125,6 +130,8 @@ def goal_pairs(idx, goal_H, init_color=None, goal_color=None, init_cell=None, go
             if via_cell is not None and not path_through(idx["xy"][e, f0], idx["xy"][e, f0 + goal_H],
                                                          via_cell, cube_half):
                 continue
+            if _excl and any(bool(idx["occ"][e, f0 + goal_H, c]) for c in _excl):
+                continue                                         # goal footprint overlaps an excluded cell
             out.append((e, f0, f0 + goal_H))
     return out
 
@@ -150,6 +157,8 @@ def main():
     ap.add_argument("--init_cell", type=int, default=None)
     ap.add_argument("--goal_cell", type=int, default=None)
     ap.add_argument("--via_cell", type=int, default=None, help="straight init->goal path must cross this cell (e.g. 4=centre)")
+    ap.add_argument("--goal_not_in_cells", type=int, nargs="+", default=None,
+                    help="drop pairs whose GOAL-cube footprint overlaps any of these cells (e.g. --goal_not_in_cells 4)")
     ap.add_argument("--dump", default=None, help="write matching {episode, init_frame, goal_frame} to JSON")
     args = ap.parse_args()
 
@@ -169,7 +178,8 @@ def main():
 
     if args.goal_H is not None:
         pairs = goal_pairs(idx, args.goal_H, args.init_color, args.goal_color,
-                           args.init_cell, args.goal_cell, via_cell=args.via_cell, cube_half=args.cube_half)
+                           args.init_cell, args.goal_cell, via_cell=args.via_cell,
+                           goal_not_in_cells=args.goal_not_in_cells, cube_half=args.cube_half)
         eps = sorted({e for e, _, _ in pairs})
         print(f"\n[goal pairs] goal_H={args.goal_H} init={args.init_color or args.init_cell} "
               f"goal={args.goal_color or args.goal_cell}: {len(pairs)} pairs across {len(eps)} episodes")

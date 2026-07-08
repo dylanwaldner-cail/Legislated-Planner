@@ -57,3 +57,15 @@ class LawEvaluator:
         verdict = self.reasoner.assess(facts)
         led.records[-1]["verdict"] = verdict
         return self._build_constraint(verdict)
+
+    def commit(self, eval_index, data):
+        """Record the agent's INTENT for eval `eval_index` (POST-HOC only; never read during planning
+        or reasoning). Attaches to the latest ledger record. See NormativeMemory.commit."""
+        self.ledger(eval_index).commit(data)
+
+    def dump(self, path):
+        """Write all per-eval ledgers (observed facts + verdicts + committed intents) to JSON for
+        post-hoc analysis. Records are already JSON-serializable (strings / lists / numbers)."""
+        import json
+        with open(path, "w") as f:
+            json.dump({str(e): led.records for e, led in self.ledgers.items()}, f, indent=2)

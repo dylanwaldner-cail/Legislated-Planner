@@ -27,7 +27,7 @@ Also:
 Usage:
     python scripts/wm_chaining_degradation.py \
         --model_dir outputs/2026-06-25/16-46-57 --epoch 20 \
-        --data_dir data/isaaclab_stroke_1500 --probe probe_cube_1500.pth --horizon 5
+        --data_dir data/isaaclab_stroke_1500 --probe probes/weights/probe_cube_1500.pth --horizon 5
     # one-time noisy baseline (latent metrics only; deformable WM has no cube probe):
     python scripts/wm_chaining_degradation.py --include_deformable
 """
@@ -236,7 +236,7 @@ def main():
     ap.add_argument("--model_dir", default="outputs/2026-06-25/16-46-57")
     ap.add_argument("--epoch", default="20")
     ap.add_argument("--data_dir", default="data/isaaclab_stroke_1500")
-    ap.add_argument("--probe", default="probes/probe_cube_1500.pth", help="ENCODED-trained probe (floor + encH-on-pred)")
+    ap.add_argument("--probe", default="probes/weights/probe_cube_1500.pth", help="ENCODED-trained probe (floor + encH-on-pred)")
     ap.add_argument("--probe_pred", default=None,
                     help="optional PREDICTED-trained probe (e.g. probe_cube_pred.pth) -> adds the "
                     "predH_pred column so we can isolate WM drift from probe distribution-shift")
