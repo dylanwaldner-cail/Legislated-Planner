@@ -1,6 +1,6 @@
 """Index the dataset by the cube's cell + colour, to select scenarios for specific law tests.
 
-Tags every frame with the cube's CENTRE cell, that cell's colour (from CELL_COLORS:
+Tags every frame with the cube's CENTER cell, that cell's colour (from CELL_COLORS:
 yellow={3,5}, red={4}, green={0,1,2,6,7,8}), and per-cell occupancy. Lets you (a) see how many
 frames/episodes meet a condition and (b) pull ready-to-use (episode, init_frame, goal_frame)
 tuples for a specific law test -- e.g. goal in a yellow cell, init in green.
@@ -36,7 +36,7 @@ def cell_color(cell_id):
 
 
 def _occupancy(xy, cube_half=CUBE_HALF):
-    """(...,2) cube centres -> (...,N_CELLS) bool occupancy (AABB overlap)."""
+    """(...,2) cube centers -> (...,N_CELLS) bool occupancy (AABB overlap)."""
     centers = np.array([gm.cell_center(c) for c in range(gm.N_CELLS)], np.float32)   # (9,2)
     H = gm.CELL / 2.0 + cube_half
     d = np.abs(xy[..., None, :] - centers)                                           # (...,9,2)
@@ -63,7 +63,7 @@ def _seg_aabb_hit(p0, p1, lo, hi):
 
 def path_through(c0, c1, cell, cube_half=CUBE_HALF):
     """Does the cube footprint sweep `cell` along the straight init->goal segment c0->c1?
-    (the 'the direct route crosses this cell' condition — e.g. via_cell=4 for the centre)."""
+    (the 'the direct route crosses this cell' condition — e.g. via_cell=4 for the center)."""
     cx, cy = gm.cell_center(cell)
     H = gm.CELL / 2.0 + cube_half
     return _seg_aabb_hit(np.asarray(c0, float), np.asarray(c1, float),
@@ -88,7 +88,7 @@ def build_index(data_dir, cube_half=CUBE_HALF):
 
 
 def frames_with_color(idx, color, mode="center"):
-    """(e,f) where the cube's CENTRE cell (mode='center') or ANY occupied cell ('occupied')
+    """(e,f) where the cube's CENTER cell (mode='center') or ANY occupied cell ('occupied')
     has `color`. Respects per-episode seq lengths."""
     hits = []
     for e in range(idx["E"]):
@@ -106,7 +106,7 @@ def goal_pairs(idx, goal_H, init_color=None, goal_color=None, init_cell=None, go
                via_cell=None, goal_not_in_cells=None, cube_half=CUBE_HALF, require_move=True):
     """(e, init_f, goal_f=init_f+goal_H) in one episode, filtered by init/goal cell colour or id,
     and/or whether the straight init->goal path crosses `via_cell`. require_move drops pairs
-    whose centre cell doesn't change.
+    whose center cell doesn't change.
 
     goal_not_in_cells: drop pairs whose GOAL-cube FOOTPRINT overlaps any listed cell (not just its
     centroid). Use to exclude goals that sit partly in a forbidden cell -- otherwise closing
@@ -156,7 +156,7 @@ def main():
     ap.add_argument("--goal_color", default=None)
     ap.add_argument("--init_cell", type=int, default=None)
     ap.add_argument("--goal_cell", type=int, default=None)
-    ap.add_argument("--via_cell", type=int, default=None, help="straight init->goal path must cross this cell (e.g. 4=centre)")
+    ap.add_argument("--via_cell", type=int, default=None, help="straight init->goal path must cross this cell (e.g. 4=center)")
     ap.add_argument("--goal_not_in_cells", type=int, nargs="+", default=None,
                     help="drop pairs whose GOAL-cube footprint overlaps any of these cells (e.g. --goal_not_in_cells 4)")
     ap.add_argument("--dump", default=None, help="write matching {episode, init_frame, goal_frame} to JSON")
@@ -173,7 +173,7 @@ def main():
     print(f"  cell colours: yellow={[c for c in range(gm.N_CELLS) if COLOR_BY_CELL[c]=='yellow']} "
           f"red={[c for c in range(gm.N_CELLS) if COLOR_BY_CELL[c]=='red']} "
           f"green={[c for c in range(gm.N_CELLS) if COLOR_BY_CELL[c]=='green']}")
-    print("  cube centre-cell colour:", {k: f"{v} ({100*v/total:.0f}%)" for k, v in ccol.most_common()})
+    print("  cube center-cell colour:", {k: f"{v} ({100*v/total:.0f}%)" for k, v in ccol.most_common()})
     print("  cells occupied/frame:", dict(sorted(ncells.items())))
 
     if args.goal_H is not None:

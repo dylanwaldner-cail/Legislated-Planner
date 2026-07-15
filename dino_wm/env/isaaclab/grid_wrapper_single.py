@@ -170,6 +170,12 @@ class GridWrapperSingle:
             t[:, :_ARM_JOINT_DIM],
             t[:, _ARM_JOINT_DIM : 2 * _ARM_JOINT_DIM],
         )
+        # HOLD the written arm pose: also set the PD position target. Without this, _materialize_state's
+        # step() lets the controller relax the arm toward a stale default (~0.1 rad drift, nonzero jvel)
+        # -> an OUT-OF-DISTRIBUTION arm/paddle that the frozen WM never trained on. Mirrors the collection
+        # park path (self._home_jp write + set_joint_position_target) so a TELEPORTED frame reproduces the
+        # exact parked pose the training frames were captured at.
+        self._scene["robot"].set_joint_position_target(t[:, :_ARM_JOINT_DIM])
         # State stores env-local cube pos; write_root_state_to_sim wants world frame.
         origins = self._scene.env_origins
         block = t[:, 2 * _ARM_JOINT_DIM : 2 * _ARM_JOINT_DIM + _CUBE_DIM].clone()

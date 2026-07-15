@@ -6,6 +6,10 @@ _target_: planning.mpc.MPCPlanner
 # global re-plan per stroke) but the right use of a shallow-lookahead model.
 max_iter: 12         # finite cap; one stroke per iter, enough for a multi-stroke detour
 n_taken_actions: 1   # commit only the first stroke, then re-observe + re-plan the tree
+success_hold: true   # freeze SUCCEEDED evals with a zero-disp hold so a solved eval can't wander back
+                     # into an illegal cell (post-success breaches are spurious). Trade-off: the hold
+                     # reads the GROUND-TRUTH cube (one non-probe read; near-irrelevant for a zero-disp
+                     # hold) and biases the per-step WM-error curve (held evals contribute ~0 movement).
 sub_planner:
   target: planning.rrt.RRTPlanner
   max_samples: 512   # extend attempts per re-plan (rebuilt every step). Higher = tree completes the
@@ -22,5 +26,10 @@ sub_planner:
                      # meaningless geometry + drift-poisoned constraint checks). MPC re-plans every
                      # step and commits only the first stroke, so far goals still solve across steps.
   aim_back: 0.12     # standoff behind the cube (matches mpc_cem_aimed)
+  deviant_lambda: 0.067  # DEVIANT only: meters-of-progress one law-violation is worth. Deviant minimizes
+                     # dist-to-goal + lambda*violations, so it crosses a forbidden cell only when that
+                     # saves > lambda per violation, and always prefers a 0-violation route (cost 0).
+                     # 0.067 = half a cell (CELL/2). lambda->inf == social; lambda==0 == rational/off.
+                     # Inert for social/off (they prune violators). Report this value with deviant results.
 
 name: mpc_rrt

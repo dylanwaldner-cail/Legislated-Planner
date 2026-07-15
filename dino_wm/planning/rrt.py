@@ -19,6 +19,7 @@ Adapted from the pytorch_rrt KinodynamicRRT structure (sample target -> nearest 
 propagate -> PRUNE via constraint.violations -> pick-closest -> add node -> goal check).
 """
 import math
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -44,6 +45,7 @@ class Node:
     law: str               # str(Constraint) verdict in effect at creation        (the law at the time)
     prefix: torch.Tensor   # (T,4) normalized actions, root -> this node
     parent: int            # parent node index (-1 for root)
+    viol: int = 0          # cumulative law violations along root->this node (# of law-breaking strokes)
 
 
 class RRTPlanner(AimedContactCEMPlanner):
@@ -52,7 +54,8 @@ class RRTPlanner(AimedContactCEMPlanner):
 
     def __init__(self, wm, action_dim, objective_fn, preprocessor, evaluator, wandb_run,
                  log_filename="logs.json", max_samples=256, batch_size=64, goal_tol=0.06,
-                 goal_bias=0.2, push_min=0.05, push_max=0.09, max_path=20, **kwargs):
+                 goal_bias=0.2, push_min=0.05, push_max=0.09, max_path=20,
+                 deviant_lambda=0.067, **kwargs):
         # the CEM hyperparams are unused by RRT; pass placeholders so the parent __init__ is happy
         super().__init__(horizon=1, topk=1, num_samples=batch_size, var_scale=1, opt_steps=1,
                          eval_every=1, wm=wm, action_dim=action_dim, objective_fn=objective_fn,
@@ -65,13 +68,32 @@ class RRTPlanner(AimedContactCEMPlanner):
         self.push_min = float(push_min)
         self.push_max = float(push_max)
         self.max_path = int(max_path)
+        # DEVIANT trade-off knob: meters-of-progress one law-violation is worth. Deviant minimizes a
+        # SCALAR cost = distance-to-goal + deviant_lambda * cumulative_violations (extend + final pick),
+        # so it crosses a forbidden region only when doing so buys > deviant_lambda per violation, and
+        # always takes a 0-violation route when one exists (cost 0). lambda->inf == social (never
+        # violate); lambda==0 == rational/off (ignore law). Default 0.067 = half a cell (CELL/2).
+        self.deviant_lambda = float(deviant_lambda)
         # Normative MEMORY now lives in the legislation LEDGER (LawEvaluator.ledger, per eval), NOT
         # here -- the planner is stateless about law. RRT keeps only an episode step counter for logs.
         self._step = 0
+        self._log_queries = False   # introspection: when True, _extend records every sampled candidate
+        self._query_log = []        # -> the planner's QUERY distribution (aim/push/predicted move+cell)
+        self._t_plan = self._t_reason = self._t_prune = 0.0   # runtime accounting (see reset)
 
     def reset(self):
         """New episode (called by MPCPlanner): reset the step counter and the legislation ledger."""
         self._step = 0
+        self._query_log = []        # accumulate candidate stats across the whole episode's re-plans
+        # RUNTIME accounting, accumulated over the episode's re-plans across ALL evals:
+        #   _t_plan   = total wall-clock inside plan()   (RRT search + legislation)
+        #   _t_reason = LawEvaluator.observe()+set_goal() (LEGISLATION: probe-perceive + ground facts
+        #               + clingo DDL reasoning + build the Constraint), per eval per re-plan
+        #   _t_prune  = constraint.violations() calls     (LEGISLATION: per-candidate legality check
+        #               + its probe reads), per tree extension
+        # RRT-only time = _t_plan - _t_reason - _t_prune  (WM rollouts + position-probe tree geometry +
+        #               stroke sampling + nearest/tree bookkeeping + path build).
+        self._t_plan = self._t_reason = self._t_prune = 0.0
         law_fn = getattr(self, "law_fn", None)
         if law_fn is not None:
             law_fn.reset()
@@ -106,26 +128,51 @@ class RRTPlanner(AimedContactCEMPlanner):
         end_pos = self.objective_fn.position_probe(z_full[:, -1]).detach().cpu().numpy()  # (B,2) cube after stroke -- TREE geometry only
 
         # LEGALITY: delegated entirely to the injected Constraint (constraint.py). No constraint =
-        # selfish (no pruning). n_pred = full length -> the constraint sees every frame, current included.
+        # rational (no pruning). n_pred = full length -> the constraint sees every frame, current included.
         constraint = getattr(self, "constraint", None)
         if constraint is not None:
             # skip_current=True: frame 0 is the cube's CURRENT position (context), not a prediction --
             # enforce the law on where the strokes GO, so a grazing current footprint can't freeze it.
             # actions=strokes_m -> the off_grid checker can prune strokes whose INTENDED endpoint is
             # off-grid, even when the WM/sim bounce the cube back on-grid (the outcome-only blind spot).
+            _tv = time.perf_counter()               # LEGISLATION (prune): per-candidate legality check + its probes
             viol = constraint.violations(z_full, z_full.shape[1], skip_current=True,
                                          actions=strokes_m).detach().cpu().numpy()
+            self._t_prune += time.perf_counter() - _tv
         else:
             viol = np.zeros(B, dtype=bool)
         self._considered += int(viol.size)                                           # cumulative prune tally (per MPC iter)
         self._pruned += int(viol.sum())
+        if getattr(self, "_log_queries", False):
+            # INTROSPECTION: record every sampled candidate (the planner's QUERY distribution) -- aim
+            # |start-cube|, push |disp|, WM-PREDICTED cube move + from/to cell, and whether pruned.
+            # Same schema as scripts/stroke_transition_stats.py so it overlays on the TRAINING data.
+            bn = np.asarray(near.pos, dtype=np.float32)
+            sm = strokes_m.detach().cpu().numpy()                                    # (B,4) meters [start, disp]
+            self._query_log.append({
+                "aim": np.linalg.norm(sm[:, :2] - bn, axis=1),                       # |start - cube|
+                "push": np.linalg.norm(sm[:, 2:4], axis=1),                          # action displacement
+                "pred_move": np.linalg.norm(end_pos - bn, axis=1),                   # WM-predicted cube move
+                "from_cell": np.full(len(end_pos), int(gm.which_cell(bn))),
+                "to_cell": np.array([int(gm.which_cell(end_pos[b])) for b in range(len(end_pos))]),
+                "viol": np.asarray(viol, dtype=bool),
+            })
         tdist = np.linalg.norm(end_pos - target, axis=1)
-        tdist[viol] = np.inf
-        if not np.isfinite(tdist).any():
-            return None                                                              # every extension violates the law
-        best = int(tdist.argmin())
+        cum = int(near.viol) + viol.astype(np.int64)                                  # path violations if candidate i is taken
+        if getattr(self, "mode", "social") == "deviant":
+            # DEVIANT: never prune. SCALAR trade-off -- minimize (dist-to-target + lambda*cum_violations).
+            # A crossing candidate (adds a violation) wins only if it gets > lambda closer to target than
+            # the best non-crossing one; else the legal candidate wins. This lets the tree grow ACROSS a
+            # forbidden region when progress justifies it (a strict viol-first sort would never cross).
+            best = int(np.argmin(tdist + self.deviant_lambda * cum))
+        else:
+            # SOCIAL / off: prune law-breakers; pick the legal candidate closest to target.
+            tdist[viol] = np.inf
+            if not np.isfinite(tdist).any():
+                return None                                                          # every extension violates the law
+            best = int(tdist.argmin())
         new_prefix = torch.cat([near.prefix, strokes[best:best + 1]], dim=0)          # (len+1,4)
-        return end_pos[best], new_prefix
+        return end_pos[best], new_prefix, int(cum[best])
 
     @staticmethod
     def _route_cells(final_node, nodes):
@@ -161,16 +208,30 @@ class RRTPlanner(AimedContactCEMPlanner):
             ext = self._extend(obs_e, nodes[near_i], target)
             if ext is None:                                                          # all extensions illegal -> drop
                 continue
-            pos, prefix = ext
+            pos, prefix, viol = ext
             node = Node(pos=pos, cell=int(gm.which_cell(pos)), age=len(nodes), law=law,
-                        prefix=prefix, parent=near_i)
+                        prefix=prefix, parent=near_i, viol=viol)
             nodes.append(node)
             if float(np.linalg.norm(pos - goal_cube)) < self.goal_tol:
-                return node, nodes                                                   # reached goal
-        best = min(nodes, key=lambda n: float(np.linalg.norm(n.pos - goal_cube)))    # best effort
-        return best, nodes
+                if getattr(self, "mode", "social") != "deviant":
+                    return node, nodes                                               # SOCIAL/off: first goal path (already law-abiding)
+                if node.viol == 0:
+                    return node, nodes                                               # DEVIANT speed early-stop: a 0-viol goal path has cost<=goal_tol and (lambda>=goal_tol) no violating path beats it
+                # DEVIANT reached goal WITH violations: keep growing -- a cheaper path (fewer violations
+                # or closer) may still appear; the scalar-cost pick below decides at the end.
+        # No in-loop return -> rank the whole tree.
+        if getattr(self, "mode", "social") == "deviant":
+            # DEVIANT: minimize the SCALAR cost over ALL nodes = dist-to-goal + lambda*violations. Unifies
+            # "reached, fewest violations" and "best-effort, closest" into ONE criterion -- a violating
+            # node that reaches beats a legal node that stops short iff it saves > lambda per violation.
+            # Fewest strokes breaks near-ties. No freeze (progress is priced in, not lexicographically last).
+            return min(nodes, key=lambda n: (float(np.linalg.norm(n.pos - goal_cube))
+                                             + self.deviant_lambda * n.viol, len(n.prefix))), nodes
+        # SOCIAL/off: any goal hit already returned in-loop; here nothing reached -> closest legal node.
+        return min(nodes, key=lambda n: float(np.linalg.norm(n.pos - goal_cube))), nodes
 
     def plan(self, obs_0, obs_g, actions=None):
+        _tp0 = time.perf_counter()          # RUNTIME: total plan() wall-clock (RRT search + legislation)
         trans_obs_0 = move_to_device(self.preprocessor.transform_obs(obs_0), self.device)
         trans_obs_g = move_to_device(self.preprocessor.transform_obs(obs_g), self.device)
         probe = getattr(self.objective_fn, "position_probe", None)
@@ -183,8 +244,9 @@ class RRTPlanner(AimedContactCEMPlanner):
 
         with torch.no_grad():
             z_root = self.wm.encode_obs(trans_obs_0)["visual"][:, -1]              # (n_evals, P, D)
+            z_goal = self.wm.encode_obs(trans_obs_g)["visual"][:, -1]              # (n_evals, P, D)
             root_cube = probe(z_root).detach().cpu().numpy()
-            goal_cube = probe(self.wm.encode_obs(trans_obs_g)["visual"][:, -1]).detach().cpu().numpy()
+            goal_cube = probe(z_goal).detach().cpu().numpy()
         n_evals = trans_obs_0["visual"].shape[0]
 
         self._step += 1                           # episode re-plan counter (memory itself lives in the ledger)
@@ -199,7 +261,11 @@ class RRTPlanner(AimedContactCEMPlanner):
             # get the Constraint for eval e's current state. Legislation owns the memory + reasoning;
             # RRT just receives the constraint and prunes on it (constraint.violations, in _extend).
             if law_fn is not None:
+                _tr = time.perf_counter()               # LEGISLATION (reason): perceive+ground+clingo+build Constraint
+                if hasattr(law_fn, "set_goal"):
+                    law_fn.set_goal(z_goal[e:e + 1], e)     # perceive the goal cell on the probe stack
                 self.constraint = law_fn.observe(z_root[e:e + 1], e)
+                self._t_reason += time.perf_counter() - _tr
                 print(f"  [rrt law e{e}] facts {law_fn.ledger(e).last_facts()} -> {self.constraint}")
             final_node, nodes = self._build_tree(trans_obs_0, e, root_cube[e], goal_cube[e])
             path, final = final_node.prefix, final_node.pos
@@ -236,4 +302,5 @@ class RRTPlanner(AimedContactCEMPlanner):
             hold = (torch.tensor([fc[0], fc[1], 0.0, 0.0], device=self.device) - self._amean) / self._astd
             if len(p) < T_max:
                 out[e, len(p):] = hold
+        self._t_plan += time.perf_counter() - _tp0
         return out, action_len

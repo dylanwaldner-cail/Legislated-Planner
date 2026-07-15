@@ -21,6 +21,8 @@ Runs in the container (needs `clingo` + the DDL .asp engine files).
 """
 from __future__ import annotations
 
+import itertools
+import re
 import sys
 from pathlib import Path
 
@@ -52,17 +54,80 @@ def load_legal_database(path=_DEFAULT_DB):
         return yaml.safe_load(f)
 
 
+def _expand_law(law):
+    """SCHEMA expansion: emit one ground copy per binding, substituting each VAR (matched as a
+    whole ASP term) everywhere in antecedent/consequent and suffixing the label. ASP forbids free
+    variables in facts, so schematic laws must be expanded HERE. Reference an expanded copy in
+    `superiority` by its suffixed label (e.g. ["reach_goal_4", "no_center_cell"]). Two forms:
+
+      expand: {VAR: domain, ...}   -> CARTESIAN product of INDEPENDENT var domains (`reach_goal` +
+          {N: "0..8"} -> reach_goal_0..8). domain = a list or a clingo-style "a..b" integer range.
+
+      expand_pairs: {vars: [N, M], pairs: <list | "grid_borders">}  -> CORRELATED tuples: one copy
+          per tuple with vars zipped to it. Use this instead of a relational guard predicate in the
+          antecedent -- the DDL syntax separates antecedent literals by comma, so a 2-ary term like
+          borders(N,M) would be mis-split. "grid_borders" pulls the grid adjacency (N, neighbour M)
+          from grounding, so `goal_cell(N) => [O]~in_cell(M)` becomes a per-neighbour prohibition."""
+
+    def emit(keys, combos):
+        out = []
+        for combo in combos:
+            sub = dict(zip(keys, combo))
+
+            def rep(s):
+                for k, v in sub.items():
+                    s = re.sub(rf"\b{k}\b", v, s)
+                return s
+
+            out.append({
+                "label": law["label"] + "_" + "_".join(combo),
+                "antecedent": [rep(a) for a in (law.get("antecedent", []) or [])],
+                "consequent": [rep(c) for c in law["consequent"]],
+            })
+        return out
+
+    pairs = law.get("expand_pairs")
+    if pairs:
+        vals = pairs.get("pairs")
+        if vals in ("grid_borders", "grid_borders_diag"):
+            from legislation.grounding import _grid_border_pairs
+            vals = _grid_border_pairs(diagonal=(vals == "grid_borders_diag"))
+        combos = [tuple(str(x) for x in t) for t in vals]
+        return emit(list(pairs["vars"]), combos)
+
+    exp = law.get("expand")
+    if not exp:
+        return [law]
+
+    def domain(d):
+        if isinstance(d, str) and ".." in d:
+            a, b = d.split("..")
+            return [str(i) for i in range(int(a), int(b) + 1)]
+        return [str(v) for v in d]
+
+    keys = list(exp.keys())
+    return emit(keys, list(itertools.product(*[domain(exp[k]) for k in keys])))
+
+
 def _render_dl(db):
     """YAML legal database -> Governatori DDL .dl text (one line per law / superiority).
     Each law: `<label>: <antecedent...> => <consequent...>` where literals may be plain (x),
     negated (~x), or deontic ([O]x, [P]x, [O]~x, ~[O]x). A leading [O]/[P] in the consequent
     makes the rule prescriptive/permissive; multiple [O] consequents form a compensation
-    (contrary-to-duty) chain; no deontic operator => a constitutive ('counts-as') rule."""
+    (contrary-to-duty) chain; no deontic operator => a constitutive ('counts-as') rule.
+
+    `laws` may be a flat list, or a dict grouping laws into named categories
+    (e.g. {geometric_laws: [...]}); categories are organisational only and are flattened
+    here — the DDL theory is the union of every law across every group."""
     lines = []
-    for law in db.get("laws", []) or []:
-        ante = ", ".join(law.get("antecedent", []) or [])
-        cons = ", ".join(law["consequent"])
-        lines.append(f"{law['label']}: {ante} => {cons}")
+    laws = db.get("laws", []) or []
+    if isinstance(laws, dict):                       # {category: [law, ...]} -> flat list
+        laws = [law for group in laws.values() for law in (group or [])]
+    for law in laws:
+        for g in _expand_law(law):
+            ante = ", ".join(g.get("antecedent", []) or [])
+            cons = ", ".join(g["consequent"])
+            lines.append(f"{g['label']}: {ante} => {cons}")
     for pair in db.get("superiority", []) or []:
         lines.append(f"{pair[0]} > {pair[1]}")
     return "\n".join(lines)
@@ -78,6 +143,10 @@ class LegislativeReasoner:
         p.parse(_render_dl(self.db))
         atom_decls = "\n".join(f"atom({a})." for a in (self.db.get("atoms", []) or []))
         self.theory_asp = atom_decls + "\n" + p.get_output()
+        # assess() is a PURE function of `facts` (the theory is fixed here) and fact sets recur heavily
+        # across a sweep -> memoize by frozenset(facts) to skip re-running clingo, which otherwise
+        # RELOADS the 5 engine .asp files from disk + re-grounds the whole theory on EVERY call.
+        self._cache = {}
 
     def _solve(self, facts, predicates):
         """Run the DDL engine on theory + the given ground facts; return the first answer
@@ -109,6 +178,10 @@ class LegislativeReasoner:
         into positive obligations O(X) and prohibitions O(~X)->X, plus permissions and
         violations. The literals are arbitrary (geometric or not). What each verdict DOES to
         the planner is intentionally NOT decided here."""
+        key = frozenset(facts)
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
         res = self._solve(facts, _DEONTIC_PREDICATES)
 
         def lits(symbols):  # 1-ary verdicts only (skip internal obligation(Rule,X,N) form)
@@ -120,12 +193,14 @@ class LegislativeReasoner:
                 prohibitions.append(str(c.arguments[0]))   # O(~X) -> X prohibited
             else:
                 obligations.append(str(c))                 # O(X)  -> X obligatory
-        return {
+        result = {
             "obligations": sorted(set(obligations)),
             "prohibitions": sorted(set(prohibitions)),
             "permissions": sorted({str(c) for c in lits(res["permission"])}),
             "violations": sorted({str(c) for c in lits(res["violation"])}),
         }
+        self._cache[key] = result
+        return result
 
 
 if __name__ == "__main__":

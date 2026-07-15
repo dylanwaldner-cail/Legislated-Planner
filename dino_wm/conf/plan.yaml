@@ -40,8 +40,9 @@ decoder_path: outputs/2026-07-08/16-26-03/checkpoints/model_15.pth
 
 seed: 99
 n_evals: 3
-goal_source: 'dset' # 'random_state' or 'dset' or 'random_action' 
+goal_source: 'dset' # 'dset' | 'random_state' | 'random_action' | 'file' | 'law_eval'
 goal_H: 5 # specifies how far away the goal is if goal_source is 'dset'
+goal_file_path: null # states path for goal_source='file'/'law_eval' (a gen_law_eval_set pair subdir); declared so it's overridable
 n_plot_samples: 10
 
 # Render EVERY internal sim step into the executed video (smooth playback) instead of
@@ -74,21 +75,40 @@ rrt_introspect:
 
 debug_dset_init: False
 
-# Legislation: enforce DDL-derived constraints in the planner (the "social" agent).
-# enforce=false reproduces the unconstrained planner (the "selfish" agent). facts = the base
-# facts that fire the laws (the centre-cell law's antecedent is `cube`). Wired into the chained
-# aimed planner (planner=mpc_cem_aimed_chained). See legislation/{reasoner,constraint}.py.
+# Legislation mode — how DDL-derived constraints shape the planner:
+#   social  : PRUNE law-violating candidates -> never breaks the law (the original "social" agent).
+#   deviant : DON'T prune -> minimize violations. A goal path with fewer violations is preferred to
+#             one with more REGARDLESS of cost (0-violation beats any; 1 beats 2; ...); distance only
+#             breaks ties within an equal violation count. Breaks the law only when it must.
+#   off     : no legislation (the unconstrained "rational" agent).
+# facts = the base facts that fire the laws (the center-cell law's antecedent is `cube`).
+# (Back-compat: `enforce: true|false` still maps to social|off if `mode` is absent.)
 legislation:
-  enforce: true
+  mode: social        # social | deviant | off
   facts: [cube]
   violation_penalty: 1.0e6
+  db_path: null       # null -> legislation/legal_database.yaml (geometry 1). Set to
+                      # legislation/laws/geometric_2.yaml for the border-of-goal regime.
+  constraint_margin: 0.0  # CUSHION delta (m): robust constraint tightening -- inflate the footprint the
+                      # PLANNER avoids-with by this much to stay clear despite WM/probe perception error.
+                      # PLANNER-ONLY (metric scores reality with true cube_half), so delta=0 vs delta>0 is an
+                      # honest ablation -- ALWAYS report the delta=0 arm too. Safe ceiling ~0.02 for this grid
+                      # (cube_half 0.045 vs CELL/2 0.0667); delta above ~0.021 prunes the legal detour. Default 0.
+# Exogenous stop-sign flip during the MPC rollout (tests real-time law adaptation / deadlock).
+# `frame` = the MPC replan step at which the sign becomes `color`; before it the sign is `base_color`.
+# The flip is PERCEIVED (re-grounded each replan), so it needs the sign_color probe registered
+# (probes.yaml enabled=true) for the sign laws (green/yellow) to fire. Off by default (frame: null).
+sign_flip:
+  frame: null         # null -> no flip
+  color: yellow       # colour to flip TO at `frame`  (white|red|yellow|green)
+  base_color: white   # colour before the flip
 
 # Scene filter: restrict goal selection to episodes with chosen properties so a law test gets
-# relevant scenarios. via_cell = the straight init->goal path must cross this cell (set 4 = centre
-# so the centre-cell law actually forces a detour). null = off. (scripts/scene_index aggregates
+# relevant scenarios. via_cell = the straight init->goal path must cross this cell (set 4 = center
+# so the center-cell law actually forces a detour). null = off. (scripts/scene_index aggregates
 # these offline; this applies them in plan.py's sampler.)
 scene_filter:
-  via_cell: null      # e.g. 4 (centre) for the centre-cell law test
+  via_cell: null      # e.g. 4 (center) for the center-cell law test
   goal_color: null    # e.g. yellow
   goal_cell: null
   init_color: null
@@ -105,7 +125,7 @@ scene_filter:
 scene_offset: null
 
 # Cell to SCORE entering for the law-abidance metric (eval_metrics.json), independent of the
-# scene_filter. Lets the SELFISH agent (no constraint) still be scored on the forbidden cell, and
+# scene_filter. Lets the RATIONAL agent (no constraint) still be scored on the forbidden cell, and
 # lets one metric cell apply across many init/goal pairs. null = score only the constraint's cells.
 metric_cell: null
 
@@ -120,6 +140,6 @@ objective:
   mode: last
   probe_lambda: 1.0 # legislation P(illegal) penalty (separate probe; inert in GD, used in cem.py)
   use_probe: true # probe gives a SHARP cube-position objective (latent MSE alone barely weights the few cube patches)
-  pos_probe_path: probes/weights/probe_cube_1500.pth # trained on data/isaaclab_stroke_1500 (interior cell-acc 0.999, L2 ~0.015m)
+  pos_probe_path: probes/weights/pos_enc_pred1.pth # encoded∪pred-h1 probe (encoded floor L2 ~0.016m); single-probe pipeline. Old: probe_cube_1500.pth
   pos_probe_weight: 50.0 # PRIMARY. squared-L2 in m^2 (~0.03 for a 1-cell error); large so cube term dominates latent MSE (O(0.1-1))
   visual_weight: 0.1 # weak manifold regularizer only (limits probe-gaming); demoted so the cube-position probe dominates

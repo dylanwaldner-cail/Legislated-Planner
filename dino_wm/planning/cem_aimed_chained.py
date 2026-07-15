@@ -120,7 +120,7 @@ class ChainedAimedCEMPlanner(AimedContactCEMPlanner):
                 # from LEGAL candidates only. (NB: merely setting their loss to +inf would be identical
                 # to the old soft penalty -- same elites, same mu; the point of pruning is that illegal
                 # candidates never enter the mean even when too few legal ones were sampled.)
-                # Constraint injected by plan.py; None = selfish (no pruning).
+                # Constraint injected by plan.py; None = rational (no pruning).
                 order = torch.argsort(loss)
                 constraint = getattr(self, "constraint", None)
                 if constraint is not None:

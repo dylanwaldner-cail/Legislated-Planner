@@ -101,7 +101,7 @@ class MLP(nn.Module):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data_dir", default="data/isaaclab_grid_smoke_test")
+    ap.add_argument("--data_dir", default="data/isaaclab_stroke_1500")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--frame_stride", type=int, default=1, help="use every Nth frame per episode")
     ap.add_argument("--enc_batch", type=int, default=64)
@@ -114,6 +114,10 @@ def main():
                     help="CONTROL: scramble the color labels across episodes (break the "
                     "image<->color link). Real signal -> accuracy collapses to ~chance; "
                     "if it stays high there's a leak/bug.")
+    ap.add_argument("--save_path", default=None,
+                    help="if set, save the trained probe (+ train-set norm stats) as a "
+                         "registry-format .pth (kind=classification, source=encoded) that "
+                         "probes/registry.py + grounding.sign_color() can load.")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -219,6 +223,21 @@ def main():
     print("[confusion] rows=true, cols=pred  (" + ", ".join(names) + ")")
     for c in range(n_cls):
         print(f"  {names[c]:>7s} " + " ".join(f"{cm[c, j]:5d}" for j in range(n_cls)))
+
+    if args.save_path:
+        # Registry-format checkpoint (mirrors probe_cube_position). The registry rebuilds the
+        # SHARED MLP (probe_cube_position.MLP) + _spatial_pool_grid(pool_grid) and softmaxes the
+        # logits (kind=classification); the local MLP here is arch-identical so state_dict loads.
+        # `names` is the class order -> grounding.sign_color emits sign(<names[argmax]>). pool_grid=4
+        # matches the _spatial_pool_grid default used above (latent dim 4*4*D).
+        torch.save({
+            "kind": "classification", "source": "encoded",
+            "state_dict": probe.state_dict(),
+            "x_mu": mu.numpy(), "x_sd": sd.numpy(),
+            "pool_grid": 4, "d_in": int(X.shape[1]), "out_dim": int(n_cls), "hidden": 256,
+            "names": list(names),
+        }, args.save_path)
+        print(f"[save] sign-color probe + norm stats -> {args.save_path}")
 
 
 if __name__ == "__main__":

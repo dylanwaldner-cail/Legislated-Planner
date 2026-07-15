@@ -58,6 +58,21 @@ has_predictor: True # set this to False for only training a decoder
 # Re-enable + train a decoder separately when we want imagination viz back. See memory.
 has_decoder: False # set this to False for only training a predictor
 
+# Planner-domain upweighting: sample training slices whose PREDICTED stroke lies in the RRT's
+# operating domain (aimed contacts -- aim ~0.10 m, disp ~0.15-0.19 m, cube actually moves) more
+# often, to densify the region the planner actually queries (scripts/plot_query_vs_train.py showed
+# the planner lives in a narrow sub-region of the broad training distribution). This is an EXPLICIT
+# EXPERIMENT, OFF by default: nothing changes unless you set `planner_domain.enabled=true`. Applied
+# to the TRAIN loader only, via a WeightedRandomSampler in train.py.
+planner_domain:
+  enabled: false       # EXPLICIT opt-in -- uniform sampling unless set true (planner_domain.enabled=true)
+  weight: 4.0          # multiplier for in-domain slices when enabled (try 3-5 to densify)
+  aim_lo: 0.085        # |stroke_start - cube| window (planner spike ~0.105 m)
+  aim_hi: 0.125
+  push_lo: 0.14        # |displacement| window (planner ~0.155-0.195 m)
+  push_hi: 0.21
+  contact_min: 0.02    # cube must move > this (m) to count as a contact
+
 model:
   _target_: models.visual_world_model.VWorldModel
   image_size: ${img_size}

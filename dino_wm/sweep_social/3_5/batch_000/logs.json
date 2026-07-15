@@ -1,7 +1,0 @@
-{"mpc/success_rate": 0.0, "mpc/mean_cubes_correct": 0.0, "mpc/mean_state_dist": 0.8364713788032532, "mpc/mean_cube_l2": 0.21458718180656433, "step": 1}
-{"mpc/success_rate": 0.25, "mpc/mean_cubes_correct": 0.25, "mpc/mean_state_dist": 0.582757830619812, "mpc/mean_cube_l2": 0.1876821219921112, "step": 2}
-{"mpc/success_rate": 0.25, "mpc/mean_cubes_correct": 0.25, "mpc/mean_state_dist": 0.590424120426178, "mpc/mean_cube_l2": 0.17327995598316193, "step": 3}
-{"mpc/success_rate": 0.75, "mpc/mean_cubes_correct": 0.75, "mpc/mean_state_dist": 0.5501543283462524, "mpc/mean_cube_l2": 0.0956568568944931, "step": 4}
-{"mpc/success_rate": 0.75, "mpc/mean_cubes_correct": 0.75, "mpc/mean_state_dist": 0.5445109605789185, "mpc/mean_cube_l2": 0.08793273568153381, "step": 5}
-{"mpc/success_rate": 1.0, "mpc/mean_cubes_correct": 1.0, "mpc/mean_state_dist": 0.5223633050918579, "mpc/mean_cube_l2": 0.05641338229179382, "step": 6}
-{"final_eval/success_rate": 1.0, "final_eval/mean_cubes_correct": 1.0, "final_eval/mean_state_dist": 0.5215772390365601, "final_eval/mean_cube_l2": 0.059062495827674866, "final_eval/mean_visual_dist": 15.007234534438776, "final_eval/mean_proprio_dist": 0.4664424657821655, "final_eval/mean_div_visual_emb": 363.3568420410156, "final_eval/mean_div_proprio_emb": 34.27809143066406}

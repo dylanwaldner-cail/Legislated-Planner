@@ -3,11 +3,40 @@
 A neurosymbolic planner: **Defeasible Deontic Logic (DDL) norms shape a world-model planner.**
 Learned probes read facts from a frozen-DINO world model, a DDL reasoner turns human-authored laws
 into obligations/prohibitions, and those verdicts prune the planner's search — so the *same*
-scenario yields a law-abiding agent (detours around a forbidden cell) or a selfish one (goes
+scenario yields a law-abiding agent (detours around a forbidden cell) or a rational one (goes
 straight through), just by toggling enforcement.
 
 Built on DINO-WM (frozen DINOv2 + ViT predictor) over an IsaacLab single-Franka cube-pushing task.
 For the base world-model / training / dataset docs see **[DINOREADME.md](DINOREADME.md)**.
+
+## Setup & dependencies
+
+**Simulator — IsaacLab / Isaac Sim (hard dependency).** Every rollout (data collection, planning
+execution, law-eval rendering) drives an IsaacLab task, so IsaacLab is required. It's heavy and
+**gitignored** (`IsaacLab/`), so it is *not* in this repo — install it separately and run inside the
+`isaac-lab-base` Docker container via the bundled interpreter `/isaac-sim/python.sh` (the host Python
+has no torch/sim). RTX rendering needs NVIDIA driver ≥ 535. After (re)building the container, run
+`./IsaacLab/isaaclab.sh --install` — Python import errors almost always mean this wasn't re-run.
+
+The custom env `Isaac-DinoWMGrid-Single-v0` is a **procedural** task at
+`IsaacLab/source/isaaclab_tasks/isaaclab_tasks/dinowm_grid/` (`dinowm_grid_env_cfg.py` +
+`grid_assets.py` / `cube_assets.py` / `sign_assets.py`), referencing the tracked USDs in
+`assets/dinowm_grid/`. Because `IsaacLab/` is gitignored, reproducing the env = install IsaacLab, drop
+that task package in, and provide `assets/dinowm_grid/`. (`scripts/export_stage.py` can also snapshot
+the composed scene to one portable `.usd`.)
+
+**Python packages.** Runtime = Isaac Sim's bundled Python + the DINO-WM base (`environment.yaml`); on
+top we install `requirements-harness.txt` into `/isaac-sim/python.sh`:
+
+```bash
+/isaac-sim/python.sh -m pip install -r requirements-harness.txt
+```
+
+Key pins (versions from the working container): `torch==2.7.0+cu118` / `torchvision==0.22.0+cu118`
+(cu118 build for driver 535 / CUDA 12.2 — repin to your CUDA), `numpy==1.26.4` (**must** stay <2),
+`pillow==11.2.1`, and **`clingo==5.8.0`** (the Defeasible Deontic Logic solver behind `legislation/`),
+plus `hydra-core` / `omegaconf` / `accelerate` / `einops` / `wandb` / `imageio(-ffmpeg)` / `moviepy` /
+`matplotlib` / `gymnasium`.
 
 ## Pipeline
 
@@ -72,14 +101,14 @@ models/ datasets/ env/ preprocessor.py   DINO-WM + IsaacLab base (see DINOREADME
 
 ## Run
 
-The law in `legal_database.yaml` forbids the centre cell (`[O]~in_cell(4)`). For a 3→5 push whose
-direct path crosses the centre:
+The law in `legal_database.yaml` forbids the center cell (`[O]~in_cell(4)`). For a 3→5 push whose
+direct path crosses the center:
 
 ```bash
 # social agent — obeys the law: RRT detours around cell 4  (mpc_rrt is the DEFAULT planner)
 python plan.py scene_filter.init_cell=3 scene_filter.goal_cell=5 video=true n_evals=1
 
-# selfish agent — ignores the law: goes straight through
+# rational agent — ignores the law: goes straight through
 python plan.py scene_filter.init_cell=3 scene_filter.goal_cell=5 video=true n_evals=1 legislation.enforce=false
 ```
 
@@ -87,7 +116,7 @@ python plan.py scene_filter.init_cell=3 scene_filter.goal_cell=5 video=true n_ev
 **closed-loop re-grounded** imagination — needs `has_decoder=true` + `decoder_path=<viz decoder>`
 (both default on in `plan.yaml`).
 
-Sweep the whole matching pool (social vs selfish, per init→goal pair) and write metrics + plots:
+Sweep the whole matching pool (social vs rational, per init→goal pair) and write metrics + plots:
 
 ```bash
 python scripts/eval_sweep.py --pairs 1:7 3:5 --batch 10 --out sweep_social -- \

@@ -103,11 +103,39 @@ class Trainer:
         self.train_traj_dset = traj_dsets["train"]
         self.val_traj_dset = traj_dsets["valid"]
 
+        # Optional planner-domain upweighting (TRAIN only): draw slices whose PREDICTED stroke lies in
+        # the RRT's operating domain (aimed contact -- aim/push in range, cube moves) more often.
+        # OFF unless planner_domain.enabled=true is set explicitly -> otherwise uniform, as before.
+        # Classifies each slice's transition frame (start+num_hist-1) in RAW meters: states are
+        # un-normalized already, actions loaded raw.
+        train_sampler = None
+        pd = self.cfg.get("planner_domain", None)
+        if pd is not None and pd.get("enabled", False):
+            import numpy as np
+            slicer = self.datasets["train"]; sub = slicer.dataset; base = sub.dataset
+            idxs = np.asarray(sub.indices)                                      # subset slice-i -> base episode
+            states = np.asarray(base.states)                                    # (E,T,31) raw meters (not normalized)
+            acts = torch.load(f"{self.cfg.env.dataset.data_path}/actions.pth").float().numpy()  # RAW [start(2),disp(2)]
+            CUBE, nh = 18, self.cfg.num_hist
+            w = np.ones(len(slicer.slices), dtype=np.float64)
+            for si, (i, start, _e) in enumerate(slicer.slices):
+                ep = int(idxs[int(i)]); tf = int(start) + nh - 1               # transition frame (last history)
+                a = acts[ep, tf]; c = states[ep, tf, CUBE:CUBE + 2]; c1 = states[ep, tf + 1, CUBE:CUBE + 2]
+                aim = float(np.linalg.norm(a[:2] - c)); push = float(np.linalg.norm(a[2:4]))
+                moved = float(np.linalg.norm(c1 - c))
+                if pd.aim_lo <= aim <= pd.aim_hi and pd.push_lo <= push <= pd.push_hi and moved > pd.contact_min:
+                    w[si] = float(pd.weight)
+            log.info(f"[planner_domain] upweighting {int((w != 1.0).sum())}/{len(w)} in-domain train slices "
+                     f"x{pd.weight} (aim[{pd.aim_lo},{pd.aim_hi}] push[{pd.push_lo},{pd.push_hi}] moved>{pd.contact_min})")
+            train_sampler = torch.utils.data.WeightedRandomSampler(
+                torch.as_tensor(w, dtype=torch.double), num_samples=len(w), replacement=True)
+
         self.dataloaders = {
             x: torch.utils.data.DataLoader(
                 self.datasets[x],
                 batch_size=self.cfg.gpu_batch_size,
-                shuffle=False, # already shuffled in TrajSlicerDataset
+                shuffle=False,  # train uses train_sampler (weighted) if set; slices are pre-shuffled otherwise
+                sampler=(train_sampler if x == "train" else None),
                 num_workers=self.cfg.env.num_workers,
                 collate_fn=None,
             )

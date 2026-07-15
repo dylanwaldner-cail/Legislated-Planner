@@ -12,6 +12,11 @@ import numpy as np
 from .grid_wrapper_single import GridWrapperSingle, ACTION_DIM
 from .grid_metadata import cell_labels_from_states_single, STATE_FIRST_CUBE_OFFSET_SINGLE
 
+# Sign colours (name -> diffuse RGB), matching collect_isaaclab_grid_data.SIGN_PALETTE so an
+# eval-time recolour uses the exact hues the WM + sign_color probe were trained on.
+SIGN_PALETTE = {"white": (1.0, 1.0, 1.0), "red": (1.0, 0.0, 0.0),
+                "yellow": (1.0, 1.0, 0.0), "green": (0.0, 0.8, 0.0)}
+
 
 class GridVectorEnv:
     def __init__(self, num_envs, task_id="Isaac-DinoWMGrid-Single-v0",
@@ -32,6 +37,13 @@ class GridVectorEnv:
     def step(self, action):
         # action: (N, 4) or (4,) stroke. GridWrapperSingle returns (obs, reward, done, info).
         return self._w.step(action)
+
+    def set_sign_color(self, color):
+        """Recolour the octagonal rule sign at runtime. `color` is a palette NAME
+        (white|red|yellow|green) or an RGB 3-tuple. Persists across prepare/rollout (it's a
+        shader property, not part of the written physics state) -- used by the MPC sign-flip hook."""
+        rgb = SIGN_PALETTE[color] if isinstance(color, str) else color
+        self._w.set_sign_color(rgb)
 
     def prepare(self, seeds, init_states):
         seeds = np.asarray(seeds)

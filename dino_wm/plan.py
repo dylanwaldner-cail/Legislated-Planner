@@ -142,9 +142,22 @@ class PlanWorkspace:
         # SAME valid-split episodes the sampler uses (self.dset), so pool indices line up with
         # self.dset[i]. (Building from the full states.pth would mis-index the valid TrajSubset.)
         self.scene_pool = None
+        self.law_eval_size = None
+        _goal_source = cfg_dict.get("goal_source")
         _sf = {k: v for k, v in (cfg_dict.get("scene_filter") or {}).items() if v is not None}
         _scene_offset = cfg_dict.get("scene_offset")
-        if _sf or _scene_offset is not None:            # build the pool for filtered runs OR pool sweeps
+        if _goal_source == "law_eval":
+            # LAW-EVAL BENCHMARK: the pool is the pre-generated scenarios in goal_file_path/states.pth,
+            # NOT the dset scene_pool. Read its size early so the last batch's n_evals is clamped
+            # (mutually exclusive with the scene_filter/scene_offset dset pool path below).
+            _M = int(torch.load(Path(cfg_dict["goal_file_path"]) / "states.pth").shape[0])
+            self.law_eval_size = _M
+            _off = int(_scene_offset or 0)
+            _avail = max(0, _M - _off)
+            if _avail == 0:
+                raise ValueError(f"scene_offset {_off} >= law_eval size {_M} ({cfg_dict['goal_file_path']} exhausted)")
+            cfg_dict["n_evals"] = min(cfg_dict["n_evals"], _avail)
+        elif _sf or _scene_offset is not None:          # build the pool for filtered runs OR pool sweeps
             from scripts.scene_index import select_pairs_from_states
             _base = getattr(self.dset, "dataset", self.dset)             # TrajSubset -> base dataset
             _idxs = list(getattr(self.dset, "indices", range(len(self.dset))))
@@ -154,14 +167,13 @@ class PlanWorkspace:
             print(f"[scene_filter] {len(self.scene_pool)} matching (episode,init,goal) for {_sf or 'ALL moving segments'}")
             if not self.scene_pool:
                 raise ValueError(f"scene_filter {_sf} matched 0 segments (goal_H={cfg_dict['goal_H']}); loosen it.")
-
-        # POOL SWEEP: run the DETERMINISTIC slice pool[offset:offset+n_evals] (one eval per distinct
-        # segment, no shuffle). Clamp n_evals so the last batch doesn't over-run the pool.
-        if _scene_offset is not None:
-            _avail = max(0, len(self.scene_pool) - int(_scene_offset))
-            if _avail == 0:
-                raise ValueError(f"scene_offset {_scene_offset} >= pool size {len(self.scene_pool)} (pool exhausted)")
-            cfg_dict["n_evals"] = min(cfg_dict["n_evals"], _avail)
+            # POOL SWEEP: run the DETERMINISTIC slice pool[offset:offset+n_evals] (one eval per distinct
+            # segment, no shuffle). Clamp n_evals so the last batch doesn't over-run the pool.
+            if _scene_offset is not None:
+                _avail = max(0, len(self.scene_pool) - int(_scene_offset))
+                if _avail == 0:
+                    raise ValueError(f"scene_offset {_scene_offset} >= pool size {len(self.scene_pool)} (pool exhausted)")
+                cfg_dict["n_evals"] = min(cfg_dict["n_evals"], _avail)
 
         # DETERMINISM (fair cross-technique comparison): seed torch/np/python-random from cfg seed so
         # the planner's sampling + any shuffles are reproducible. (Train/valid split is already fixed
@@ -262,29 +274,48 @@ class PlanWorkspace:
         # action dims. The two-arm freeze-right glue was removed.)
 
         ### HARNESS EDIT ### legislation: build the law-derived constraint + inject it into the
-        # planner (the "social" agent). enforce=false -> no constraint (the "selfish" agent).
+        # planner. mode = social (prune -> never break the law) | deviant (don't prune -> minimize
+        # violations, strictly preferring fewer-violation goal paths) | off (no constraint = rational).
         leg = self.cfg_dict.get("legislation") or {}
-        if leg.get("enforce", False):
+        mode = leg.get("mode", None)
+        if mode is None:                                   # back-compat: enforce=true/false -> social/off
+            mode = "social" if leg.get("enforce", False) else "off"
+        mode = str(mode).lower()
+        if mode not in ("social", "deviant", "off"):
+            raise ValueError(f"legislation.mode must be social|deviant|off, got {mode!r}")
+        target = getattr(self.planner, "sub_planner", self.planner)  # MPC -> sub_planner
+        target.mode = mode                                 # how the planner USES the constraint (prune vs rank)
+        self.planner.sign_flip = self.cfg_dict.get("sign_flip")   # exogenous sign-flip schedule (MPC loop reads it)
+        if mode in ("social", "deviant"):
             from probes.registry import ProbeRegistry
             from legislation.reasoner import LegislativeReasoner
             from legislation.constraint import Constraint
             from legislation.enforcement import LawEvaluator
+            from probes.probe_cube_cells import CUBE_HALF
             reg = ProbeRegistry(device=self.device)
             base_facts = list(leg.get("facts", ["cube"]))
-            reasoner = LegislativeReasoner()
+            _db = leg.get("db_path")                       # null -> geometry 1 (legal_database.yaml)
+            reasoner = LegislativeReasoner(db_path=_db) if _db else LegislativeReasoner()
+            # CUSHION (robust constraint tightening): inflate the footprint the PLANNER checks against by
+            # `constraint_margin` delta (m) to stay clear despite WM/probe perception error. PLANNER-ONLY
+            # -- the metric (planning_metrics) scores reality with the true CUBE_HALF, so the delta=0 vs
+            # delta>0 ablation is honest. Default 0.0. See methods.md (cushion ablation).
+            _margin = float(leg.get("constraint_margin", 0.0))
+            _ch = CUBE_HALF + _margin
             # per-step law: perceive -> ground -> reason -> Constraint, re-run each re-plan so the
             # verdict tracks the live state (sign colour, cells already visited, ...).
-            evaluator = LawEvaluator(reasoner, reg, base_facts=base_facts)
+            evaluator = LawEvaluator(reasoner, reg, base_facts=base_facts, cube_half=_ch)
             penalty = float(leg.get("violation_penalty", 1e6))
-            target = getattr(self.planner, "sub_planner", self.planner)  # MPC -> sub_planner
             target.law_fn = evaluator
             target.violation_penalty = penalty
             # initial/static constraint from base facts only -- the setup verdict, and the fallback
             # for planners that don't re-evaluate per step (e.g. the chained CEM). RRT overwrites
             # target.constraint each step via law_fn.
-            target.constraint = Constraint.from_reasoner(reasoner, base_facts, reg.probes)
-            print(f"[legislation] per-step law evaluator ON | base facts {base_facts} | "
-                  f"initial {target.constraint} | violation_penalty={penalty:g}")
+            target.constraint = Constraint.from_reasoner(reasoner, base_facts, reg.probes, cube_half=_ch)
+            print(f"[legislation] mode={mode} | base facts {base_facts} | cushion δ={_margin:.3f}m "
+                  f"| initial {target.constraint} | violation_penalty={penalty:g}")
+        else:
+            print("[legislation] mode=off (rational agent) -- no constraint")
         ### END HARNESS EDIT ###
 
         self.dump_targets()
@@ -356,6 +387,29 @@ class PlanWorkspace:
             self.state_g = fixed_goal
             self.gt_actions = None
         # === END HARNESS EDIT ===
+        elif self.goal_source == "law_eval":
+            ### HARNESS EDIT ### LAW-EVAL BENCHMARK: teleport to the pre-generated (init, goal) cube
+            # scenarios from scripts/gen_law_eval_set.py (states.pth (M,2,31)). Slice
+            # [scene_offset : +n_evals] so eval_sweep-style batching walks the whole set. Re-renders
+            # from the saved states (deterministic; the saved obses/ images are for inspection).
+            _d = Path(self.cfg_dict["goal_file_path"])
+            _st = torch.load(_d / "states.pth").float().numpy()          # (M, 2, 31)  [init, goal]
+            _off = int(self.cfg_dict.get("scene_offset") or 0)
+            _sl = slice(_off, _off + self.n_evals)
+            init_state, goal_state = _st[_sl, 0], _st[_sl, 1]            # (b, 31) each
+            # sign-flip: set the PRE-FLIP baseline colour before the first perception so MPC step 0
+            # (and the goal frame) is grounded at a known sign, not the sim's default. See conf sign_flip.
+            _sf = self.cfg_dict.get("sign_flip")
+            if _sf and _sf.get("frame") is not None and hasattr(self.env, "set_sign_color"):
+                self.env.set_sign_color(_sf.get("color", "yellow") if int(_sf["frame"]) == 0
+                                        else _sf.get("base_color", "white"))
+            obs_0_env, _ = self.env.prepare(self.eval_seed, init_state)
+            obs_g_env, _ = self.env.prepare(self.eval_seed, goal_state)
+            self.obs_0 = self._add_time_dim(obs_0_env)
+            self.obs_g = self._add_time_dim(obs_g_env)
+            self.state_0, self.state_g = init_state, goal_state
+            self.gt_actions = None
+            self.law_eval_size = int(_st.shape[0])                       # for eval_sweep pool sizing
         else:
             # update env config from val trajs
             observations, states, actions, env_info = (
@@ -544,6 +598,14 @@ class PlanWorkspace:
         try:
             from planning.planning_metrics import build_eval_metrics
             _tgt = getattr(self.planner, "sub_planner", self.planner)
+            # RUNTIME split (from the RRT's accumulated timers; see planning/rrt.py reset):
+            #   RRT search = _t_plan - _t_reason - _t_prune ; LEGISLATION = reason (DDL observe/set_goal)
+            #   + prune (constraint.violations). off/rational -> reason=prune=0 (no law attached).
+            _tp = float(getattr(_tgt, "_t_plan", 0.0))
+            _trs = float(getattr(_tgt, "_t_reason", 0.0)); _tpr = float(getattr(_tgt, "_t_prune", 0.0))
+            _rb = {"plan_total_s": round(_tp, 2), "rrt_s": round(_tp - _trs - _tpr, 2),
+                   "legislation_s": round(_trs + _tpr, 2),
+                   "legislation_reason_s": round(_trs, 2), "legislation_prune_s": round(_tpr, 2)}
             _metrics = build_eval_metrics(
                 e_states=e_states, action_len=action_len,
                 last_metrics=getattr(self.evaluator, "last_metrics", {}),
@@ -551,12 +613,14 @@ class PlanWorkspace:
                 scene_filter=self.cfg_dict.get("scene_filter"),
                 metric_cell=self.cfg_dict.get("metric_cell"),
                 scene_offset=self.cfg_dict.get("scene_offset"),
-                pool_size=(len(self.scene_pool) if self.scene_pool is not None else None),
+                pool_size=(self.law_eval_size if self.law_eval_size is not None
+                           else (len(self.scene_pool) if self.scene_pool is not None else None)),
                 n_evals=self.n_evals, seed=self.cfg_dict["seed"],
                 wm_pred_err=getattr(self.planner, "wm_pred_err_mean", None),
                 wm_latent_err=getattr(self.planner, "wm_latent_err_mean", None),
                 wm_pred_err_steps=getattr(self.planner, "wm_pred_err_steps", None),
-                wm_latent_err_steps=getattr(self.planner, "wm_latent_err_steps", None))
+                wm_latent_err_steps=getattr(self.planner, "wm_latent_err_steps", None),
+                runtime_breakdown=_rb, goal_states=getattr(self, "state_g", None))
             with open("eval_metrics.json", "w") as _f:
                 json.dump(_metrics, _f, indent=2)
             print("Dumped eval metrics to", os.path.abspath("eval_metrics.json"))
@@ -731,7 +795,14 @@ def planning_main(cfg_dict):
     # re-clamps identically (this just moves the clamp ahead of env construction).
     _sf = {k: v for k, v in (cfg_dict.get("scene_filter") or {}).items() if v is not None}
     _soff = cfg_dict.get("scene_offset")
-    if _soff is not None:
+    if cfg_dict.get("goal_source") == "law_eval":
+        # law-eval benchmark: clamp n_evals to the (init,goal) SET SIZE (states.pth (M,2,31)), sliced
+        # by scene_offset -- env num_envs must match the states prepare_targets teleports to.
+        _m = int(torch.load(Path(cfg_dict["goal_file_path"]) / "states.pth").shape[0])
+        _off = int(_soff or 0)
+        cfg_dict["n_evals"] = min(cfg_dict["n_evals"], max(1, _m - _off))
+        print(f"[law_eval] n_evals -> {cfg_dict['n_evals']} (set size {_m}, offset {_off})")
+    elif _soff is not None:
         from scripts.scene_index import select_pairs_from_states
         _base = getattr(dset, "dataset", dset)
         _idxs = list(getattr(dset, "indices", range(len(dset))))

@@ -34,7 +34,7 @@ _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from probes.probe_cube_position import MLP, _spatial_pool_grid  # same probe head + pooling
+from probes.probe_cube_position import MLP, _spatial_pool_grid, gm  # same head + pooling; gm=grid_metadata
 
 CUBE_OFF = 18  # cube xy in the 31-D state
 
@@ -93,17 +93,30 @@ def main():
     ap.add_argument("--data_dir", default="data/isaaclab_stroke_1500")
     ap.add_argument("--probe", default="probes/weights/probe_cube_1500.pth")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    ap.add_argument("--n_windows", type=int, default=256)
+    ap.add_argument("--split_ratio", type=float, default=0.9,
+                    help="train fraction of the seed-42 split; eval runs on ALL held-out val episodes")
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--horizon", type=int, default=5, help="multi-step open-loop horizon")
     ap.add_argument("--seed", type=int, default=0)
+    # Restrict eval to windows whose transition stroke is IN the RRT planner's operating domain
+    # (aimed contact: aim & push in range) -- the manifold the planner actually queries, so the WM
+    # error reflects what matters at plan time rather than the broad train/val mix. Same definition
+    # as train.py's planner_domain flag.
+    ap.add_argument("--planner_domain", action="store_true",
+                    help="only evaluate strokes in the RRT domain (aim & push in the ranges below)")
+    ap.add_argument("--aim_lo", type=float, default=0.085)
+    ap.add_argument("--aim_hi", type=float, default=0.125)
+    ap.add_argument("--push_lo", type=float, default=0.14)
+    ap.add_argument("--push_hi", type=float, default=0.21)
     args = ap.parse_args()
     dev = args.device
 
     wm, tcfg = load_wm(args.model_dir, args.epoch, dev)
     num_hist = int(tcfg.num_hist)
     mlp, pinfo = load_probe(args.probe, dev)
-    print(f"[load] WM num_hist={num_hist} | probe pool_grid={pinfo['pool_grid']} d_in={pinfo['d_in']}")
+    print(f"[load] WM num_hist={num_hist} | PROBE={args.probe} "
+          f"(source={pinfo.get('source', '?')} horizons={pinfo.get('pred_horizons', '?')} "
+          f"pool_grid={pinfo['pool_grid']} d_in={pinfo['d_in']})")
 
     p = Path(args.data_dir)
     states = torch.load(p / "states.pth").float().numpy()           # (E,T,31)
@@ -120,17 +133,45 @@ def main():
         x = vid.float().permute(0, 3, 1, 2) / 255.0
         return (x * 2.0 - 1.0)                                       # Normalize(0.5,0.5)
 
-    rng = np.random.RandomState(args.seed)
     H = args.horizon
-    # a window needs num_hist init frames + H future actions/frames
-    max_f = T - (num_hist + H)
-    windows = [(int(rng.randint(0, E)), int(rng.randint(0, max_f + 1))) for _ in range(args.n_windows)]
+    # VALIDATION EPISODES ONLY -- reproduce training's seed-42 split (datasets/traj_dset.py
+    # split_traj_datasets: randperm(E, seed=42); the last (1-train_fraction) episodes are val), so the
+    # WM never trained on these windows -> an honest generalization number.
+    perm = torch.randperm(E, generator=torch.Generator().manual_seed(42)).tolist()
+    val_eps = sorted(perm[int(args.split_ratio * E):])
+    # a window needs num_hist init frames + H future frames; enumerate EVERY valid window over EVERY
+    # val episode (per-episode length if seq_lengths.pth is present, else T) = the ENTIRE val set.
+    seq_len = torch.load(p / "seq_lengths.pth").numpy() if (p / "seq_lengths.pth").exists() else None
+    windows = []
+    for e in val_eps:
+        te = int(seq_len[e]) if seq_len is not None else T
+        windows += [(e, f) for f in range(0, te - (num_hist + H) + 1)]
+    print(f"[val split] {len(val_eps)}/{E} held-out episodes (seed 42, train_fraction={args.split_ratio}) "
+          f"-> {len(windows)} windows (ENTIRE val set)")
 
-    err_pred1, err_predH, err_enc = [], [], []   # 1-step pred, H-step pred, encoded floor
-    move_true, move_pred1 = [], []               # how far the cube ACTUALLY moved vs predicted (1-step)
-    d_start = []                                  # |stroke start - cube| (distance from the contact region)
+    if args.planner_domain:
+        # keep only windows whose transition stroke (frame f+num_hist-1) is in the RRT's domain:
+        # aim = |start-cube|, push = |disp|, both in range. RAW meters (actions/states unnormalized here).
+        def _in_domain(e, f):
+            tf = f + num_hist - 1
+            a = actions[e, tf]; cube = states[e, tf, CUBE_OFF:CUBE_OFF + 2]
+            aim = float(np.linalg.norm(a[:2] - cube)); push = float(np.linalg.norm(a[2:4]))
+            return args.aim_lo <= aim <= args.aim_hi and args.push_lo <= push <= args.push_hi
+        n0 = len(windows)
+        windows = [(e, f) for (e, f) in windows if _in_domain(e, f)]
+        print(f"[planner_domain] restricted to RRT-domain strokes "
+              f"(aim[{args.aim_lo},{args.aim_hi}] push[{args.push_lo},{args.push_hi}]): {len(windows)}/{n0} windows")
 
-    for i in range(0, len(windows), args.batch):
+    err_enc = []                                 # encoded-floor: probe on the REAL frame (perception ceiling)
+    err_h = {k: [] for k in range(1, H + 1)}     # endpoint error per horizon k (m)
+    dir_h = {k: [] for k in range(1, H + 1)}     # heading error per horizon k (deg; NaN when cube ~still)
+    move_h = {k: [] for k in range(1, H + 1)}    # true cumulative cube move at horizon k (m; contact/miss split)
+    move_true, move_pred1 = [], []               # 1-step actual vs predicted move (motion ratio)
+    axerr_enc = []                               # per-axis |err| for the encoded floor -> (N,2)
+    axerr_h = {k: [] for k in range(1, H + 1)}   # per-axis |err| per horizon -> (N,2); for cushion δ sizing
+
+    n_batches = (len(windows) + args.batch - 1) // args.batch
+    for bi, i in enumerate(range(0, len(windows), args.batch)):
         batch = windows[i:i + args.batch]
         vis0 = torch.stack([load_vis(e, f, num_hist) for e, f in batch]).to(dev)        # (b,nh,3,H,W)
         pro0 = torch.stack([torch.tensor((proprio[e, f:f + num_hist] - p_mean) / p_std)
@@ -140,69 +181,98 @@ def main():
                             for e, f in batch]).float().to(dev)                          # (b,nh+H,4)
         obs0 = {"visual": vis0, "proprio": pro0}
 
-        # ---- 1-step: predict frame f+nh from the nh history frames + action a_{f+nh-1} ----
+        # ONE open-loop rollout over all H future actions. Horizon k's prediction is frame index
+        # num_hist+k-1 (the k-th action-driven frame); rollout returns num_hist+H+1 frames and the
+        # trailing free-predict frame ([:, -1]) sits one step PAST horizon H -- not used. (The old
+        # H-step read [:, -1], i.e. one frame too far; this indexes each horizon exactly.)
         with torch.no_grad():
-            z1, _ = wm.rollout(obs_0=obs0, act=acts[:, :num_hist])    # adds 1 predicted frame
-        pred1 = probe_xy(mlp, pinfo, z1["visual"][:, -1], dev)        # (b,2)
-        # ---- H-step open-loop ----
-        with torch.no_grad():
-            zH, _ = wm.rollout(obs_0=obs0, act=acts)                  # predicts H frames ahead
-        predH = probe_xy(mlp, pinfo, zH["visual"][:, -1], dev)
+            zf, _ = wm.rollout(obs_0=obs0, act=acts)                          # (b, num_hist+H+1, P, D)
+        pred_k = {k: probe_xy(mlp, pinfo, zf["visual"][:, num_hist + k - 1], dev) for k in range(1, H + 1)}
 
         for j, (e, f) in enumerate(batch):
-            cube_hist = states[e, f + num_hist - 1, CUBE_OFF:CUBE_OFF + 2]   # last seen cube
-            cube_next = states[e, f + num_hist, CUBE_OFF:CUBE_OFF + 2]       # true after 1 stroke
-            cube_H = states[e, f + num_hist - 1 + H, CUBE_OFF:CUBE_OFF + 2]  # true after H strokes
-            err_pred1.append(np.linalg.norm(pred1[j] - cube_next))
-            err_predH.append(np.linalg.norm(predH[j] - cube_H))
+            cube_hist = states[e, f + num_hist - 1, CUBE_OFF:CUBE_OFF + 2]    # last seen cube
+            for k in range(1, H + 1):
+                true_k = states[e, f + num_hist - 1 + k, CUBE_OFF:CUBE_OFF + 2]   # true cube after k strokes
+                pk = pred_k[k][j]
+                err_h[k].append(np.linalg.norm(pk - true_k))
+                axerr_h[k].append(np.abs(pk - true_k))       # per-axis (|dx|,|dy|) for δ sizing
+                # heading error: angle between predicted & true CUMULATIVE displacement from cube_hist.
+                # NaN unless the cube truly moved (>2cm, the contact threshold) -- a heading on sub-cm
+                # jitter is meaningless (random angle ~90-145deg), so misses/near-still frames get NaN.
+                td, pd = true_k - cube_hist, pk - cube_hist
+                move_h[k].append(float(np.linalg.norm(td)))      # true cumulative move (contact/miss split)
+                if np.linalg.norm(td) > 0.02 and np.linalg.norm(pd) > 1e-6:
+                    cos = float(td @ pd) / (np.linalg.norm(td) * np.linalg.norm(pd))
+                    dir_h[k].append(float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))))
+                else:
+                    dir_h[k].append(np.nan)
+            # 1-step motion stats (motion ratio)
+            cube_next = states[e, f + num_hist, CUBE_OFF:CUBE_OFF + 2]        # true after 1 stroke
             move_true.append(np.linalg.norm(cube_next - cube_hist))
-            move_pred1.append(np.linalg.norm(pred1[j] - cube_hist))
-            d_start.append(np.linalg.norm(actions[e, f + num_hist - 1, :2] - cube_hist))  # start dist from cube
-            # encoded floor: probe the REAL frame f+nh
+            move_pred1.append(np.linalg.norm(pred_k[1][j] - cube_hist))
+            # encoded floor: probe the REAL frame f+nh (perception ceiling, no prediction)
             ev = load_vis(e, f + num_hist, 1).to(dev)
             with torch.no_grad():
                 ze = wm.encode_obs({"visual": ev[None],
                                     "proprio": torch.zeros(1, 1, 18, device=dev)})["visual"][:, 0]
             enc = probe_xy(mlp, pinfo, ze, dev)[0]
             err_enc.append(np.linalg.norm(enc - cube_next))
+            axerr_enc.append(np.abs(enc - cube_next))        # per-axis for δ sizing
+        done = min(i + args.batch, len(windows))
+        print(f"  [progress] batch {bi + 1}/{n_batches}  ({done}/{len(windows)} windows)  "
+              f"running 1-step err {np.mean(err_h[1]):.4f} m", flush=True)
 
-    f = lambda a: (np.mean(a), np.median(a))
-    print(f"\n[probe floor]  ENCODED real frame -> true cube:  mean {f(err_enc)[0]:.4f}  median {f(err_enc)[1]:.4f} m"
-          f"   (should be ~0.015; validates transforms)")
-    print(f"[1-step pred]  PREDICTED latent  -> true cube:    mean {f(err_pred1)[0]:.4f}  median {f(err_pred1)[1]:.4f} m")
-    print(f"[{H}-step pred] PREDICTED latent  -> true cube:    mean {f(err_predH)[0]:.4f}  median {f(err_predH)[1]:.4f} m")
-    print(f"\n[motion]  true cube move/step:      mean {f(move_true)[0]:.4f} m")
-    print(f"[motion]  predicted cube move/step: mean {f(move_pred1)[0]:.4f} m   "
+    def md(a):                                                   # (mean, median) over finite values
+        a = np.asarray(a, float); a = a[np.isfinite(a)]
+        return (float(a.mean()), float(np.median(a))) if a.size else (float("nan"), float("nan"))
+
+    # error vs true cube: the encoded floor (probe on the real frame = perception ceiling) + each
+    # open-loop horizon, split into CONTACT (cube truly moved >2cm over that horizon -- the strokes
+    # the planner relies on) vs MISS (cube ~still -> trivially predictable). dir = heading error,
+    # meaningful on contacts only (a miss has no true direction).
+    print(f"\n[prediction error vs true cube]  (encoded = perception ceiling ~0.015; dir = heading, contacts only)")
+    print(f"  {'source':<16}{'n':>6}{'err mean':>10}{'err med':>9}{'dir(deg)':>10}")
+    em, emd = md(err_enc)
+    print(f"  {'encoded':<16}{len(err_enc):>6}{em:>10.4f}{emd:>9.4f}{'--':>10}")
+    for k in range(1, H + 1):
+        e = np.array(err_h[k]); mv = np.array(move_h[k]); dv = np.array(dir_h[k])
+        for tag, mask in [("contact", mv > 0.02), ("miss", mv <= 0.02)]:
+            if not mask.any():
+                continue
+            em, emd = md(e[mask])
+            dok = dv[mask][np.isfinite(dv[mask])]
+            dstr = f"{dok.mean():>10.1f}" if dok.size else f"{'--':>10}"
+            print(f"  {f'{k}-step {tag}':<16}{int(mask.sum()):>6}{em:>10.4f}{emd:>9.4f}{dstr}")
+    # === cushion δ sizing: per-axis max(|dx|,|dy|) percentiles, on the PREDICTED reads the constraint
+    # transit check actually uses. A footprint breach is per-axis, so δ must cover max(x,y); to prevent
+    # a breach in q% of frames set δ = pq of that row. CONTACT rows (cube truly moved) are the strokes
+    # the planner relies on -> size δ off '1-step contact' (closed-loop commits the first stroke).
+    def _pcts(a):                                            # (p50,p75,p90,p95,p99,max) or None
+        a = np.asarray(a, float); a = a[np.isfinite(a)]
+        return None if a.size == 0 else [np.percentile(a, q) for q in (50, 75, 90, 95, 99)] + [a.max()]
+
+    def _prow(label, n, mx):
+        row = _pcts(mx)
+        if row is not None:
+            print(f"  {label:<16}{n:>6}" + "".join(f"{v:>9.4f}" for v in row))
+
+    print(f"\n[cushion δ sizing]  per-axis max(x,y) error (m) -- δ=pq prevents a breach in q% of frames. "
+          f"CELL/2={gm.CELL / 2:.4f} m: δ≥this seals the cell. Size δ off '1-step contact'.")
+    print(f"  {'source':<16}{'n':>6}{'p50':>9}{'p75':>9}{'p90':>9}{'p95':>9}{'p99':>9}{'max':>9}")
+    _ae = np.asarray(axerr_enc)
+    _prow("encoded", len(_ae), _ae.max(1) if _ae.size else _ae)
+    for k in range(1, H + 1):
+        ax = np.asarray(axerr_h[k]); mv = np.array(move_h[k])
+        for tag, mask in [("contact", mv > 0.02), ("miss", mv <= 0.02)]:
+            if mask.any():
+                _prow(f"{k}-step {tag}", int(mask.sum()), ax[mask].max(1))
+
+    print(f"\n[motion]  true cube move/step:      mean {md(move_true)[0]:.4f} m")
+    print(f"[motion]  predicted cube move/step: mean {md(move_pred1)[0]:.4f} m   "
           f"(ratio>1 => WM OVER-predicts push distance; <1 => under)")
     ratio = np.mean(move_pred1) / max(np.mean(move_true), 1e-6)
     print(f"[motion]  predicted/true move ratio: {ratio:.2f}  (1.0 = faithful; ~0 = WM keeps cube ~put)")
 
-    # contact vs miss: aggregate 1-step err is dominated by MISS strokes (cube ~still ->
-    # trivially predictable). Planning only relies on CONTACT strokes. Split them out.
-    e1 = np.array(err_pred1); mt = np.array(move_true)
-    contact = mt > 0.02
-    print(f"\n[contact split]  1-step PREDICTED-probe err vs whether the stroke moved the cube:")
-    if contact.any():
-        print(f"  CONTACT (moved >2cm, n={int(contact.sum())}):  mean {e1[contact].mean():.4f} m"
-              f"   <- the strokes the planner actually relies on")
-    if (~contact).any():
-        print(f"  MISS    (cube ~still, n={int((~contact).sum())}): mean {e1[~contact].mean():.4f} m")
-
-    # bin 1-step prediction by START distance from the cube. The hallucination signature:
-    # for FAR-start strokes (misses, true_move~0), does the WM predict the cube STAYS
-    # (pred_move~0, honest) or MOVES (pred_move>0, hallucination)? If pred_err / pred_move
-    # grow with distance, the WM is unreliable far from the cube -> near-cube trust region
-    # is justified. (Caveat: these are DATASET starts, random; the CEM adversarially finds
-    # the worst far-start combos, so this UNDER-states the planner's exploit.)
-    d = np.array(d_start); mp = np.array(move_pred1)
-    print(f"\n[start-distance bins]  |stroke_start - cube| -> WM behavior  (CELL={2*0.0667:.3f}m wide)")
-    print(f"  {'bin (m)':<12}{'n':>5}{'pred_err':>10}{'true_move':>11}{'pred_move':>11}")
-    for lo, hi in [(0, 0.06), (0.06, 0.12), (0.12, 0.20), (0.20, 0.35), (0.35, 9.0)]:
-        m = (d >= lo) & (d < hi)
-        if m.sum() == 0:
-            continue
-        print(f"  {f'{lo:.2f}-{hi:.2f}':<12}{int(m.sum()):>5}{e1[m].mean():>10.4f}"
-              f"{mt[m].mean():>11.4f}{mp[m].mean():>11.4f}")
 
 
 if __name__ == "__main__":

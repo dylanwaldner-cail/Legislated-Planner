@@ -180,13 +180,43 @@ def _cells(xy):
     return gm.which_cell(np.asarray(xy, dtype=np.float32))
 
 
+def _err_percentiles(pred, true):
+    """Position-error distribution for choosing a CONSTRAINT CUSHION delta (robust
+    constraint tightening: the planner inflates each illegal cell by delta to stay clear
+    despite perception error). The illegal-cell test is an AXIS-ALIGNED footprint box
+    (|x-cx| < CELL/2 + cube_half), so a breach happens when the TRUE center crosses an
+    edge the probe thought was clear -> delta must cover the PER-AXIS error, which is
+    smaller than the L2. Read delta off a TAIL percentile (a chance constraint 'breach
+    with prob <= eps' uses the (1-eps) quantile), not the mean. Calibrate on --source
+    predicted (the latent the planner actually reads), NOT encoded."""
+    d = pred - true                                    # (N,2) signed error, meters
+    ax = np.abs(d)                                      # (N,2) per-axis magnitude
+    l2 = np.linalg.norm(d, axis=1)                      # (N,) euclidean
+    qs = [50, 75, 90, 95, 99]
+
+    def row(v):
+        return "  ".join(f"p{q}={np.percentile(v, q):.4f}" for q in qs) + f"  max={v.max():.4f}"
+
+    print("\n[error percentiles] (meters) — pick the constraint cushion delta off the PER-AXIS tail")
+    print(f"  bias (mean signed)  x={d[:, 0].mean():+.4f}  y={d[:, 1].mean():+.4f}   "
+          "(a systematic offset — subtract it instead of cushioning it)")
+    print(f"  |err| per-axis x    {row(ax[:, 0])}")
+    print(f"  |err| per-axis y    {row(ax[:, 1])}")
+    print(f"  |err| max(x,y)      {row(ax.max(1))}   <- symmetric delta covering BOTH axes (use this)")
+    print(f"  L2                  {row(l2)}")
+    print(f"  [guide] CELL/2={gm.CELL/2:.4f} m: a delta at/above CELL/2 seals cells shut. For "
+          "border-of-goal (geom2) too large a delta can make the goal unreachable — sweep it.")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data_dir", default="data/isaaclab_stroke_1500")
-    ap.add_argument("--source", choices=["encoded", "predicted"], default="encoded",
-                    help="feature source (TWO-HEAD design, separate networks): 'encoded' = "
-                    "φ(real frame) -> the GOAL/anchor head (keep probe_cube_1500.pth); 'predicted' "
-                    "= WM-rolled latent -> the objective head (new probe_cube_pred.pth).")
+    ap.add_argument("--source", choices=["encoded", "predicted", "both"], default="encoded",
+                    help="feature source: 'encoded' = φ(real frame) -> GOAL/anchor head "
+                    "(probe_cube_1500.pth); 'predicted' = WM-rolled latent -> objective head "
+                    "(probe_cube_pred.pth); 'both' = train ONE head on the UNION of encoded ∪ "
+                    "predicted latents (at --pred_horizons, default 1) -- matches the mixed latent "
+                    "stream the constraint reads at plan time (encoded history + predicted future).")
     ap.add_argument("--model_dir", default="outputs/2026-06-25/16-46-57",
                     help="WM dir (only used for --source predicted)")
     ap.add_argument("--epoch", default="20", help="WM epoch (only used for --source predicted)")
@@ -229,19 +259,32 @@ def main():
     np.random.seed(args.seed)
     device = args.device
 
-    if args.source == "encoded":
+    parts = []   # each: (X, Y, ep, V); >1 only for --source both (encoded ∪ predicted)
+    if args.source in ("encoded", "both"):
         encoder = DinoV2Encoder(name="dinov2_vits14", feature_key="x_norm_patchtokens").to(device).eval()
         for prm in encoder.parameters():
             prm.requires_grad_(False)
-        X, Y, ep, V = encode_dataset(args.data_dir, encoder, device, args.frame_stride,
-                                     args.enc_batch, args.pool_grid, args.enc_res)
-    else:  # predicted: roll the frozen WM with dataset actions (needs the full WM, not just the encoder)
+        parts.append(encode_dataset(args.data_dir, encoder, device, args.frame_stride,
+                                    args.enc_batch, args.pool_grid, args.enc_res))
+    if args.source in ("predicted", "both"):
         from scripts.wm_cube_pred_check import load_wm  # lazy: avoids a circular import at module load
         pred_h = [int(s) for s in str(args.pred_horizons).split(",") if s.strip()]
         wm, tcfg = load_wm(args.model_dir, args.epoch, device)
         print(f"[predict] WM {args.model_dir}@{args.epoch} num_hist={int(tcfg.num_hist)} horizons={pred_h}")
-        X, Y, ep, V = predict_dataset(args.data_dir, wm, int(tcfg.num_hist), device,
-                                      pred_h, args.enc_batch, args.pool_grid)
+        parts.append(predict_dataset(args.data_dir, wm, int(tcfg.num_hist), device,
+                                     pred_h, args.enc_batch, args.pool_grid))
+    # 'both' concatenates the two sources into one training set. Each source tags frames with the
+    # SAME episode index (both iterate sorted(files) identically), so the by-episode split below
+    # draws val_eps from the union and holds a val episode out of BOTH halves -> no cross-source
+    # leakage (a test episode's encoded frames can't sneak into train via its predicted frames).
+    X = np.concatenate([p[0] for p in parts])
+    Y = np.concatenate([p[1] for p in parts])
+    ep = np.concatenate([p[2] for p in parts])
+    V = np.concatenate([p[3] for p in parts])
+    if args.source == "both":
+        print(f"[both] union = {parts[0][0].shape[0]} encoded + {parts[1][0].shape[0]} predicted "
+              f"(h={args.pred_horizons}) = {X.shape[0]} samples, dim {X.shape[1]}")
+        assert parts[0][0].shape[1] == parts[1][0].shape[1], "encoded/predicted feature dims differ"
 
     if args.shuffle_labels:
         perm = np.random.RandomState(args.seed + 1).permutation(len(Y))
@@ -331,6 +374,8 @@ def main():
         probe.eval()
         with torch.no_grad():
             pred = probe(Xn[te]).cpu().numpy() * ysd_np + ymu_np   # (Nte, 2) meters
+
+        _err_percentiles(pred, Y_te)                               # cushion-sizing table
 
         def _bm(mask):
             n = int(mask.sum())

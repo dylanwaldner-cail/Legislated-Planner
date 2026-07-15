@@ -5,9 +5,9 @@
 # matching latent to each group. To add a probe: train it, drop the .pth here, flip enabled.
 
 probes:
-  - name: cube_position          # continuous cube (x,y) in meters   [regression, encoded]
-    path: probes/weights/probe_cube_1500.pth
-    enabled: true
+  - name: cube_position          # continuous cube (x,y) in meters   [regression, encoded∪pred-h1]
+    path: probes/weights/pos_enc_pred1.pth   # trained on encoded ∪ pred-h1 latents (matches the mixed
+    enabled: true                            # trajectory the constraint reads); L2 0.020 m. Old: probe_cube_1500.pth
 
   - name: cube_position_pred     # cube (x,y) read off predicted latents   [regression, predicted]
     path: probes/weights/probe_cube_pred.pth
@@ -16,6 +16,11 @@ probes:
   - name: cube_cells             # per-cell occupancy, 9-d multi-label   [multilabel, encoded]
     path: probes/weights/probe_cube_cells.pth
     enabled: true                # trained (macro-F1 0.975); used by the legislation CellConstraint
+
+  - name: sign_color             # stop-sign colour, 4-class {white,red,yellow,green}   [classification, encoded]
+    path: probes/weights/probe_sign_color.pth
+    enabled: false               # gate: 100% held-out acc. Train+save: probe_sign_color.py --save_path probes/weights/probe_sign_color.pth ; flip when saved
+
 
   # - name: cube_cells_pred      # per-cell occupancy on predicted latents   [multilabel, predicted]
   #   path: probes/weights/probe_cube_cells_pred.pth   # train: probe_cube_cells.py --source predicted --pred_horizons 1,2,3,4,5

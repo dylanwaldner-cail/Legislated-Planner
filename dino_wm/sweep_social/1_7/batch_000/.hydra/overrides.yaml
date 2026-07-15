@@ -1,9 +1,0 @@
-- metric_cell=4
-- legislation.enforce=true
-- scene_filter.goal_not_in_cells=[4]
-- scene_filter.init_cell=1
-- scene_filter.goal_cell=7
-- n_evals=5
-- scene_offset=0
-- seed=99
-- video=false

@@ -1,0 +1,45 @@
+# GEOMETRY 2 — a self-contained law regime, ALTERNATIVE to legal_database.yaml (geometry 1).
+# Select at plan time with `legislation.db_path=legislation/laws/geometric_2.yaml`; the default
+# (null) still loads geometry 1, so this file does NOT affect existing runs. Same DDL syntax +
+# pipeline as geometry 1 (reasoner.py renders -> clingo; constraint.py enforces prohibitions).
+#
+# Defining feature: the illegal cells ADAPT to the perceived goal -- every cell BORDERING the goal
+# cell is forbidden. Consequence (intended, adversarial): to enter the goal cell the cube must
+# cross one of its neighbours, so a legal path may not exist -> `social` freezes short, `deviant`
+# routes through the least-violating neighbour. (We build a fallback on top of that failure.)
+
+atoms:
+  - cube
+  - in_cell(0..8)
+  - off_grid
+  - goal_cell(0..8)            # perceived by the cube-cell probe on the GOAL latent (set_goal)
+
+laws:
+  geometric_laws_2:
+    # Workspace bound (physical feasibility as a prohibition, like geometry 1).
+    - label: no_off_grid
+      antecedent: [cube]
+      consequent: ["[O]~off_grid"]
+
+    # ADAPTIVE BORDER-OF-GOAL PROHIBITION. `expand_pairs` with pairs=grid_borders_diag emits one
+    # ground rule per (goal cell N, neighbour M) adjacency pair -> goal_cell(N) => [O]~in_cell(M),
+    # using 8-CONNECTIVITY (edges + diagonals). So for the perceived goal, ALL surrounding cells
+    # become forbidden: corner goal -> 3 cells, edge goal -> 5, center goal -> all 8. Pruned by the
+    # SAME in_cell checker as geometry 1's center law. (A relational borders(N,M) guard can't go in
+    # the antecedent -- the DDL syntax comma-splits literals -- hence the compile-time pairing.)
+    - label: no_border_of_goal
+      expand_pairs: {vars: [N, M], pairs: grid_borders_diag}
+      antecedent: ["goal_cell(N)"]
+      consequent: ["[O]~in_cell(M)"]
+
+    # Goal as a positive obligation (perceived goal cell). Not a prune (the planner already drives to
+    # goal); kept so the goal is a first-class norm that can interact with the border prohibition.
+    - label: reach_goal
+      expand: {N: "0..8"}
+      antecedent: ["goal_cell(N)"]
+      consequent: ["[O]in_cell(N)"]
+
+# No superiority: the goal cell is never its own neighbour, so reach_goal_N and no_border_of_goal
+# never target the same cell -- no conflict to resolve. (Add e.g. no_center_cell from geometry 1
+# here if you want the center prohibition on top of the border regime.)
+superiority: []

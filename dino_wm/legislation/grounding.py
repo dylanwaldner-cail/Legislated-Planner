@@ -22,6 +22,8 @@ continuous position probe to SUPPLEMENT the discrete cell probe.
 """
 from __future__ import annotations
 
+import functools
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -32,6 +34,33 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from probes.probe_cube_cells import swept_cells, CUBE_HALF   # cell geometry (numpy)
+
+# Load grid_metadata by file path (like probe_cube_position) so grounding stays importable in
+# plain python without pulling env/isaaclab/__init__ (IsaacLab). Gives CELL / N_CELLS / cell_center.
+_gm_spec = importlib.util.spec_from_file_location(
+    "grid_metadata", _REPO / "env" / "isaaclab" / "grid_metadata.py")
+gm = importlib.util.module_from_spec(_gm_spec)
+_gm_spec.loader.exec_module(gm)
+
+
+@functools.lru_cache(maxsize=2)
+def _grid_border_pairs(diagonal=False):
+    """Static grid adjacency: directed (N, M) pairs where cell M borders cell N. ORTHOGONAL by
+    default (centres one CELL apart in x XOR y); set diagonal=True to also include corner
+    neighbours (8-connectivity). Computed from cell_center geometry, memoized (constant)."""
+    cs = [np.asarray(gm.cell_center(c), float) for c in range(gm.N_CELLS)]
+    tol = gm.CELL * 0.25
+    pairs = []
+    for n in range(gm.N_CELLS):
+        for m in range(gm.N_CELLS):
+            if n == m:
+                continue
+            dx, dy = np.abs(cs[n] - cs[m])
+            ortho = (abs(dx - gm.CELL) < tol and dy < tol) or (abs(dy - gm.CELL) < tol and dx < tol)
+            diag = diagonal and abs(dx - gm.CELL) < tol and abs(dy - gm.CELL) < tol
+            if ortho or diag:
+                pairs.append((n, m))
+    return tuple(pairs)
 
 
 def _as_cube_rows(x):
@@ -92,6 +121,17 @@ class Grounder:
             return
         for row in _as_cube_rows(probs):
             self.facts.add(f"sign({names[int(np.argmax(row))]})")
+
+    # --- goal: the goal cell, from the SAME cell probe run on the GOAL latent (see set_goal) ---
+    def goal_cell(self, key="cube_cells"):
+        """cube_cells probe on the GOAL latent -> goal_cell(k) for the goal cube's DOMINANT cell
+        (single argmax; the goal is a resting centroid). 1-ary to match the in_cell law vocabulary.
+        Returned DIRECTLY (not merged into ground()) so goal grounding stays isolated from the
+        current-state facts -- a goal is not a place the cube currently occupies."""
+        occ = self.out.get(key)
+        if occ is None:
+            return []
+        return [f"goal_cell({int(np.argmax(_as_cube_rows(occ)[0]))})"]
 
     def ground(self):
         """Run every grounder method and return the sorted DDL fact list."""

@@ -145,6 +145,7 @@ class RRTIntrospector:
     @torch.no_grad()
     def record_step(self, *, step, sub_planner, wm, evaluator, objective_fn,
                     cur_obs_0, cur_state, obs_g):
+        self._sub_planner = sub_planner   # kept for finalize()'s query-distribution aggregation
         try:
             self._record(step=step, sub_planner=sub_planner, wm=wm, evaluator=evaluator,
                          objective_fn=objective_fn, cur_obs_0=cur_obs_0, cur_state=cur_state,
@@ -336,10 +337,49 @@ class RRTIntrospector:
                 progress.append(float(np.linalg.norm(root - goal) - np.linalg.norm(leaf - goal)))
             osc[str(e)] = {"n_steps": len(hist), "direction_reversals": reversals,
                            "mean_progress_per_step": float(np.mean(progress)) if progress else 0.0}
+        qd = self._query_distribution()
         out = {"per_step_eval": self.summary, "oscillation": osc,
-               "top_k": self.top_k, "resim": self.resim}
+               "query_distribution": qd, "top_k": self.top_k, "resim": self.resim}
         path = os.path.join(self.out_dir, "summary.json")
         with open(path, "w") as f:
             json.dump(out, f, indent=2)
         print(f"[introspect] wrote {path} | oscillation {osc}")
+        if qd:
+            print(f"[introspect] query dist: {qd['n_candidates']} candidates | "
+                  f"aim~{qd['aim_median']:.3f} push~{qd['push_median']:.3f} "
+                  f"pred_move~{qd['pred_move_median']:.3f} | predicted miss {100*qd['predicted_miss_rate']:.0f}% | "
+                  f"pruned {100*qd['pruned_rate']:.0f}%  (compare to stroke_transition_stats.py on the training data)")
         return path
+
+    def _query_distribution(self):
+        """Aggregate RRT's logged sampled-candidate population (the planner's QUERY distribution) into
+        the same schema as scripts/stroke_transition_stats.py, so it overlays on the TRAINING data:
+        aim |start-cube|, push |disp|, WM-PREDICTED cube move + from/to-cell transition matrix, and
+        predicted-miss / law-pruned rates. Empty if RRT wasn't logging (no _query_log)."""
+        ql = getattr(getattr(self, "_sub_planner", None), "_query_log", None)
+        if not ql:
+            return {}
+        cat = lambda k: np.concatenate([q[k] for q in ql])
+        aim, push, pmove = cat("aim"), cat("push"), cat("pred_move")
+        fc, tc, viol = cat("from_cell"), cat("to_cell"), cat("viol")
+        NC = gm.N_CELLS
+        ci = lambda c: NC if int(c) == gm.OFF_GRID else int(c)
+        mat = np.zeros((NC + 1, NC + 1), dtype=int)
+        for a, b in zip(fc, tc):
+            mat[ci(a), ci(b)] += 1
+        thr = 0.02
+        # histograms (fixed edges) + raw COUNTS so batches aggregate EXACTLY across a sweep
+        aim_e = np.linspace(0.0, 0.35, 15); push_e = np.linspace(0.0, 0.30, 15); move_e = np.linspace(0.0, 0.20, 15)
+        h = lambda a, e: np.histogram(a, bins=e)[0].tolist()
+        return {
+            "n_candidates": int(aim.size),
+            "n_pruned": int(viol.sum()), "n_pred_miss": int((pmove < thr).sum()),   # counts (sum across batches)
+            "pruned_rate": float(viol.mean()) if viol.size else 0.0,
+            "predicted_miss_rate": float((pmove < thr).mean()),         # WM predicts cube ~unmoved
+            "aim_median": float(np.median(aim)), "aim_mean": float(aim.mean()),
+            "push_median": float(np.median(push)), "push_mean": float(push.mean()),
+            "pred_move_median": float(np.median(pmove)), "pred_move_mean": float(pmove.mean()),
+            "aim_hist": h(aim, aim_e), "push_hist": h(push, push_e), "move_hist": h(pmove, move_e),
+            "aim_edges": aim_e.tolist(), "push_edges": push_e.tolist(), "move_edges": move_e.tolist(),
+            "predicted_transition_matrix": mat.tolist(),                # from-cell -> predicted to-cell
+        }

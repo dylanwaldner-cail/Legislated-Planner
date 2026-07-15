@@ -28,6 +28,7 @@ class MPCPlanner(BasePlanner):
         wandb_run,
         logging_prefix="mpc",
         log_filename="logs.json",
+        success_hold=False,
         **kwargs,
     ):
         super().__init__(
@@ -58,14 +59,15 @@ class MPCPlanner(BasePlanner):
         self.action_len = None  # keep track of the step each traj reaches success
         self.iter = 0
         self.planned_actions = []
+        self.success_hold = bool(success_hold)  # OFF by default -- see plan()/_apply_success_mask
 
     def _apply_success_mask(self, actions, cur_state):
-        """Succeeded envs hold: execute a zero-DISPLACEMENT stroke at the CURRENT cube
-        xy (start=cube, disp=0), a near no-op that doesn't disturb a solved cube. (The
-        old behavior wrote a raw-zero action = a stroke at the grid ORIGIN, which
-        could tap a center-cell cube.) frameskip=1, so each taken step is one 4-D
-        stroke [x_start, y_start, dx, dy]; the hold is broadcast over the
-        n_taken_actions horizon. cur_state: (N, 31) env-local, cube xy at [18:20]."""
+        """Succeeded envs hold: execute a zero-DISPLACEMENT stroke at the CURRENT cube xy
+        (start=cube, disp=0), a near no-op that doesn't disturb a solved cube. Gated by
+        `success_hold` (OFF by default) because it reads the GROUND-TRUTH cube (cur_state[18:20]) --
+        the one non-probe read in the planning loop -- and drags the per-step WM-error curve down
+        (succeeded evals hold -> ~0 error -> survivorship). frameskip=1, so each taken step is one
+        4-D stroke [x_start, y_start, dx, dy]; the hold is broadcast over the n_taken_actions horizon."""
         device = actions.device
         mask = torch.tensor(self.is_success).bool()
         if not mask.any():
@@ -112,6 +114,20 @@ class MPCPlanner(BasePlanner):
                 top_k=int(_icfg.get("top_k", 5)),
                 resim=bool(_icfg.get("resim", True)),
                 max_evals=int(_icfg.get("max_evals", 3)))
+            if hasattr(self.sub_planner, "_log_queries"):
+                self.sub_planner._log_queries = True   # RRT logs its sampled-candidate distribution
+        ### END HARNESS EDIT ###
+        ### HARNESS EDIT ### exogenous sign-flip schedule (conf sign_flip). `frame` = the MPC step at
+        # which the sign becomes `color`; before that it holds `base_color`. Recolouring the exec env
+        # BEFORE step (frame-1)'s rollout puts the new colour in that step's executed frame, which
+        # becomes cur_obs_0 for step `frame` -> the legislation re-perceives it exactly at `frame`.
+        # No-op unless configured AND the env supports recolouring (grid env only).
+        _sf = getattr(self, "sign_flip", None)
+        _sf_frame = None
+        if _sf and _sf.get("frame") is not None and hasattr(self.evaluator.env, "set_sign_color"):
+            _sf_frame = int(_sf["frame"])
+            _sf_color = _sf.get("color", "yellow")
+            self.evaluator.env.set_sign_color(_sf_color if _sf_frame == 0 else _sf.get("base_color", "white"))
         ### END HARNESS EDIT ###
         while not np.all(self.is_success) and self.iter < self.max_iter:
             self.sub_planner.logging_prefix = f"plan_{self.iter}"
@@ -139,7 +155,8 @@ class MPCPlanner(BasePlanner):
             )  # (b, t, act_dim)
             _t_plan = time.perf_counter() - _t_plan  ### HARNESS EDIT ### timing
             taken_actions = actions.detach()[:, : self.n_taken_actions]
-            self._apply_success_mask(taken_actions, cur_state)
+            if self.success_hold:   # OFF by default: reads GT cube + causes the per-step WM-err artifact
+                self._apply_success_mask(taken_actions, cur_state)
             memo_actions = actions.detach()[:, self.n_taken_actions :]
             self.planned_actions.append(taken_actions)
 
@@ -158,6 +175,9 @@ class MPCPlanner(BasePlanner):
                 _s = exec_taken[_i, 0]
                 print(f"  [dbg e{_i}] cube=({_cxy[_i][0]:+.3f},{_cxy[_i][1]:+.3f})  start=({_s[0]:+.3f},{_s[1]:+.3f})"
                       f"  disp=({_s[2]:+.3f},{_s[3]:+.3f})  |start-cube|={np.linalg.norm(_s[:2]-_cxy[_i]):.3f}")
+            ### HARNESS EDIT ### sign flip: recolour so step `frame` PERCEIVES it (see above).
+            if _sf_frame is not None and self.iter == _sf_frame - 1:
+                ev.env.set_sign_color(_sf_color)
             _fs = self._smooth_frames if getattr(ev, "video", False) else None  # per-step frames only when video=true
             e_obses, e_states = ev.env.rollout(ev.seed, cur_state, exec_taken, frame_sink=_fs)
             _t_eval = time.perf_counter() - _t_eval

@@ -26,10 +26,23 @@ class LawEvaluator:
         self.source = source                   # which probes to run for grounding (encoded = phi(obs))
         self.constraint_kw = constraint_kw     # cube_half / occ_thresh forwarded to Constraint
         self.ledgers = {}                      # eval_index -> NormativeMemory (per-eval executed history)
+        self.goal_facts = {}                   # eval_index -> ['goal_cell(k)'] (perceived on the goal latent)
 
     def reset(self):
-        """New episode: clear every per-eval ledger."""
+        """New episode: clear every per-eval ledger + perceived goals."""
         self.ledgers = {}
+        self.goal_facts = {}
+
+    def set_goal(self, goal_visual_latent, eval_index=0):
+        """Perceive the GOAL frame for eval `eval_index` on the SAME probe stack as live perception
+        (probes run on the goal latent) -> goal_cell(k), held as a per-eval base fact for the whole
+        episode. This is why the goal obligation is GROUNDED (probe-derived), not read from
+        privileged sim geometry. Idempotent: the goal is constant per episode, so later re-plans skip
+        the re-perceive (reset() clears goal_facts at episode start)."""
+        if eval_index in self.goal_facts:                # already perceived this eval's goal -> skip
+            return
+        out = self.registry.forward(goal_visual_latent, source=self.source)
+        self.goal_facts[eval_index] = Grounder(out).goal_cell()
 
     def ledger(self, eval_index):
         """The ledger for one eval (created on first use)."""
@@ -53,7 +66,10 @@ class LawEvaluator:
         led = self.ledger(eval_index)
         current = self._perceive(visual_latent)
         led.append(current, None)                                  # record perceived facts (verdict backfilled below)
-        facts = self.base_facts + current + led.derived_facts()    # derived includes this step -> TEMPORAL scope
+        # base + PERCEIVED GOAL (goal_cell(k)) + current + history-derived facts. The goal fact
+        # activates the reach_goal_k obligation, letting it interact with the cell laws.
+        facts = (self.base_facts + self.goal_facts.get(eval_index, [])
+                 + current + led.derived_facts())                  # derived includes this step -> TEMPORAL scope
         verdict = self.reasoner.assess(facts)
         led.records[-1]["verdict"] = verdict
         return self._build_constraint(verdict)

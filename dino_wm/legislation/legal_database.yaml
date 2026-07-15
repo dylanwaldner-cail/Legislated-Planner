@@ -24,32 +24,98 @@ atoms:
   - off_grid
   - sign(white;red;yellow;green)   # perceived stop-sign colour (from the sign_color probe)
   - moving                         # the robot is in motion (prohibited == a full stop / freeze)
+  - exit_cell(0..8)                # reparative act: leave cell N (secondary duty in the center-cell CTD)
+  - goal_cell(0..8)                # the goal cell, perceived by the cube-cell probe on the GOAL latent
 
+# Laws are grouped into named CATEGORIES (a nested dict under `laws`). Categories are purely
+# organisational — reasoner.py flattens them into one DDL theory (the union of every group).
+# Add a sibling key (e.g. `social_laws:`, `temporal_laws:`) to introduce a new category.
 laws:
-  # PLACEHOLDER (trivial; just anchors the schema + lets the pipeline run): cube ought not
-  # occupy the centre cell. NOTE: a bare prohibition like this is only DDL-as-obstacle — the
-  # point of the framework is the richer forms illustrated below.
-  - label: no_centre_cell
-    antecedent: [cube]
-    consequent: ["[O]~in_cell(4)"]
+  # GEOMETRIC LAWS: norms over the cube's configuration on the 3x3 grid — which cell it may
+  # occupy, staying on the grid, and the sign-conditioned modifiers of those spatial norms.
+  # (red_sign_stop is motion-based rather than positional; it lives here as the sign family's
+  # sibling — move it to its own category if you prefer a stricter taxonomy.)
+  geometric_laws:
+    # PLACEHOLDER (trivial; just anchors the schema + lets the pipeline run): cube ought not
+    # occupy the center cell. NOTE: a bare prohibition like this is only DDL-as-obstacle — the
+    # point of the framework is the richer forms illustrated below.
+    - label: no_center_cell
+      antecedent: [cube]
+      consequent: ["[O]~in_cell(4)"]
 
-  # Workspace bound as a law: the cube must stay on the grid. Enforced by the `off_grid` checker
-  # (constraint.py) -- cube CENTRE within +/-GRID_HALF. Physical/feasibility, but modelled as a
-  # prohibition so ALL constraints flow through the one pipeline (the planner does no reasoning).
-  - label: no_off_grid
-    antecedent: [cube]
-    consequent: ["[O]~off_grid"]
+    # Workspace bound as a law: the cube must stay on the grid. Enforced by the `off_grid` checker
+    # (constraint.py) -- cube CENTER within +/-GRID_HALF. Physical/feasibility, but modelled as a
+    # prohibition so ALL constraints flow through the one pipeline (the planner does no reasoning).
+    - label: no_off_grid
+      antecedent: [cube]
+      consequent: ["[O]~off_grid"]
 
-  # STOP SIGN: a RED sign obliges the robot to HALT. Modelled as a prohibition on `moving`
-  # (obligation of ~moving); the `moving` checker (constraint.py) flags EVERY candidate stroke as a
-  # motion, so this prunes ALL planner nodes -> the RRT can't extend -> the robot freezes in place.
-  # Conditional + state-dependent: the grounder emits sign(<colour>) from the sign_color probe each
-  # step, so the freeze engages when the sign is red and releases when it changes.
-  # DORMANT until a sign_color probe is trained + registered (probes.yaml): without it sign(red) is
-  # never grounded, so this law never fires and the planner is unaffected.
-  - label: red_sign_stop
-    antecedent: [sign(red)]
-    consequent: ["[O]~moving"]
+    # STOP SIGN: a RED sign obliges the robot to HALT. Modelled as a prohibition on `moving`
+    # (obligation of ~moving); the `moving` checker (constraint.py) flags EVERY candidate stroke as a
+    # motion, so this prunes ALL planner nodes -> the RRT can't extend -> the robot freezes in place.
+    # Conditional + state-dependent: the grounder emits sign(<colour>) from the sign_color probe each
+    # step, so the freeze engages when the sign is red and releases when it changes.
+    # DORMANT until a sign_color probe is trained + registered (probes.yaml): without it sign(red) is
+    # never grounded, so this law never fires and the planner is unaffected.
+    - label: red_sign_stop
+      antecedent: [sign(red)]
+      consequent: ["[O]~moving"]
+
+    # GREEN SIGN permits the center cell (this is "R4"). A perceived GREEN sign PERMITS in_cell(4).
+    # [P]in_cell(4) is a STRONG permission; made SUPERIOR to no_center_cell ("R2") in `superiority`
+    # below, it DEFEATS [O]~in_cell(4) when sign(green) holds -> the reasoner drops the center-cell
+    # prohibition from its verdict, so the planner stops pruning cell 4 (green = "go through the center").
+    # Same DORMANCY as red_sign_stop: needs a registered sign_color probe to ground sign(green).
+    - label: green_sign_permits_center
+      antecedent: [sign(green)]
+      consequent: ["[P]in_cell(4)"]
+
+    # YELLOW SIGN requires the center cell (this is "R5"). A perceived YELLOW sign OBLIGES the cube
+    # to pass through cell 4 -- the strongest inversion of no_center_cell: green merely PERMITS the
+    # center, yellow DEMANDS it. Modelled as [O]in_cell(4): "pass through" == occupying the center
+    # (in this grid in_cell/passed_through are the same footprint event), and only in_cell(4) is the
+    # direct negation of R2's [O]~in_cell(4), so with R5 > R2 in `superiority` the prohibition is
+    # defeated and the reasoner emits a positive obligation to enter cell 4. (Obligations are parsed
+    # but not yet planner-enforced -- constraint.py enforces prohibitions -- so this currently shapes
+    # the verdict, not the prune.) Same DORMANCY: needs a registered sign_color probe to ground
+    # sign(yellow).
+    - label: yellow_sign_requires_center
+      antecedent: [sign(yellow)]
+      consequent: ["[O]in_cell(4)"]
+
+    # ---- CONTRARY-TO-DUTY: bare breach vs. compensation (two ways to author a CTD) ----
+    #
+    # (a) NO compensate. `no_center_cell` above is a LONE prohibition [O]~in_cell(4). If it is
+    #     violated -- the cube is actually in cell 4 -- the engine records a *terminal* violation
+    #     (terminalViolation): the duty is simply breached, with no remedy and nowhere to go. And
+    #     opposing it with yellow's [O]in_cell(4) under NO superiority yields a standoff: the
+    #     ambiguity-blocking engine derives NEITHER, so cell 4 is left neither forbidden nor obliged.
+    #
+    # (b) WITH compensate (this rule). Multiple [O] consequents form a compensation chain
+    #     O(~in_cell(4)) (X) O(exit_cell(4)): the SAME primary duty, but if it is violated the
+    #     secondary/reparative duty to exit cell 4 becomes active (engine rule:
+    #     obligation(exit_cell(4)) :- compensate(...), violation(primary)). A graceful
+    #     contrary-to-duty instead of a dead breach. `exit_cell` is illustrative; obligations are
+    #     parsed but not yet planner-enforced (constraint.py enforces prohibitions).
+    - label: center_ctd
+      antecedent: [cube]
+      consequent: ["[O]~in_cell(4)", "[O]exit_cell(4)"]
+
+    # GOAL AS AN OBLIGATION (parameterized). The goal cell is perceived by the SAME cube-cell probe,
+    # run on the goal latent (grounder emits goal_cell(k) -- see enforcement.LawEvaluator.set_goal),
+    # so the goal sits on the WM probe stack, not on privileged sim geometry. This is a SCHEMA:
+    # `expand` domain-expands it to reach_goal_0..reach_goal_8 at compile time (ASP forbids a free
+    # variable in a fact), and the perceived goal_cell(k) fact activates exactly one copy.
+    # [O]in_cell(k) is a POSITIVE obligation -- the planner's objective already minimises distance to
+    # goal, so this is NOT a prune; its point is to INTERACT with the cell laws. When the goal is
+    # cell 4 it directly opposes no_center_cell/center_ctd's [O]~in_cell(4); with no superiority the
+    # two ambiguity-block (both drop -> cell 4 unregulated -> goal reachable). Add a superiority to
+    # decide it, e.g. ["reach_goal_4","no_center_cell"] (pursue the forbidden goal) or the reverse
+    # (goal defeated -> reasoner reports the goal legally unreachable).
+    - label: reach_goal
+      expand: {N: "0..8"}
+      antecedent: ["goal_cell(N)"]
+      consequent: ["[O]in_cell(N)"]
 
   # ---- Illustrative forms the schema ALREADY supports (commented; not active norms) ----
   #
@@ -61,7 +127,7 @@ laws:
   # State-dependent on a PERCEIVED sign colour (needs a registered `sign_color` probe; the grounder
   # emits sign(<colour>) each step, so the verdict re-derives as the sign changes):
   #   atoms:  add  sign(white;red;yellow;green)
-  #   - label: red_sign_forbids_centre
+  #   - label: red_sign_forbids_center
   #     antecedent: [sign(red)]
   #     consequent: ["[O]~in_cell(4)"]
   #
@@ -85,6 +151,8 @@ laws:
   #     antecedent: []
   #     consequent: ["[P]in_cell(4)"]
 
-# Superiority relation for defeasibility — [stronger_label, weaker_label]. e.g. make the
-# specific prohibition defeat the general permission:  [["no_centre_cell", "may_enter"]]
-superiority: []
+# Superiority relation for defeasibility — [stronger_label, weaker_label].
+# R4 > R2: the green-sign permission (green_sign_permits_center) DEFEATS the center-cell prohibition
+# (no_center_cell), so when sign(green) is perceived, in_cell(4) becomes permitted — [O]~in_cell(4) is
+# defeated and drops out of the verdict, so the planner no longer prunes cell 4.
+superiority: [["green_sign_permits_center", "no_center_cell"]]

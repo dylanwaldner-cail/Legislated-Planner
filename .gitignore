@@ -54,3 +54,28 @@ data/
 old_legislation/
 
 *.sh
+
+/findings.md
+
+# no longer used — stop tracking (files stay on disk)
+libero_pi05/
+vlabench_pi0/
+
+*.patch
+inspect_single.py
+sweep*
+
+# keep the harness requirements tracked (overrides the *.txt rule above)
+!dino_wm/requirements-harness.txt
+
+# data-generation scripts (kept local; the datasets they produce live under data/, already ignored)
+dino_wm/scripts/collect_isaaclab_grid_data.py
+dino_wm/scripts/gen_law_eval_set.py
+dino_wm/scripts/gen_crossing_set.py
+
+*eval*
+*.pth
+methods.md
+plot*
+export_stage.py
+stroke_transition_stats.py

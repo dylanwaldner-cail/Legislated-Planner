@@ -1,0 +1,27 @@
+# Harness Python deps — installed INTO the IsaacLab / Isaac Sim bundled interpreter
+# (/isaac-sim/python.sh), on top of the Isaac Sim bundle + the DINO-WM base (environment.yaml).
+# Versions captured from the working isaac-lab-base container. Install with:
+#     /isaac-sim/python.sh -m pip install -r requirements-harness.txt
+#
+# torch/torchvision are the cu118 build (matches NVIDIA driver 535 / CUDA 12.2 in the container) --
+# repin to your CUDA. numpy MUST stay <2 (Isaac Sim + several deps break on numpy 2).
+
+torch==2.7.0+cu118            # --extra-index-url https://download.pytorch.org/whl/cu118
+torchvision==0.22.0+cu118     # --extra-index-url https://download.pytorch.org/whl/cu118
+numpy==1.26.4                 # <2 required
+pillow==11.2.1
+
+clingo==5.8.0                 # Defeasible Deontic Logic solver -> legislation/
+
+hydra-core==1.3.3
+omegaconf==2.3.1
+accelerate==1.14.0            # bf16 training loop
+einops==0.8.2
+gymnasium==1.2.0
+
+wandb==0.28.0                 # training/plan logging
+
+imageio==2.22.2               # rollout / comparison videos
+imageio-ffmpeg==0.6.0
+moviepy==2.2.1
+matplotlib==3.8.4             # sweep / query-vs-train plots

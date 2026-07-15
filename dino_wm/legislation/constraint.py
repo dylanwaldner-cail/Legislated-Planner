@@ -24,7 +24,7 @@ import torch
 
 from probes.probe_cube_cells import swept_cells, CUBE_HALF, gm
 
-_GRID_HALF = gm.GRID_HALF   # workspace half-extent (m); "off the grid" = cube centre beyond this
+_GRID_HALF = gm.GRID_HALF   # workspace half-extent (m); "off the grid" = cube center beyond this
 
 
 # ----------------------------------------------------------------- predicate parsing
@@ -55,16 +55,61 @@ def checker(*names):
     return deco
 
 
+def _swept_hits_cell(pos, cell, cube_half):
+    """(B,S,2) per-candidate CENTER path -> (B,) bool: does ANY segment pos[:,s]->pos[:,s+1] intersect
+    cell `cell`'s AABB (center +/- (CELL/2 + cube_half))? Vectorized Liang-Barsky, EXACTLY equivalent to
+    `probes.probe_cube_cells.swept_cells(pos[b,s], pos[b,s+1], cube_half)[cell]` OR-ed over segments s
+    (verified against that per-segment reference). Replaces the per-candidate Python double loop."""
+    pos = np.asarray(pos, np.float64)
+    B, S = pos.shape[0], pos.shape[1]
+    if S < 2:
+        return np.zeros(B, dtype=bool)
+    H = gm.CELL / 2.0 + cube_half
+    cx, cy = gm.cell_center(int(cell))
+    box_lo = np.array([cx - H, cy - H]); box_hi = np.array([cx + H, cy + H])
+    p0 = pos[:, :-1, :]                                   # (B,S-1,2) segment starts
+    d = pos[:, 1:, :] - p0                                # (B,S-1,2) segment deltas
+    t0 = np.zeros((B, S - 1)); t1 = np.ones((B, S - 1))   # Liang-Barsky clip window per segment
+    ok = np.ones((B, S - 1), dtype=bool)                  # not-yet-rejected
+    for i in (0, 1):                                      # x, y axes
+        di = d[..., i]; p0i = p0[..., i]
+        par = np.abs(di) < 1e-12                          # segment parallel to axis i (matches scalar's 1e-12)
+        # parallel axis: no hit unless the segment lies within the slab [lo,hi] on this axis
+        ok &= ~(par & ((p0i < box_lo[i]) | (p0i > box_hi[i])))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ta = (box_lo[i] - p0i) / di
+            tb = (box_hi[i] - p0i) / di
+        tmin = np.minimum(ta, tb); tmax = np.maximum(ta, tb)   # entry/exit t on axis i (nan where parallel)
+        t0 = np.where(par, t0, np.maximum(t0, tmin))      # only tighten the window on non-parallel axes
+        t1 = np.where(par, t1, np.minimum(t1, tmax))
+    hit_seg = ok & (t0 <= t1)                             # (B,S-1) segment intersects the box
+    return hit_seg.any(axis=1)                            # (B,) any segment along the path
+
+
+def _footprint_in_cell(xy, cell, cube_half):
+    """(B,2) cube centers -> (B,) bool: does the footprint (center +/- cube_half) overlap cell `cell`'s
+    AABB (center +/- (CELL/2 + cube_half))? Single-point containment matching _swept_hits_cell's box.
+    `xy` is the PROBE-read cube position (cube_position probe on the latent; GT only in the sim-oracle);
+    gm.CELL / gm.cell_center are static grid coordinates. Used to detect a cube ALREADY in the cell at
+    the current step, so its escape is grandfathered."""
+    xy = np.asarray(xy, np.float64)
+    H = gm.CELL / 2.0 + cube_half
+    cx, cy = gm.cell_center(int(cell))
+    return (np.abs(xy[:, 0] - cx) < H) & (np.abs(xy[:, 1] - cy) < H)
+
+
 def _cell_presence(args, latents, n_pred, probes, cube_half, occ_thresh, use_occ, use_transit,
-                   skip_current=False, actions=None):
+                   skip_current=False, actions=None, positions=None):
     """Does the cube REST IN (cell probe) and/or TRANSIT (position probe + swept_cells) the cell
     named by the last arg, anywhere in the predicted trajectory? Missing probes are skipped.
 
-    skip_current: frame 0 is the cube's CURRENT position (given as context, not a prediction). When
-    True it is NOT counted -- the prohibition governs where the cube GOES, not where it already IS.
-    Occupancy is then checked on frames [1,L); transit only AMONG the predicted frames [1,L). Without
-    this, a current footprint merely GRAZING the cell flags every candidate and freezes the planner
-    (it can't even move out, because every escape stroke's sweep starts from the grazing frame 0)."""
+    skip_current: frame 0 is the cube's CURRENT (grounded) position. When True, occupancy is not
+    flagged there (checked on frames [1,L) only), AND a candidate whose frame-0 footprint is ALREADY
+    in the cell is EXEMPT from the transit check for that cell -- so a cube sitting in the cell can
+    still plan an escape (grandfathered per-step, matching the metric's spawn grandfather in spirit).
+    Otherwise the transit sweep covers the FULL root->end path, so a stroke that CLIPS through the cell
+    from a clear start IS pruned (matching what the metric penalises). A stroke that ENDS in the cell
+    is always pruned by occupancy, escaping-or-not."""
     cell = int(args[-1])
     B, L = latents.shape[:2]
     lo = 1 if skip_current else (L - n_pred)                                      # first frame to enforce on
@@ -73,16 +118,19 @@ def _cell_presence(args, latents, n_pred, probes, cube_half, occ_thresh, use_occ
         cp = probes["cube_cells"]
         for t in range(lo, L):
             viol |= cp(latents[:, t])[:, cell] > occ_thresh                       # in_cell logic
-    if use_transit and probes.get("cube_position") is not None:
-        pp = probes["cube_position"]
-        start = lo if skip_current else max(L - n_pred - 1, 0)                    # skip=frame 1; else include current frame
-        pos = np.stack([pp(latents[:, t]).detach().cpu().numpy() for t in range(start, L)], axis=1)
-        hit = np.zeros(B, dtype=bool)
-        for b in range(B):                                                        # cube-pos / swept-path logic
-            for s in range(pos.shape[1] - 1):
-                if swept_cells(pos[b, s], pos[b, s + 1], cube_half)[cell]:
-                    hit[b] = True
-                    break
+    if use_transit and (positions is not None or probes.get("cube_position") is not None):
+        # Full PROBE-read root->end path (frame 0 included) so a CLIP through the cell from a clear
+        # start is caught; skip_current then exempts only candidates ALREADY in the cell (escape).
+        if positions is not None:                                                # SHARED positions (probed once in violations)
+            allpos = positions.detach().cpu().numpy()                            # (B, L, 2)
+        else:                                                                     # fallback: probe here
+            pp = probes["cube_position"]
+            allpos = np.stack([pp(latents[:, t]).detach().cpu().numpy() for t in range(L)], axis=1)
+        if skip_current:
+            hit = _swept_hits_cell(allpos, cell, cube_half)                      # (B,) over the whole path
+            hit &= ~_footprint_in_cell(allpos[:, 0], cell, cube_half)            # exempt escapers (in the cell now)
+        else:                                                                     # legacy (non-RRT) callers: prior window
+            hit = _swept_hits_cell(allpos[:, max(L - n_pred - 1, 0):], cell, cube_half)
         viol |= torch.from_numpy(hit).to(latents.device)
     return viol
 
@@ -93,11 +141,11 @@ checker("in_cell")(partial(_cell_presence, use_occ=True, use_transit=True))
 checker("passed_through")(partial(_cell_presence, use_occ=False, use_transit=True))
 
 
-def _off_grid(args, latents, n_pred, probes, cube_half, occ_thresh, skip_current=False, actions=None):
+def _off_grid(args, latents, n_pred, probes, cube_half, occ_thresh, skip_current=False, actions=None, positions=None):
     """Cube must not leave the workspace (|x| or |y| > GRID_HALF). Enforced two ways, OR'd:
 
-      (a) OUTCOME  -- the predicted cube CENTRE is off-grid at any predicted frame (position probe).
-          CENTRE-based on purpose: a footprint bound (GRID_HALF - cube_half) prunes the legal detour
+      (a) OUTCOME  -- the predicted cube CENTER is off-grid at any predicted frame (position probe).
+          CENTER-based on purpose: a footprint bound (GRID_HALF - cube_half) prunes the legal detour
           corners and freezes the plan.
       (b) INTENT (action space) -- the stroke's intended endpoint (start + disp) is off-grid. This
           catches the BOUNCE-BACK blind spot: the sim/WM shove the cube back onto the grid, so the
@@ -108,14 +156,17 @@ def _off_grid(args, latents, n_pred, probes, cube_half, occ_thresh, skip_current
     skip_current excludes frame 0 (the current position), matching the cell checkers."""
     B, L = latents.shape[:2]
     pp = probes.get("cube_position")
-    if pp is None and actions is None:
-        raise RuntimeError("off_grid checker needs either the 'cube_position' probe (outcome) or the "
-                           "candidate actions (intent); neither given -- the workspace bound can't be enforced.")
+    if positions is None and pp is None and actions is None:
+        raise RuntimeError("off_grid checker needs the 'cube_position' probe / shared positions (outcome) "
+                           "or the candidate actions (intent); none given -- the workspace bound can't be enforced.")
     viol = torch.zeros(B, dtype=torch.bool, device=latents.device)
-    if pp is not None:                                                            # (a) OUTCOME
+    if positions is not None or pp is not None:                                   # (a) OUTCOME
         lo = 1 if skip_current else (L - n_pred)
-        for t in range(lo, L):
-            viol |= (pp(latents[:, t]).abs() > _GRID_HALF).any(dim=1)             # any axis off-grid
+        if positions is not None:                                                 # SHARED positions (probed once in violations)
+            viol |= (positions[:, lo:].abs() > _GRID_HALF).any(dim=-1).any(dim=1)  # any axis off-grid at any frame
+        else:
+            for t in range(lo, L):
+                viol |= (pp(latents[:, t]).abs() > _GRID_HALF).any(dim=1)          # any axis off-grid
     if actions is not None:                                                       # (b) INTENT
         a = torch.as_tensor(actions, device=latents.device, dtype=torch.float32)
         end = a[..., :2] + a[..., 2:4]                                            # pusher endpoint ~= cube endpoint
@@ -127,7 +178,7 @@ def _off_grid(args, latents, n_pred, probes, cube_half, occ_thresh, skip_current
 checker("off_grid")(_off_grid)
 
 
-def _moving(args, latents, n_pred, probes, cube_half, occ_thresh, skip_current=False, actions=None):
+def _moving(args, latents, n_pred, probes, cube_half, occ_thresh, skip_current=False, actions=None, positions=None):
     """FREEZE (stop-sign) checker: treat EVERY candidate as a violation. When a `moving`
     prohibition is active -- e.g. the red-sign law `sign(red) => [O]~moving` -- this prunes ALL
     planner candidates, so the RRT tree cannot extend past its root and the robot HOLDS at its
@@ -139,6 +190,10 @@ def _moving(args, latents, n_pred, probes, cube_half, occ_thresh, skip_current=F
 
 # moving prohibition = a full stop (freeze): every candidate motion is illegal -> prune everything.
 checker("moving")(_moving)
+
+
+# prohibitions whose checker reads the cube-CENTER position -> violations() probes it ONCE and shares it
+_POS_CHECKERS = {"in_cell", "passed_through", "off_grid"}
 
 
 # ----------------------------------------------------------------- the constraint object
@@ -176,16 +231,23 @@ class Constraint:
         return s + ")"
 
     @torch.no_grad()
-    def violations(self, visual_latents, n_pred, skip_current=False, actions=None):
+    def violations(self, visual_latents, n_pred, skip_current=False, actions=None, positions=None):
         """(B,) bool: candidate violates if ANY enforced prohibition predicate holds across its
         predicted trajectory. skip_current excludes frame 0 (the cube's CURRENT position) from the
         check -- see _cell_presence. `actions` (candidate strokes in METERS, optional) lets checkers
-        reason in ACTION space too (e.g. off_grid INTENT that survives WM bounce-back). Obligations
-        are not yet enforced (would be a soft reward / goal)."""
-        viol = torch.zeros(visual_latents.shape[0], dtype=torch.bool, device=visual_latents.device)
+        reason in ACTION space too (e.g. off_grid INTENT that survives WM bounce-back). `positions`
+        (B,L,2) is the cube CENTER per frame; if not supplied it is probed ONCE here and shared across
+        the position-using checkers (transit + off_grid), instead of each re-probing every frame.
+        Obligations are not yet enforced (would be a soft reward / goal)."""
+        B, L = visual_latents.shape[:2]
+        if positions is None:
+            pp = self.probes.get("cube_position")
+            if pp is not None and any(n in _POS_CHECKERS for n, _ in self.prohibitions):
+                positions = torch.stack([pp(visual_latents[:, t]) for t in range(L)], dim=1)   # (B,L,2)
+        viol = torch.zeros(B, dtype=torch.bool, device=visual_latents.device)
         for name, args in self.prohibitions:
             fn = CHECKERS.get(name)
             if fn is not None:
                 viol |= fn(args, visual_latents, n_pred, self.probes, self.cube_half, self.occ_thresh,
-                           skip_current=skip_current, actions=actions)
+                           skip_current=skip_current, actions=actions, positions=positions)
         return viol
