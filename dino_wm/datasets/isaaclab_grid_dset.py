@@ -51,11 +51,19 @@ class IsaacLabSingleDataset(TrajDataset):
         normalize_action: bool = False,
         action_scale: float = 1.0,
         preload: bool = True,
+        latent_cache_dir: Optional[str] = None,
     ):
         p = _resolve_data_dir(data_path)
         print(f"[dataset] resolved data dir: {p}")
         self.data_path = p
         self.transform = transform
+        # FLAG (default None = OFF): dir of precomputed frozen-DINO latents (see
+        # scripts/precompute_dino_latents.py). When set, the slicer returns cached latents and the WM
+        # skips re-encoding -- so we also skip the image preload (not needed). OFF -> unchanged behavior.
+        self.latent_cache_dir = (p / latent_cache_dir) if latent_cache_dir else None
+        if self.latent_cache_dir is not None:
+            preload = False
+            print(f"[dataset] latent cache ON: {self.latent_cache_dir} (images NOT preloaded)")
         meta = json.loads((p / "metadata.json").read_text()) if (p / "metadata.json").exists() else {}
         self.ep_pad = int(meta.get("ep_pad", 5))
 
@@ -119,6 +127,25 @@ class IsaacLabSingleDataset(TrajDataset):
                     print(f"[dataset] preloaded {i + 1}/{n} episode image stacks")
             print(f"[dataset] preloaded all obses into RAM ({self.obses.numel() / 1e9:.1f} GB uint8)")
 
+        # Latent cache preload: pull every per-episode DINO latent into RAM (fp16) so the slicer
+        # indexes memory, not a torch.load per window. Without this each window re-reads its whole
+        # ~3MB episode file (num_workers=0 -> serial disk), eroding the DINO-skip savings. Episodes
+        # are variable length (saved [:seq_len]) so a list, not a stacked tensor.
+        self.latents = None
+        if self.latent_cache_dir is not None:
+            files = sorted(self.latent_cache_dir.glob("episode_*.pth"))[:n]
+            assert len(files) == n, (
+                f"{len(files)} latent cache files in {self.latent_cache_dir} for {n} episodes — "
+                f"rebuild with scripts/precompute_dino_latents.py"
+            )
+            self.latents = []
+            for i in range(n):
+                self.latents.append(torch.load(files[i]))  # (T, P, D) fp16
+                if (i + 1) % 500 == 0:
+                    print(f"[dataset] preloaded {i + 1}/{n} latent stacks")
+            gb = sum(l.numel() * l.element_size() for l in self.latents) / 1e9
+            print(f"[dataset] preloaded all latents into RAM ({gb:.1f} GB fp16)")
+
     @staticmethod
     def _mean_std(data, traj_lengths):
         flat = torch.vstack([data[i, : traj_lengths[i]] for i in range(len(traj_lengths))])
@@ -175,16 +202,22 @@ class _FastSlicer(TrajSlicerDataset):
         base = sub.dataset                        # IsaacLabSingleDataset
         fr = list(range(start, end, self.frameskip))  # the num_frames used frames
 
-        if base.obses is not None:                # RAM (preloaded)
-            img = base.obses[real][fr]
-        else:                                     # fallback: load file, take fr
-            full = torch.load(base.data_path / "obses" / f"episode_{real:0{base.ep_pad}d}.pth")
-            img = full[fr]
-        img = rearrange(img.float() / 255.0, "T H W C -> T C H W")
-        if base.transform:
-            img = base.transform(img)
-
-        obs = {"visual": img, "proprio": base.proprios[real][fr]}
+        if base.latent_cache_dir is not None:     # FLAG: precomputed frozen-DINO latents -> skip image load + re-encode
+            if base.latents is not None:          # RAM (preloaded)
+                lat = base.latents[real]
+            else:                                 # fallback: load episode latent file per call
+                lat = torch.load(base.latent_cache_dir / f"episode_{real:0{base.ep_pad}d}.pth")
+            obs = {"visual_cached": lat[fr].float(), "proprio": base.proprios[real][fr]}
+        else:
+            if base.obses is not None:            # RAM (preloaded)
+                img = base.obses[real][fr]
+            else:                                 # fallback: load file, take fr
+                full = torch.load(base.data_path / "obses" / f"episode_{real:0{base.ep_pad}d}.pth")
+                img = full[fr]
+            img = rearrange(img.float() / 255.0, "T H W C -> T C H W")
+            if base.transform:
+                img = base.transform(img)
+            obs = {"visual": img, "proprio": base.proprios[real][fr]}
         act = base.actions[real][start:end]                       # (frameskip*num_frames, A)
         act = rearrange(act, "(n f) d -> n (f d)", n=self.num_frames)
         state = base.states[real][fr]
@@ -200,6 +233,7 @@ def load_isaaclab_single_slice_train_val(
     num_hist=0,
     num_pred=0,
     frameskip=0,
+    latent_cache_dir=None,
 ):
     # The planar-stroke action is one stroke per frame; the WM/planner pipeline
     # only collapses correctly (and the planner action bounds only tile correctly)
@@ -210,7 +244,7 @@ def load_isaaclab_single_slice_train_val(
     )
     dset = IsaacLabSingleDataset(
         n_rollout=n_rollout, transform=transform, data_path=data_path,
-        normalize_action=normalize_action,
+        normalize_action=normalize_action, latent_cache_dir=latent_cache_dir,
     )
     train, val = split_traj_datasets(dset, train_fraction=split_ratio, random_seed=42)
     nf = num_hist + num_pred

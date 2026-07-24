@@ -26,7 +26,8 @@ class LawEvaluator:
         self.source = source                   # which probes to run for grounding (encoded = phi(obs))
         self.constraint_kw = constraint_kw     # cube_half / occ_thresh forwarded to Constraint
         self.ledgers = {}                      # eval_index -> NormativeMemory (per-eval executed history)
-        self.goal_facts = {}                   # eval_index -> ['goal_cell(k)'] (perceived on the goal latent)
+        self.goal_facts = {}                   # eval_index -> ['goal_cell(k)'] (spec if gt_goal_cell set, else perceived)
+        self.gt_goal_cell = None               # int -> goal cell is a GIVEN task spec; set_goal skips perception (see set_goal)
 
     def reset(self):
         """New episode: clear every per-eval ledger + perceived goals."""
@@ -39,7 +40,15 @@ class LawEvaluator:
         episode. This is why the goal obligation is GROUNDED (probe-derived), not read from
         privileged sim geometry. Idempotent: the goal is constant per episode, so later re-plans skip
         the re-perceive (reset() clears goal_facts at episode start)."""
-        if eval_index in self.goal_facts:                # already perceived this eval's goal -> skip
+        if eval_index in self.goal_facts:                # already set this eval's goal -> skip
+            return
+        if self.gt_goal_cell is not None:
+            # GOAL AS SPECIFICATION: the obligated goal cell is a GIVEN (a human task spec, like a
+            # prompt), taken from ground truth -- NOT perceived. Perceiving it via the cube_cells
+            # argmax flips near cell boundaries (the goal footprint straddles two cells), and the
+            # obligation is a single designated target, so we take it as given. Current-STATE facts
+            # (where the cube IS now) stay probe-grounded; only the goal target is specified.
+            self.goal_facts[eval_index] = [f"goal_cell({int(self.gt_goal_cell)})"]
             return
         out = self.registry.forward(goal_visual_latent, source=self.source)
         self.goal_facts[eval_index] = Grounder(out).goal_cell()
@@ -72,7 +81,19 @@ class LawEvaluator:
                  + current + led.derived_facts())                  # derived includes this step -> TEMPORAL scope
         verdict = self.reasoner.assess(facts)
         led.records[-1]["verdict"] = verdict
+        # EFFECTIVE sign colour: one the laws CONCLUDE but that wasn't perceived (e.g. R7 yellow->green)
+        # is a derived FLIP and wins; else the perceived colour. Logged in the ledger so the env can
+        # recolour the physical sign mid-run (grid_venv.set_sign_color) -- see current_sign().
+        perceived = {f[len("sign("):-1] for f in current if f.startswith("sign(") and f.endswith(")")}
+        derived = [c for c in verdict.get("signs", []) if c not in perceived]
+        led.record_sign(derived[0] if derived else (sorted(perceived)[0] if perceived else None))
         return self._build_constraint(verdict)
+
+    def current_sign(self, eval_index=0):
+        """Effective sign colour for this eval's latest observed step -- the perceived colour, or a
+        DERIVED flip such as R7's yellow->green. The environment reads this to recolour the physical
+        sign mid-run: `venv.set_sign_color(law_eval.current_sign(i))`. None if no sign observed yet."""
+        return self.ledger(eval_index).last_sign()
 
     def commit(self, eval_index, data):
         """Record the agent's INTENT for eval `eval_index` (POST-HOC only; never read during planning

@@ -109,40 +109,63 @@ def _expand_law(law):
     return emit(keys, list(itertools.product(*[domain(exp[k]) for k in keys])))
 
 
-def _render_dl(db):
+def _render_dl(db, active=None):
     """YAML legal database -> Governatori DDL .dl text (one line per law / superiority).
     Each law: `<label>: <antecedent...> => <consequent...>` where literals may be plain (x),
     negated (~x), or deontic ([O]x, [P]x, [O]~x, ~[O]x). A leading [O]/[P] in the consequent
     makes the rule prescriptive/permissive; multiple [O] consequents form a compensation
     (contrary-to-duty) chain; no deontic operator => a constitutive ('counts-as') rule.
 
-    `laws` may be a flat list, or a dict grouping laws into named categories
-    (e.g. {geometric_laws: [...]}); categories are organisational only and are flattened
-    here — the DDL theory is the union of every law across every group."""
+    `laws` may be a flat list, or a dict grouping laws into named CATEGORIES
+    (e.g. {geometric_laws: [...], full_lawset: [...]}). `active` selects which categories are
+    live: a category name or list of names; None falls back to db['active_lawsets'], and if that
+    is also absent ALL categories are unioned (legacy behaviour). Only the selected categories
+    are rendered, so alternative lawsets can reuse label names without colliding -- you switch
+    which set is enforced instead of running them all at once.
+
+    Superiority pairs are emitted only when BOTH endpoint labels belong to a rendered rule, so a
+    single global `superiority` list auto-scopes to whichever lawset is active (a pair naming an
+    inactive set's label is silently dropped)."""
     lines = []
     laws = db.get("laws", []) or []
-    if isinstance(laws, dict):                       # {category: [law, ...]} -> flat list
-        laws = [law for group in laws.values() for law in (group or [])]
+    if isinstance(laws, dict):                       # {category: [law, ...]}
+        sel = active if active is not None else db.get("active_lawsets")
+        if sel is not None:                          # render only the selected categories
+            sel = [sel] if isinstance(sel, str) else list(sel)
+            laws = [law for name in sel for law in (laws.get(name) or [])]
+        else:                                        # legacy: union every category
+            laws = [law for group in laws.values() for law in (group or [])]
+    rendered = set()
     for law in laws:
         for g in _expand_law(law):
             ante = ", ".join(g.get("antecedent", []) or [])
             cons = ", ".join(g["consequent"])
             lines.append(f"{g['label']}: {ante} => {cons}")
+            rendered.add(g["label"])
     for pair in db.get("superiority", []) or []:
-        lines.append(f"{pair[0]} > {pair[1]}")
+        if pair[0] in rendered and pair[1] in rendered:   # scope superiority to the active lawset
+            lines.append(f"{pair[0]} > {pair[1]}")
     return "\n".join(lines)
 
 
 class LegislativeReasoner:
     """Compiles the legal database once; queries it against a (perceived) state."""
 
-    def __init__(self, db_path=_DEFAULT_DB, ddl_root=_DDL_ROOT):
+    def __init__(self, db_path=_DEFAULT_DB, ddl_root=_DDL_ROOT, active_lawsets=None):
         self.ddl_root = Path(ddl_root)
         self.db = load_legal_database(db_path)
+        # which law CATEGORY(ies) are enforced; None -> db['active_lawsets'] -> all (see _render_dl)
+        self.active_lawsets = active_lawsets if active_lawsets is not None else self.db.get("active_lawsets")
         p = ddl_parser.DDLParser()
-        p.parse(_render_dl(self.db))
+        p.parse(_render_dl(self.db, self.active_lawsets))
         atom_decls = "\n".join(f"atom({a})." for a in (self.db.get("atoms", []) or []))
-        self.theory_asp = atom_decls + "\n" + p.get_output()
+        # asp_helpers: raw ASP clauses appended verbatim to the theory. Used to LIFT a deontic
+        # condition into a plain derived atom (e.g. defeasible(perm_conflict(4)) :- permissionOr...),
+        # which a .dl antecedent can then reference -- the plain-literal gate works even though the
+        # engine's applicable/2 does not enforce [O]/[P] literals placed directly in an antecedent
+        # (see findings.md: DDL applicable/2 bug). Harmless for lawsets that don't use the atom.
+        helpers = "\n".join(self.db.get("asp_helpers", []) or [])
+        self.theory_asp = atom_decls + "\n" + p.get_output() + (("\n" + helpers) if helpers else "")
         # assess() is a PURE function of `facts` (the theory is fixed here) and fact sets recur heavily
         # across a sweep -> memoize by frozenset(facts) to skip re-running clingo, which otherwise
         # RELOADS the 5 engine .asp files from disk + re-grounds the whole theory on EVERY call.
@@ -182,7 +205,7 @@ class LegislativeReasoner:
         cached = self._cache.get(key)
         if cached is not None:
             return cached
-        res = self._solve(facts, _DEONTIC_PREDICATES)
+        res = self._solve(facts, _DEONTIC_PREDICATES + ("defeasible",))
 
         def lits(symbols):  # 1-ary verdicts only (skip internal obligation(Rule,X,N) form)
             return [s.arguments[0] for s in symbols if len(s.arguments) == 1]
@@ -198,6 +221,10 @@ class LegislativeReasoner:
             "prohibitions": sorted(set(prohibitions)),
             "permissions": sorted({str(c) for c in lits(res["permission"])}),
             "violations": sorted({str(c) for c in lits(res["violation"])}),
+            # every sign colour PROVABLE in this state (perceived facts + constitutive flips like R7's
+            # yellow->green). Callers diff against the perceived signs to spot a DERIVED flip.
+            "signs": sorted({str(c.arguments[0]) for c in lits(res["defeasible"])
+                             if c.name == "sign" and len(c.arguments) == 1}),
         }
         self._cache[key] = result
         return result

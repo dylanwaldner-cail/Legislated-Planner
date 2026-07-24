@@ -77,6 +77,81 @@ def swept_cells(c0, c1, cube_half):
     return out
 
 
+STROKE_MOVE_EPS = 0.02  # min stroke displacement (m) to count as a real push (skip holding frames)
+
+
+def _angle_deg(u, v):
+    """Angle (deg, [0,180]) between 2D vectors u,v; NaN if either is ~zero."""
+    nu, nv = float(np.linalg.norm(u)), float(np.linalg.norm(v))
+    if nu < 1e-9 or nv < 1e-9:
+        return float("nan")
+    return float(np.degrees(np.arccos(np.clip(float(np.dot(u, v)) / (nu * nv), -1.0, 1.0))))
+
+
+def _seg_point_dist(c0, c1, p):
+    """Closest-approach distance from segment c0->c1 to point p (m)."""
+    c0, c1, p = (np.asarray(a, float) for a in (c0, c1, p))
+    d = c1 - c0
+    L2 = float(d @ d)
+    if L2 < 1e-18:
+        return float(np.linalg.norm(p - c0))
+    t = float(np.clip((p - c0) @ d / L2, 0.0, 1.0))
+    return float(np.linalg.norm(p - (c0 + t * d)))
+
+
+def stroke_breach_geometry(cube_xy, cells, cube_half=CUBE_HALF, move_eps=STROKE_MOVE_EPS):
+    """Per-stroke swept-breach geometry vs each checked cell, computed from a cube boundary path.
+
+    cube_xy : (Ti,2) trimmed boundary path (exactly what build_eval_metrics saves as cube_xy_frames).
+    cells   : iterable of checked cell ids (usually just the illegal cell). Frame-0 spawn is
+              grandfathered PER CELL (a cube spawned inside cell c gets its 0->1 escape stroke for
+              free), matching planning_metrics' swept check.
+
+    Returns a list of dicts, one per (MOVING stroke t->t+1, checked cell c). "Toward the cell" is
+    reported TWO ways (it's not obvious which is the better predictor, so we track both):
+      approach_deg      : angle(heading, cell_CENTER - c0); 0 = pushing straight at the cell center
+      approach_edge_deg : angle(heading, NEAREST-BOUNDARY-point - c0), where the boundary is the cell
+                          AABB inflated by cube_half (H = CELL/2 + cube_half) -- the box the cube CENTER
+                          must cross to breach. This reads edge-skirting strokes as more 'toward' than
+                          the center angle does. NaN if c0 is already inside that box.
+    both: 0 = toward, 90 = tangent/around, 180 = away.
+      breach       : bool -- footprint swept through cell c on this stroke (swept_cells)
+      dmin         : closest approach (m) of the stroke segment to the cell center (proximity control)
+      side         : signed lateral offset (m) of the cell center off the push line (sign = which side)
+      start_x/end_x, start_y/end_y : stroke endpoints (start-side analysis: arm reaches from -x)
+      t, cell      : stroke index and cell id
+    This is the single source of truth shared by planning_metrics (per-eval violation_approach/side),
+    the offline analysis, and the tracking plots -- so their numbers cannot drift apart."""
+    cube_xy = np.asarray(cube_xy, float)
+    out = []
+    cells = [int(c) for c in (cells or [])]
+    if cube_xy.ndim != 2 or len(cube_xy) < 2 or not cells:
+        return out
+    H = gm.CELL / 2.0 + cube_half                                  # center-breach boundary half-width
+    occ0 = cube_cell_occupancy(cube_xy[:1], cube_half)[0]           # frame-0 footprint occupancy (grandfather)
+    for c in cells:
+        cc = np.asarray(gm.cell_center(c), float)
+        lo = 1 if occ0[c] > 0.5 else 0                             # spawn in c -> skip its one escape stroke
+        for t in range(lo, len(cube_xy) - 1):
+            c0, c1 = cube_xy[t], cube_xy[t + 1]
+            head = c1 - c0
+            if np.linalg.norm(head) < move_eps:                    # holding / no-op frame
+                continue
+            hn = head / np.linalg.norm(head)
+            edge = np.clip(c0, cc - H, cc + H)                     # nearest point of the H-box to c0
+            out.append(dict(
+                t=int(t), cell=c,
+                breach=bool(swept_cells(c0, c1, cube_half)[c]),
+                approach_deg=_angle_deg(head, cc - c0),           # toward the CENTER
+                approach_edge_deg=_angle_deg(head, edge - c0),    # toward the NEAREST BOUNDARY point (NaN if inside)
+                dmin=_seg_point_dist(c0, c1, cc),
+                side=float(hn[0] * (cc[1] - c0[1]) - hn[1] * (cc[0] - c0[0])),
+                start_x=float(c0[0]), end_x=float(c1[0]),
+                start_y=float(c0[1]), end_y=float(c1[1]),
+            ))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data_dir", default="data/isaaclab_stroke_1500")
@@ -84,7 +159,7 @@ def main():
                     help="features from φ(real frame) (encoded) or WM-rolled latents (predicted). "
                     "Train one probe per source; the registry routes encoded probes to encoded "
                     "latents and predicted probes to WM-predicted latents.")
-    ap.add_argument("--model_dir", default="outputs/2026-06-25/16-46-57", help="WM dir (only for --source predicted)")
+    ap.add_argument("--model_dir", default="outputs/reg_dino", help="WM dir (only for --source predicted)")
     ap.add_argument("--epoch", default="20", help="WM epoch (only for --source predicted)")
     ap.add_argument("--pred_horizons", default="1",
                     help="open-loop horizons to build predicted features at, e.g. '1,2,3,4,5'; match the "

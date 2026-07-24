@@ -26,6 +26,9 @@ sub_planner:
                      # meaningless geometry + drift-poisoned constraint checks). MPC re-plans every
                      # step and commits only the first stroke, so far goals still solve across steps.
   aim_back: 0.12     # standoff behind the cube (matches mpc_cem_aimed)
+  steer_cone_deg: 90 # sample push directions within +/-45deg of the bearing to the sampled target
+                     # (a stochastic steering fn) instead of blind uniform. Set 360 for the old
+                     # target-agnostic uniform sampling (A/B baseline). Spread should cover the WM heading err.
   deviant_lambda: 0.067  # DEVIANT only: meters-of-progress one law-violation is worth. Deviant minimizes
                      # dist-to-goal + lambda*violations, so it crosses a forbidden cell only when that
                      # saves > lambda per violation, and always prefers a 0-violation route (cost 0).

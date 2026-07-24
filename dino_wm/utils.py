@@ -72,7 +72,9 @@ def sample_tensors(tensors, n, indices=None):
 def cfg_to_dict(cfg):
     cfg_dict = OmegaConf.to_container(cfg)
     for key in cfg_dict:
-        if isinstance(cfg_dict[key], list):
+        # Legacy: comma-join list-of-strings configs. Leave non-string lists (e.g. scene_ids: [21,22])
+        # as real lists -- joining them crashed before, so nothing downstream relied on it.
+        if isinstance(cfg_dict[key], list) and all(isinstance(x, str) for x in cfg_dict[key]):
             cfg_dict[key] = ",".join(cfg_dict[key])
     return cfg_dict
 

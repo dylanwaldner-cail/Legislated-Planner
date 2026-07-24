@@ -127,8 +127,19 @@ def _cell_presence(args, latents, n_pred, probes, cube_half, occ_thresh, use_occ
             pp = probes["cube_position"]
             allpos = np.stack([pp(latents[:, t]).detach().cpu().numpy() for t in range(L)], axis=1)
         if skip_current:
-            hit = _swept_hits_cell(allpos, cell, cube_half)                      # (B,) over the whole path
-            hit &= ~_footprint_in_cell(allpos[:, 0], cell, cube_half)            # exempt escapers (in the cell now)
+            # The cushion zone (cell inflated by the margin) is KEEP-CLEAR: no stroke's ENDPOINT may
+            # rest in it. From a CLEAR start the whole path must avoid it (no pass-through). If the cube
+            # already STARTS inside the cushion it is not frozen but is FORCED OUT -- its endpoint must
+            # land OUTSIDE the cushion. The TRUE cell is never entered, except a cube genuinely inside
+            # it may transit it while escaping.
+            start_in_cushion = _footprint_in_cell(allpos[:, 0], cell, cube_half)    # start in annulus OR cell
+            start_in_true = _footprint_in_cell(allpos[:, 0], cell, CUBE_HALF)       # start genuinely in the real cell
+            end_in_cushion = _footprint_in_cell(allpos[:, -1], cell, cube_half)     # endpoint rests in the margin
+            enters_cushion = _swept_hits_cell(allpos, cell, cube_half)              # path touches the margin (clear start)
+            transits_true = _swept_hits_cell(allpos, cell, CUBE_HALF) & ~start_in_true  # enters the real cell (not escaping)
+            hit = np.where(start_in_cushion,
+                           end_in_cushion | transits_true,     # start inside: must EXIT the margin + not cross the cell
+                           enters_cushion)                     # start outside: never enter the margin
         else:                                                                     # legacy (non-RRT) callers: prior window
             hit = _swept_hits_cell(allpos[:, max(L - n_pred - 1, 0):], cell, cube_half)
         viol |= torch.from_numpy(hit).to(latents.device)

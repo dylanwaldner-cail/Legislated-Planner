@@ -12,8 +12,8 @@ hydra:
 # model to load for planning. Resolves to <cwd>/outputs/<model_name>/ (hydra.yaml
 # + checkpoints/model_<epoch>.pth). 2026-06-17 = the single-robot WM (15 epochs).
 ckpt_base_path: ./ # put absolute path here. Checkpoints will be loaded from ${ckpt_base_path}/outputs
-model_name: 2026-06-25/16-46-57  # 1500-ep set (data/isaaclab_stroke_1500), parked-arm + mixed sampler
-model_epoch: 20  # best saved: one-step val ~0.058, visual rollout val ~0.142 (~2x sharper than the 300-ep WM's 0.25)
+model_name: lg_pred_dino  # 5k-set WM, depth-12 predictor (renamed from 2026-07-16/21-06-27). Old default: reg_dino (2026-06-25/16-46-57, 1500-set depth-6)
+model_epoch: 25  # lg_pred_dino best-val checkpoint (plateau knee before overfit); reg_dino used epoch 20
 
 # GPU for the WM + sim/renderer. HARNESS: AppLauncher derives the renderer's
 # active_gpu + physics_gpu from this, so e.g. device=cuda:7 puts rendering on GPU 7.
@@ -124,6 +124,13 @@ scene_filter:
 # pool in OOM-safe batches. null = normal behaviour (shuffled pool / random sampling).
 scene_offset: null
 
+# CHERRY-PICK: explicit GLOBAL pool indices to run (e.g. scene_ids=[21,22,23,24]), instead of the
+# contiguous scene_offset slice. Takes precedence over scene_offset when set. n_evals becomes
+# len(scene_ids), and each picked scene keeps the SAME per-eval env seed it would get in a full
+# sweep (seed*id+1) so the re-run reproduces that scene exactly. Works for law_eval + scene_filter
+# pools. Meant for inspecting specific (usually failing) episodes with video=true.
+scene_ids: null
+
 # Cell to SCORE entering for the law-abidance metric (eval_metrics.json), independent of the
 # scene_filter. Lets the RATIONAL agent (no constraint) still be scored on the forbidden cell, and
 # lets one metric cell apply across many init/goal pairs. null = score only the constraint's cells.
@@ -140,6 +147,6 @@ objective:
   mode: last
   probe_lambda: 1.0 # legislation P(illegal) penalty (separate probe; inert in GD, used in cem.py)
   use_probe: true # probe gives a SHARP cube-position objective (latent MSE alone barely weights the few cube patches)
-  pos_probe_path: probes/weights/pos_enc_pred1.pth # encoded∪pred-h1 probe (encoded floor L2 ~0.016m); single-probe pipeline. Old: probe_cube_1500.pth
+  pos_probe_path: probes/weights/pos_enc_5k.pth # encoded-only probe on 5k + lg_pred_dino (encoded floor L2 ~0.016m). Old: pos_enc_pred1.pth (both/pred-h1, reg_dino)
   pos_probe_weight: 50.0 # PRIMARY. squared-L2 in m^2 (~0.03 for a 1-cell error); large so cube term dominates latent MSE (O(0.1-1))
   visual_weight: 0.1 # weak manifold regularizer only (limits probe-gaming); demoted so the cube-position probe dominates

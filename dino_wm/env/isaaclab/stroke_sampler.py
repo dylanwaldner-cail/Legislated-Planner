@@ -42,12 +42,17 @@ class StrokeSampler:
     _RECENTER_JITTER = 0.4   # rad of heading noise around the to-center direction when recentering
 
     def __init__(self, rng, aimed_frac=0.6, push_max=0.08, start_margin=0.06,
-                 back_range=(0.08, 0.12), aim_push_range=(0.05, 0.09)):
+                 back_range=(0.08, 0.12), aim_push_range=(0.05, 0.09), aim_offset_sd=0.0):
         self.rng = rng
         self.aimed_frac = aimed_frac             # P(stroke aims at the cube) vs uniform
         self.push_max = push_max                 # uniform: per-axis push displacement bound (m)
         self.back_range = back_range             # aimed: how far behind the cube the push starts
         self.aim_push_range = aim_push_range     # aimed: how far the cube is pushed (cube travel)
+        # NEAR-MISS: aimed strokes aim at a point offset laterally from the TRUE cube by
+        # ~N(0, aim_offset_sd) m, mimicking the planner aiming at its probe estimate (off by the
+        # perception error). |offset| < cube_half (0.045) still contacts; larger grazes -> misses.
+        # 0.0 = exact-contact aiming (old behavior). Set ~probe-error sd (~0.03) to match the planner.
+        self.aim_offset_sd = float(aim_offset_sd)
         cx, cy = GRID_CENTER_XY
         h = GRID_HALF + start_margin             # start box: grid + margin so the pusher
         self.sx_lo, self.sx_hi = cx - h, cx + h  # can get behind a cube at/just past an edge
@@ -93,8 +98,15 @@ class StrokeSampler:
         dirv = self._keep_off_barrier(cube_xy, dirv)  # safety net: never aim a push into the barrier
         back = float(self.rng.uniform(*self.back_range))
         push = float(self.rng.uniform(*self.aim_push_range))
-        start = cube_xy - dirv * back                 # descend behind the cube (clearance)
-        disp = dirv * (back + push)                   # end = start + disp = cube + dir*push (past it)
+        # NEAR-MISS: aim at a FALSE point offset laterally (⊥ to the push heading) from the true
+        # cube, ~N(0, aim_offset_sd). Reproduces the planner aiming at its probe estimate: |offset|
+        # < cube_half still contacts, larger grazes -> clean miss. sd=0 -> exact-contact (old).
+        aim = cube_xy
+        if self.aim_offset_sd > 0.0:
+            perp = np.array([-dirv[1], dirv[0]], np.float32)   # unit ⊥ to the push heading
+            aim = cube_xy + perp * float(self.rng.normal(0.0, self.aim_offset_sd))
+        start = aim - dirv * back                     # descend behind the (false) aim point
+        disp = dirv * (back + push)                   # push along dir; may pass beside the cube -> miss
         return np.concatenate([start, disp]).astype(np.float32)
 
     def sample(self, cube_xy=None):

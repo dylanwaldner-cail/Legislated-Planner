@@ -16,7 +16,7 @@ against the probe on the ENCODED latent of the real frame (the floor, ~0.015 m).
 No sim needed: WM (frozen DINO + predictor) + probe + the .pth dataset. Run with the
 container python OR the host conda env (torch + cached dinov2 hub):
     python scripts/wm_cube_pred_check.py \
-        --model_dir outputs/2026-06-25/16-46-57 --epoch 20 \
+        --model_dir outputs/reg_dino --epoch 20 \
         --data_dir data/isaaclab_stroke_1500 --probe probes/weights/probe_cube_1500.pth
 """
 from __future__ import annotations
@@ -37,6 +37,28 @@ if str(_REPO) not in sys.path:
 from probes.probe_cube_position import MLP, _spatial_pool_grid, gm  # same head + pooling; gm=grid_metadata
 
 CUBE_OFF = 18  # cube xy in the 31-D state
+QUAT = slice(CUBE_OFF + 3, CUBE_OFF + 7)  # cube quaternion (w,x,y,z) in the 31-D state [pos3, quat4, vel6]
+
+
+def _yaw(q):
+    """Yaw (rad) from a wxyz quaternion. Spawns are pure-z (yaw only); the general form still gives a
+    sensible heading if the cube has tipped."""
+    w, x, y, z = q
+    return float(np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
+
+
+def _tilt_deg(q):
+    """Angle (deg) of the cube's local +z axis from world +z: 0 = flat, >0 = tipped. OOD check --
+    training cubes are always flat, so a large post-stroke tilt is off-distribution."""
+    w, x, y, z = q
+    return float(np.degrees(np.arccos(np.clip(1 - 2 * (x * x + y * y), -1.0, 1.0))))
+
+
+def _contact_angle_deg(theta_s, theta_c):
+    """Misalignment (deg, folded to [0,45] by the square's 90-deg symmetry) between the stroke heading
+    and the nearest cube FACE. 0 = face-on (perpendicular -> clean push); 45 = corner-on (max torque)."""
+    d = np.degrees(theta_s - theta_c) % 90.0
+    return float(min(d, 90.0 - d))
 
 
 def load_wm(model_dir, epoch, device):
@@ -88,7 +110,7 @@ def probe_xy(mlp, pinfo, tokens, device):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model_dir", default="outputs/2026-06-25/16-46-57")
+    ap.add_argument("--model_dir", default="outputs/reg_dino")
     ap.add_argument("--epoch", default="20")
     ap.add_argument("--data_dir", default="data/isaaclab_stroke_1500")
     ap.add_argument("--probe", default="probes/weights/probe_cube_1500.pth")
@@ -108,6 +130,8 @@ def main():
     ap.add_argument("--aim_hi", type=float, default=0.125)
     ap.add_argument("--push_lo", type=float, default=0.14)
     ap.add_argument("--push_hi", type=float, default=0.21)
+    ap.add_argument("--illegal_cell", type=int, default=4,
+                    help="cell id whose center sets the 'toward-illegal' error direction (default 4 = center)")
     args = ap.parse_args()
     dev = args.device
 
@@ -169,6 +193,12 @@ def main():
     move_true, move_pred1 = [], []               # 1-step actual vs predicted move (motion ratio)
     axerr_enc = []                               # per-axis |err| for the encoded floor -> (N,2)
     axerr_h = {k: [] for k in range(1, H + 1)}   # per-axis |err| per horizon -> (N,2); for cushion δ sizing
+    signed_enc, encpos = [], []                  # signed encoded err (perception bias) + its true pos
+    signed_h = {k: [] for k in range(1, H + 1)}  # signed pred err e=pred-true per horizon (bias/direction)
+    pushvec_h = {k: [] for k in range(1, H + 1)} # true cube displacement per horizon (push-frame decomp)
+    truepos_h = {k: [] for k in range(1, H + 1)} # true cube pos per horizon (illegal-zone direction)
+    # --- contact-angle (yaw-vs-stroke) 1-step analysis, aligned per-window with err_h[1]/err_enc/move_true ---
+    phi_all, dyaw_all, tilt_all, elat1_all = [], [], [], []   # φ, real |Δyaw|(deg), post-tilt(deg), 1-step e_lat
 
     n_batches = (len(windows) + args.batch - 1) // args.batch
     for bi, i in enumerate(range(0, len(windows), args.batch)):
@@ -200,6 +230,9 @@ def main():
                 # NaN unless the cube truly moved (>2cm, the contact threshold) -- a heading on sub-cm
                 # jitter is meaningless (random angle ~90-145deg), so misses/near-still frames get NaN.
                 td, pd = true_k - cube_hist, pk - cube_hist
+                signed_h[k].append((pk - true_k).copy())         # signed error e = pred - true
+                pushvec_h[k].append(td.copy())                   # true displacement (push-frame decomp)
+                truepos_h[k].append(true_k.copy())               # true pos (illegal-zone direction)
                 move_h[k].append(float(np.linalg.norm(td)))      # true cumulative move (contact/miss split)
                 if np.linalg.norm(td) > 0.02 and np.linalg.norm(pd) > 1e-6:
                     cos = float(td @ pd) / (np.linalg.norm(td) * np.linalg.norm(pd))
@@ -218,6 +251,19 @@ def main():
             enc = probe_xy(mlp, pinfo, ze, dev)[0]
             err_enc.append(np.linalg.norm(enc - cube_next))
             axerr_enc.append(np.abs(enc - cube_next))        # per-axis for δ sizing
+            signed_enc.append((enc - cube_next).copy())      # perception signed error (probe bias)
+            encpos.append(cube_next.copy())                  # true pos for illegal-zone dir
+            # --- contact-angle (yaw vs stroke) for the 1-step transition ---
+            th_c = _yaw(states[e, f + num_hist - 1, QUAT])                    # cube yaw BEFORE the stroke
+            a1 = actions[e, f + num_hist - 1]                                 # the 1-step transition stroke
+            phi_all.append(_contact_angle_deg(float(np.arctan2(a1[3], a1[2])), th_c))
+            dy = (_yaw(states[e, f + num_hist, QUAT]) - th_c + np.pi) % (2 * np.pi) - np.pi  # wrapped Δyaw
+            dyaw_all.append(abs(np.degrees(dy)))
+            tilt_all.append(_tilt_deg(states[e, f + num_hist, QUAT]))         # post-stroke tilt (OOD attitude)
+            # e_lat: RELATIVE latent error of the 1-step PREDICTED latent vs the true encoded post-frame
+            # (global -> captures ROTATION the xy probe misses). ze = encoded post-frame from the floor above.
+            zp1 = zf["visual"][j, num_hist]                                   # predicted latent after 1 stroke (P,D)
+            elat1_all.append(float(torch.linalg.norm(zp1 - ze[0]) / (torch.linalg.norm(ze[0]) + 1e-9)))
         done = min(i + args.batch, len(windows))
         print(f"  [progress] batch {bi + 1}/{n_batches}  ({done}/{len(windows)} windows)  "
               f"running 1-step err {np.mean(err_h[1]):.4f} m", flush=True)
@@ -267,11 +313,115 @@ def main():
             if mask.any():
                 _prow(f"{k}-step {tag}", int(mask.sum()), ax[mask].max(1))
 
+    # ===== ERROR STRUCTURE: bias vs variance + directionality wrt the illegal zone =====
+    # Is the clip-causing error a systematic BIAS (subtractable) or symmetric VARIANCE (only the tail
+    # crosses -> centroid reframe needed)? Signed error e = pred - true (planner's view minus reality),
+    # CONTACT strokes only, decomposed in 3 frames. Stats are POPULATION (ddof=0) so the decomposition
+    # MSE = ‖bias‖² + sd_x² + sd_y² holds exactly (verifiable from the printed columns).
+    ill = int(args.illegal_cell)
+    ill_c = np.asarray(gm.cell_center(ill), dtype=float)
+    print(f"\n[error structure]  e = pred - true, contact strokes | illegal cell {ill} @ "
+          f"({ill_c[0]:+.3f},{ill_c[1]:+.3f})")
+
+    # (1) world-frame bias/variance split. bias²/MSE = ‖E[e]‖² / E[‖e‖²] in [0,1]: fraction of the mean
+    #     squared error that is SYSTEMATIC. ~0 => zero-mean (all variance); ~1 => bias-dominated. Standard
+    #     bias–variance decomposition MSE = ‖bias‖² + tr(Cov); here tr(Cov) = sd_x² + sd_y² (ddof=0).
+    print(f"  [world-frame]  bias vs variance   (bias²/MSE ~0 => zero-mean; ~1 => bias-dominated)")
+    print(f"  {'source':<13}{'n':>6}{'bias_x':>9}{'bias_y':>9}{'sd_x':>9}{'sd_y':>9}{'bias²/MSE':>10}")
+    def _bias_row(label, e_all):
+        e = np.asarray(e_all)
+        if not e.size: return
+        b, s = e.mean(0), e.std(0)                       # sample mean; population std (ddof=0)
+        mse = (e ** 2).sum(1).mean()                     # E[‖e‖²] == b@b + s[0]² + s[1]²  (exact, ddof=0)
+        print(f"  {label:<13}{len(e):>6}{b[0]:>9.4f}{b[1]:>9.4f}{s[0]:>9.4f}{s[1]:>9.4f}"
+              f"{(b @ b) / max(mse, 1e-12):>10.3f}")
+    _bias_row("encoded", signed_enc)
+    for k in range(1, H + 1):
+        mv = np.asarray(move_h[k]); m = mv > 0.02
+        if m.any(): _bias_row(f"{k}-step", np.asarray(signed_h[k])[m])
+
+    # (2) push-frame ellipse. Project e onto unit push p̂ (along = over/under-shoot) and its normal
+    #     (cross = lateral). aspect = sqrt(λmax/λmin) of Cov([along,cross]); tilt° = major-axis angle from
+    #     the push (0 => elongated ALONG the push, 90 => lateral). Eigen-based, so it stays correct even
+    #     when along/cross are correlated (a raw sd_along/sd_cross ratio would not).
+    print(f"  [push-frame ellipse]  along(+ = over-shoot) vs cross(lateral); aspect+tilt from cov eigvecs")
+    print(f"  {'source':<13}{'n':>6}{'along_bias':>11}{'along_sd':>9}{'cross_bias':>11}{'cross_sd':>9}{'aspect':>8}{'tilt°':>7}")
+    for k in range(1, H + 1):
+        mv = np.asarray(move_h[k]); m = mv > 0.02
+        if not m.any(): continue
+        e = np.asarray(signed_h[k])[m]; p = np.asarray(pushvec_h[k])[m]
+        pn = p / np.clip(np.linalg.norm(p, axis=1, keepdims=True), 1e-9, None)
+        perp = np.stack([-pn[:, 1], pn[:, 0]], axis=1)   # +90° rotation of p̂ (unit lateral)
+        al = (e * pn).sum(1); cr = (e * perp).sum(1)     # scalar projections onto push / lateral
+        C = np.cov(np.stack([al, cr]), bias=True)        # population cov (ddof=0) in the push frame
+        w, V = np.linalg.eigh(C)                          # eigenvalues ascending; V columns = eigenvectors
+        aspect = float(np.sqrt(w[1] / max(w[0], 1e-12)))
+        maj = V[:, 1]                                     # major axis (eigenvector of the larger eigenvalue)
+        tilt = float(np.degrees(np.arctan2(abs(maj[1]), abs(maj[0]))))  # 0 = along push, 90 = lateral
+        print(f"  {f'{k}-step':<13}{int(m.sum()):>6}{al.mean():>11.4f}{al.std():>9.4f}"
+              f"{cr.mean():>11.4f}{cr.std():>9.4f}{aspect:>8.2f}{tilt:>7.1f}")
+
+    # (3) illegal-zone via the cell's BOX signed-distance (SDF; negative inside, positive outside).
+    #     clip = sdf(pred) - sdf(true):  + => the planner reads the cube as SAFER (less inside) than reality
+    #     -> the clip-causing error. Uses the true cell geometry (correct at edges AND corners, unlike a
+    #     direction-to-center dot) and is a scalar penetration in meters. Restricted to near-boundary frames
+    #     (|sdf(true)| < CELL/2), where a clip is geometrically possible. mean>0 / frac>0.5 => toward-illegal
+    #     bias (subtractable); mean~0 / frac~0.5 => symmetric (only the tail clips -> centroid reframe).
+    h = gm.CELL / 2.0
+    def _sdf_box(P):                                      # (N,2) -> signed dist to the illegal cell box
+        q = np.abs(P - ill_c) - h                         # per-axis outside-distance (neg if within that axis)
+        return np.linalg.norm(np.maximum(q, 0.0), axis=1) + np.minimum(np.maximum(q[:, 0], q[:, 1]), 0.0)
+    print(f"  [illegal-zone SDF]  clip = sdf(pred)-sdf(true) m  (+ => planner underestimates encroachment); "
+          f"near-boundary |sdf(true)|<CELL/2")
+    print(f"  {'source':<13}{'n_near':>7}{'clip_mean':>11}{'clip_sd':>9}{'frac>0':>8}{'p90':>9}")
+    def _clip_row(label, t_all, e_all):
+        t_all = np.asarray(t_all); e_all = np.asarray(e_all)
+        if not e_all.size: return
+        g_t = _sdf_box(t_all); g_p = _sdf_box(t_all + e_all)    # pred = true + e   (e = pred - true)
+        near = np.abs(g_t) < h
+        if not near.any(): return
+        c = g_p[near] - g_t[near]
+        print(f"  {label:<13}{int(near.sum()):>7}{c.mean():>11.4f}{c.std():>9.4f}"
+              f"{float((c > 0).mean()):>8.2f}{np.percentile(c, 90):>9.4f}")
+    _clip_row("encoded", encpos, signed_enc)
+    for k in range(1, H + 1):
+        mv = np.asarray(move_h[k]); m = mv > 0.02
+        if m.any(): _clip_row(f"{k}-step", np.asarray(truepos_h[k])[m], np.asarray(signed_h[k])[m])
+
     print(f"\n[motion]  true cube move/step:      mean {md(move_true)[0]:.4f} m")
     print(f"[motion]  predicted cube move/step: mean {md(move_pred1)[0]:.4f} m   "
           f"(ratio>1 => WM OVER-predicts push distance; <1 => under)")
     ratio = np.mean(move_pred1) / max(np.mean(move_true), 1e-6)
     print(f"[motion]  predicted/true move ratio: {ratio:.2f}  (1.0 = faithful; ~0 = WM keeps cube ~put)")
+
+    # ===== CONTACT-ANGLE (cube yaw vs stroke heading), 1-step CONTACT strokes =====
+    # Hypothesis: WM error grows as the stroke moves from FACE-ON (φ~0) to CORNER-ON (φ~45), where a
+    # square cube rotates hard. e_lat = GLOBAL latent error (captures rotation the xy probe misses) is
+    # the sensitive column; pred-pos is xy only; enc-pos is the CONTROL (perception, should stay flat in
+    # φ). |Δyaw| and tilt confirm the physical mechanism (corner contacts rotate/tip more).
+    #   e_lat rises with φ, enc-pos flat  -> the PREDICTOR fails on angled contacts (hypothesis supported;
+    #                                        a capacity/coverage gap -> more/targeted data should help).
+    #   e_lat flat in φ                   -> WM already models yaw dynamics (hypothesis rejected).
+    phi = np.asarray(phi_all); mv = np.asarray(move_true)
+    elat = np.asarray(elat1_all); ep1 = np.asarray(err_h[1]); een = np.asarray(err_enc)
+    dyaw = np.asarray(dyaw_all); tilt = np.asarray(tilt_all)
+    contact = mv > 0.02
+    print(f"\n[contact-angle vs error]  1-step CONTACT strokes, bucketed by stroke-vs-face angle φ "
+          f"(0=face-on, 45=corner-on)")
+    print(f"  {'φ bin (deg)':<13}{'n':>6}{'e_lat':>9}{'pred-pos':>10}{'enc-pos':>9}{'|Δyaw|°':>9}{'tilt°':>8}")
+    for lo, hi in [(0, 15), (15, 30), (30, 45.01)]:
+        m = contact & (phi >= lo) & (phi < hi)
+        if not m.any():
+            continue
+        print(f"  {f'[{lo},{hi:g})':<13}{int(m.sum()):>6}{elat[m].mean():>9.4f}{ep1[m].mean():>10.4f}"
+              f"{een[m].mean():>9.4f}{dyaw[m].mean():>9.1f}{tilt[m].mean():>8.1f}")
+    if int(contact.sum()) > 2:
+        cc = lambda a: float(np.corrcoef(phi[contact], np.asarray(a)[contact])[0, 1])
+        print(f"  corr(φ, e_lat)={cc(elat):+.3f}   corr(φ, pred-pos)={cc(ep1):+.3f}   "
+              f"corr(φ, enc-pos)={cc(een):+.3f}   corr(φ, |Δyaw|)={cc(dyaw):+.3f}")
+    print(f"  [OOD attitude] post-stroke tilt over ALL 1-step contacts: "
+          f"mean {tilt[contact].mean():.1f}°  p95 {np.percentile(tilt[contact],95):.1f}°  max {tilt[contact].max():.1f}° "
+          f"(training spawns are flat=0°; large tilt = off-distribution)")
 
 
 

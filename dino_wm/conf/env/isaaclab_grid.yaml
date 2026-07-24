@@ -12,8 +12,10 @@ dataset:
   # Absolute path (Hydra changes cwd at startup, so a relative ./data would
   # resolve under the output dir). ckpt_base_path is the repo root.
   # Planar-stroke dataset (actions (E,T,4)); collected by collect_isaaclab_grid_data.py.
-  data_path: ${ckpt_base_path}/data/isaaclab_stroke_1500
+  data_path: ${ckpt_base_path}/data/isaaclab_stroke_5k_tight
   split_ratio: 0.9
+  latent_cache_dir: null   # FLAG (off). Set to a precomputed frozen-DINO latent dir (relative to
+                           # data_path), e.g. dino_latents_dinov2_vits14, to skip re-encoding each epoch.
   transform:
     _target_: "datasets.img_transforms.default_transform"
     img_size: ${img_size}

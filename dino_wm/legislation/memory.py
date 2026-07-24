@@ -13,9 +13,22 @@ class NormativeMemory:
 
     def __init__(self):
         self.records = []   # list of {"step": int, "facts": [str], "verdict": dict}
+        self.signs = []     # chronological EFFECTIVE sign colours; last element == current sign
 
     def append(self, facts, verdict):
         self.records.append({"step": len(self.records), "facts": list(facts), "verdict": verdict})
+
+    def record_sign(self, color):
+        """Log the EFFECTIVE sign colour for this step: the perceived colour, or a DERIVED flip
+        (e.g. R7 yellow->green) when the laws conclude a new colour. Deduped against the previous
+        entry, so `signs` is the change-history and its LAST element is always the current sign --
+        that is what the environment renders (grid_venv.set_sign_color). No-op on None/unchanged."""
+        if color and (not self.signs or self.signs[-1] != color):
+            self.signs.append(color)
+
+    def last_sign(self):
+        """Current effective sign colour (last one recorded), or None if never set."""
+        return self.signs[-1] if self.signs else None
 
     def commit(self, data):
         """Attach the agent's INTENT (chosen action + predicted outcome) to the latest step record.

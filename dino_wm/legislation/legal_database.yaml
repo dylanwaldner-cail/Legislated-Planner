@@ -26,10 +26,25 @@ atoms:
   - moving                         # the robot is in motion (prohibited == a full stop / freeze)
   - exit_cell(0..8)                # reparative act: leave cell N (secondary duty in the center-cell CTD)
   - goal_cell(0..8)                # the goal cell, perceived by the cube-cell probe on the GOAL latent
+  # --- full_lawset (R1-R10) additions ---
+  - yellow_cell(0..8)              # which cells are YELLOW. Static grid geometry today (cells 3,5);
+                                   # swap the grounding for a probe to make cell colour dynamic.
+  - in_yellow_cell                 # derived: cube occupies SOME yellow cell (counts-as over yellow_cell)
+  - move_slow                      # robot moving slowly (yellow-sign duty, R6)
+  - move_fast                      # robot moving fast (contrary-to-duty exit duty, R10)
+  - perm_conflict(0..8)            # R9: cell N is permitted BOTH ways (derived in asp_helpers from the
+                                   # permission predicates -- a plain-literal proxy, since the engine
+                                   # won't gate on [P] literals placed directly in an antecedent)
 
-# Laws are grouped into named CATEGORIES (a nested dict under `laws`). Categories are purely
-# organisational — reasoner.py flattens them into one DDL theory (the union of every group).
-# Add a sibling key (e.g. `social_laws:`, `temporal_laws:`) to introduce a new category.
+# Which law CATEGORY(ies) below are ENFORCED. Exactly one set is active at a time; alternative
+# sets may reuse label names because only the selected category is rendered (they never collide).
+# Override per run with LegislativeReasoner(active_lawsets=[...]); omit this key to union ALL
+# categories (legacy). Options here: geometric_laws | full_lawset.
+active_lawsets: [geometric_laws]
+
+# Laws are grouped into named CATEGORIES (a nested dict under `laws`). Only the active category
+# (see active_lawsets above) is compiled into the DDL theory. Add a sibling key
+# (e.g. `social_laws:`, `temporal_laws:`) to introduce a new category.
 laws:
   # GEOMETRIC LAWS: norms over the cube's configuration on the 3x3 grid — which cell it may
   # occupy, staying on the grid, and the sign-conditioned modifiers of those spatial norms.
@@ -117,6 +132,101 @@ laws:
       antecedent: ["goal_cell(N)"]
       consequent: ["[O]in_cell(N)"]
 
+  # FULL LAWSET (R1-R10): the complete sign-conditioned normative system for the sign experiments.
+  # NOT active alongside geometric_laws -- flip `active_lawsets` above to select it. The
+  # sign-conditioned laws (R3-R7) are DORMANT until a sign_color probe is registered (probes.yaml):
+  # without it sign(<colour>) is never grounded, so those rules never fire.
+  full_lawset:
+    # R1: cube must stay within the workspace.
+    - label: no_off_grid
+      antecedent: [cube]
+      consequent: ["[O]~off_grid"]
+
+    # R2: cube must not occupy the center cell. INTENTIONALLY unresolved against R3 (no superiority)
+    # so under sign(red) the two ambiguity-block -> neither obligation holds -> both in_cell(4) and
+    # ~in_cell(4) are weakly permitted -> R9 fires a full stop.
+    - label: no_center_cell
+      antecedent: [cube]
+      consequent: ["[O]~in_cell(4)"]
+
+    # R3: a RED sign obliges ENTERING the center -- conflicts with R2 by design.
+    - label: red_sign
+      antecedent: [sign(red)]
+      consequent: ["[O]in_cell(4)"]
+
+    # R4: a GREEN sign PERMITS the center. Superior to R2 (see superiority) -> defeats the center
+    # prohibition when sign(green) holds.
+    - label: green_sign
+      antecedent: [sign(green)]
+      consequent: ["[P]in_cell(4)"]
+
+    # R5: a YELLOW sign obliges reaching SOME yellow cell. DDL has no disjunctive obligation, so this
+    # is an abstract atom in_yellow_cell, satisfied by the counts-as rule below.
+    - label: yellow_sign
+      antecedent: [sign(yellow)]
+      consequent: ["[O]in_yellow_cell"]
+
+    # R5 (counts-as): occupying a yellow cell counts as in_yellow_cell. Expanded over all cells and
+    # GUARDED by yellow_cell(Y), so the GROUNDER decides which cells are yellow -- static today
+    # (yellow_cell(3), yellow_cell(5)); swap that grounding for a probe to make colour dynamic
+    # WITHOUT touching this law.
+    - label: yellow_counts_as
+      expand: {Y: "0..8"}
+      antecedent: ["in_cell(Y)", "yellow_cell(Y)"]
+      consequent: ["in_yellow_cell"]
+
+    # R6: a YELLOW sign obliges moving slowly.
+    - label: yellow_slow
+      antecedent: [sign(yellow)]
+      consequent: ["[O]move_slow"]
+
+    # R7: reaching a yellow cell flips the sign GREEN (constitutive -- no deontic operator). Same
+    # yellow_cell(Y) guard/grounding as R5's counts-as.
+    - label: yellow_to_green
+      expand: {Y: "0..8"}
+      antecedent: ["in_cell(Y)", "yellow_cell(Y)"]
+      consequent: ["sign(green)"]
+
+    # R8: cube ought to reach its perceived goal cell (schema over N; goal_cell(N) from the cube-cell
+    # probe on the GOAL latent activates exactly one copy).
+    - label: reach_goal
+      expand: {N: "0..8"}
+      antecedent: ["goal_cell(N)"]
+      consequent: ["[O]in_cell(N)"]
+
+    # MOTION ONTOLOGY (issue A): relate the speed atoms so the motion DUTIES actually conflict --
+    # without this the engine treats move_fast / move_slow / moving as unrelated, so R10>R9 and R10>R6
+    # never bite. Both speeds count as moving; fast excludes slow. Constitutive (no deontic operator).
+    - label: fast_is_moving
+      antecedent: [move_fast]
+      consequent: ["moving"]
+    - label: slow_is_moving
+      antecedent: [move_slow]
+      consequent: ["moving"]
+    - label: fast_not_slow
+      antecedent: [move_fast]
+      consequent: ["~move_slow"]
+
+    # R9: conflicting permissions on the center oblige a full stop. The intended antecedent is
+    # "[P]in_cell(4) AND [P]~in_cell(4)", but the engine does not enforce [P] literals placed directly
+    # in an antecedent (findings.md: applicable/2 bug), so it's LIFTED into the plain proxy atom
+    # perm_conflict(4), derived in asp_helpers from the (correct) permission predicates. Hardcoded to
+    # cell 4 (the only contested cell). Under sign(red), R2 and R3 conflict -> neither obligation wins
+    # -> in_cell(4) and ~in_cell(4) are both (weakly) permitted -> perm_conflict(4) -> freeze, like a
+    # stop sign. Baseline stays free. (Known gap to iterate on: sign(green)+R4 also yields both
+    # permissions, so this still freezes under green.)
+    - label: conflicting_permissions
+      antecedent: ["perm_conflict(4)"]
+      consequent: ["[O]~moving"]
+
+    # R10: contrary-to-duty on the center prohibition, as a COMPENSATION chain (the paper's form).
+    # Primary duty [O]~in_cell(4); if VIOLATED (cube in cell 4), the reparative duties [O]move_fast
+    # and [O]exit_cell(4) become active via the engine's compensate/4 mechanism. Superior to R9/R6
+    # (see superiority) so the exit-fast reaction beats the stop/slow duties.
+    - label: contrary_to_duty
+      antecedent: [cube]
+      consequent: ["[O]~in_cell(4)", "[O]move_fast", "[O]exit_cell(4)"]
+
   # ---- Illustrative forms the schema ALREADY supports (commented; not active norms) ----
   #
   # Conditional + non-geometric predicate:
@@ -151,8 +261,23 @@ laws:
   #     antecedent: []
   #     consequent: ["[P]in_cell(4)"]
 
-# Superiority relation for defeasibility — [stronger_label, weaker_label].
-# R4 > R2: the green-sign permission (green_sign_permits_center) DEFEATS the center-cell prohibition
-# (no_center_cell), so when sign(green) is perceived, in_cell(4) becomes permitted — [O]~in_cell(4) is
-# defeated and drops out of the verdict, so the planner no longer prunes cell 4.
-superiority: [["green_sign_permits_center", "no_center_cell"]]
+# Superiority relation for defeasibility — [stronger_label, weaker_label]. A pair is emitted ONLY
+# when BOTH labels belong to a rule in the ACTIVE lawset (see _render_dl), so every lawset's
+# superiorities can be listed together here -- pairs naming an inactive set's labels are dropped.
+superiority:
+  # geometric_laws: the green-sign permission defeats the center-cell prohibition.
+  - ["green_sign_permits_center", "no_center_cell"]
+  # full_lawset:
+  - ["green_sign", "no_center_cell"]         # R4 > R2: green permits the center (defeats the prohibition)
+  - ["contrary_to_duty", "conflicting_permissions"]  # R10 > R9: exit-fast beats the full stop
+  - ["contrary_to_duty", "yellow_slow"]      # R10 > R6: exit-fast beats moving slow
+  # NOTE: R2 vs R3 is deliberately UNRESOLVED (no pair) -> ambiguity-blocks under sign(red) -> R9.
+
+# Raw ASP clauses appended verbatim to the compiled theory (reasoner.py). Used to LIFT a deontic
+# condition into a plain derived atom that a .dl antecedent can reference -- a workaround for the engine
+# not enforcing [O]/[P] literals placed directly in an antecedent (findings.md: applicable/2 bug).
+asp_helpers:
+  # R9: perm_conflict(4) holds iff the center is permitted BOTH ways (entry and non-entry). Built from
+  # the engine's own (correct) permission predicates, so it's False in the baseline (R2 refutes
+  # [P]in_cell(4)) and True under the sign(red) R2/R3 conflict.
+  - "defeasible(perm_conflict(4)) :- permissionOrWeakPermission(in_cell(4)), permissionOrWeakPermission(non(in_cell(4)))."

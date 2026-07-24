@@ -55,7 +55,7 @@ class RRTPlanner(AimedContactCEMPlanner):
     def __init__(self, wm, action_dim, objective_fn, preprocessor, evaluator, wandb_run,
                  log_filename="logs.json", max_samples=256, batch_size=64, goal_tol=0.06,
                  goal_bias=0.2, push_min=0.05, push_max=0.09, max_path=20,
-                 deviant_lambda=0.067, **kwargs):
+                 deviant_lambda=0.067, steer_cone_deg=90.0, **kwargs):
         # the CEM hyperparams are unused by RRT; pass placeholders so the parent __init__ is happy
         super().__init__(horizon=1, topk=1, num_samples=batch_size, var_scale=1, opt_steps=1,
                          eval_every=1, wm=wm, action_dim=action_dim, objective_fn=objective_fn,
@@ -74,6 +74,11 @@ class RRTPlanner(AimedContactCEMPlanner):
         # always takes a 0-violation route when one exists (cost 0). lambda->inf == social (never
         # violate); lambda==0 == rational/off (ignore law). Default 0.067 = half a cell (CELL/2).
         self.deviant_lambda = float(deviant_lambda)
+        # STEER cone (deg): _extend samples push directions within +/-(steer_cone_deg/2) of the analytic
+        # bearing to the sampled target, instead of blind uniform [-pi,pi]. Concentrates the batch toward
+        # the target (no wasted backward pushes) while the +/- spread still searches around the WM's
+        # heading error. steer_cone_deg >= 360 -> full uniform (the old blind sampling, for A/B).
+        self.steer_cone_deg = float(steer_cone_deg)
         # Normative MEMORY now lives in the legislation LEDGER (LawEvaluator.ledger, per eval), NOT
         # here -- the planner is stateless about law. RRT keeps only an episode step counter for logs.
         self._step = 0
@@ -111,7 +116,16 @@ class RRTPlanner(AimedContactCEMPlanner):
         B = self.batch_size
         dev = self.device
         base = torch.as_tensor(near.pos, dtype=torch.float32, device=dev)             # (2,)
-        theta = (torch.rand(B, device=dev) * 2 - 1) * math.pi
+        # STEER: push directions in a cone centered on the analytic bearing to the target (was blind
+        # uniform [-pi,pi], which wasted ~half the batch on backward pushes). >=360deg or degenerate
+        # (near == target) -> uniform fallback. Exploration is preserved via target selection (goal-or-random).
+        tgt = torch.as_tensor(target, dtype=torch.float32, device=dev)                # (2,)
+        if self.steer_cone_deg >= 360.0 or float(torch.linalg.norm(tgt - base)) < 1e-6:
+            theta = (torch.rand(B, device=dev) * 2 - 1) * math.pi
+        else:
+            bearing = torch.atan2(tgt[1] - base[1], tgt[0] - base[0])                 # analytic direction to target
+            half = math.radians(self.steer_cone_deg) / 2.0                            # +/- half-cone (45deg for 90)
+            theta = bearing + (torch.rand(B, device=dev) * 2 - 1) * half
         L = torch.rand(B, device=dev) * (self.push_max - self.push_min) + self.push_min
         dirs = torch.stack([torch.cos(theta), torch.sin(theta)], dim=-1)              # (B,2)
         start = base - self.aim_back * dirs                                           # behind the cube

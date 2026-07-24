@@ -5,9 +5,9 @@
 # matching latent to each group. To add a probe: train it, drop the .pth here, flip enabled.
 
 probes:
-  - name: cube_position          # continuous cube (x,y) in meters   [regression, encoded∪pred-h1]
-    path: probes/weights/pos_enc_pred1.pth   # trained on encoded ∪ pred-h1 latents (matches the mixed
-    enabled: true                            # trajectory the constraint reads); L2 0.020 m. Old: probe_cube_1500.pth
+  - name: cube_position          # continuous cube (x,y) in meters   [regression, encoded-only]
+    path: probes/weights/pos_enc_pred1.pth   # FALLBACK default only: at plan time plan.py OVERRIDES this with
+    enabled: true                            # objective.pos_probe_path, so legislation & planner ALWAYS share one probe (no mismatch).
 
   - name: cube_position_pred     # cube (x,y) read off predicted latents   [regression, predicted]
     path: probes/weights/probe_cube_pred.pth

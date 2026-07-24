@@ -122,12 +122,15 @@ class VWorldModel(nn.Module):
         input : obs (dict): "visual", "proprio" (b, t, 3, img_size, img_size)
         output:   z (dict): "visual", "proprio" (b, t, num_patches, encoder_emb_dim)
         """
-        visual = obs['visual']
-        b = visual.shape[0]
-        visual = rearrange(visual, "b t ... -> (b t) ...")
-        visual = self.encoder_transform(visual)
-        visual_embs = self.encoder.forward(visual)
-        visual_embs = rearrange(visual_embs, "(b t) p d -> b t p d", b=b)
+        if "visual_cached" in obs:                    # FLAG: precomputed frozen-DINO latent -> skip re-encode
+            visual_embs = obs["visual_cached"]
+        else:
+            visual = obs['visual']
+            b = visual.shape[0]
+            visual = rearrange(visual, "b t ... -> (b t) ...")
+            visual = self.encoder_transform(visual)
+            visual_embs = self.encoder.forward(visual)
+            visual_embs = rearrange(visual_embs, "(b t) p d -> b t p d", b=b)
 
         proprio = obs['proprio']
         proprio_emb = self.encode_proprio(proprio)
@@ -199,8 +202,11 @@ class VWorldModel(nn.Module):
         z = self.encode(obs, act)
         z_src = z[:, : self.num_hist, :, :]  # (b, num_hist, num_patches, dim)
         z_tgt = z[:, self.num_pred :, :, :]  # (b, num_hist, num_patches, dim)
-        visual_src = obs['visual'][:, : self.num_hist, ...]  # (b, num_hist, 3, img_size, img_size)
-        visual_tgt = obs['visual'][:, self.num_pred :, ...]  # (b, num_hist, 3, img_size, img_size)
+        # decoder-only inputs; None when the latent cache is on (obs has no raw 'visual'). Guarded so
+        # the cache flag works with has_decoder=False. (decoder + cache is unsupported -- the decoder
+        # needs raw images; the two raw-visual users below are both inside `if self.decoder is not None`.)
+        visual_src = obs['visual'][:, : self.num_hist, ...] if "visual" in obs else None
+        visual_tgt = obs['visual'][:, self.num_pred :, ...] if "visual" in obs else None
 
         if self.predictor is not None:
             z_pred = self.predict(z_src)

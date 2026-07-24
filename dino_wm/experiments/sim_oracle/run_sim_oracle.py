@@ -61,9 +61,25 @@ def main():
     ap.add_argument("--max", type=int, default=None, help="scenarios PER PAIR (default all) -- keep SMALL, it's slow")
     ap.add_argument("--max_samples", type=int, default=512, help="RRT extend attempts/plan step (512=WM parity; lower=faster)")
     ap.add_argument("--max_iter", type=int, default=12)
-    ap.add_argument("--num_envs", type=int, default=64, help="== RRT batch_size (candidates per extend)")
+    ap.add_argument("--stroke_max_steps", type=int, default=320,
+                    help="PhysX substeps per stroke (per-round cost scales with this). Most strokes "
+                    "finish well before 320; ~160 roughly halves per-round time. Too low truncates "
+                    "strokes (partial push -> corrupted GT), so verify the cube still moves as expected.")
+    ap.add_argument("--num_envs", type=int, default=64, help="RRT batch_size B (candidates per extend)")
+    ap.add_argument("--patience", type=int, default=0,
+                    help="convergence early-stop: bail a tree-build after this many rounds with NO "
+                    "goal-dist improvement in any active scenario (0 = off; try 30-50). Big speedup on "
+                    "the far-from-goal MPC steps that otherwise run all max_samples.")
+    ap.add_argument("--batch_scenarios", type=int, default=1,
+                    help="K: run K scenarios IN PARALLEL sharing one K*B-env PhysX batch (~Kx faster on "
+                    "one GPU; memory is free at B=64). 1 = sequential. Try 8-32 (env count = K*B).")
+    ap.add_argument("--steer_cone_deg", type=float, default=90.0,
+                    help="push-direction cone around the bearing to target (90 = WM-RRT parity; 360 = uniform A/B)")
     ap.add_argument("--device", default="cuda:0")
-    ap.add_argument("--out", default=None, help="write per-scenario + summary JSON here")
+    ap.add_argument("--out", default="results/jul22/oracle_sim",
+                    help="output DIR: writes <out>/<pair>/scenario_<i>/eval_metrics.json (FULL per-eval "
+                    "dict, eval_sweep layout -> drop-in for the diagnostics/plots) + <out>/summary.json. "
+                    "No renders/videos: the oracle env is camera-off (state-only).")
     args = ap.parse_args()
 
     bench = Path(args.benchmark).resolve()
@@ -76,35 +92,69 @@ def main():
     action_min = _a.min(dim=0).values.numpy(); action_max = _a.max(dim=0).values.numpy()
 
     reasoner = LegislativeReasoner(db_path=args.db_path) if args.db_path else LegislativeReasoner()
-    env = PhysGridEnv(num_envs=args.num_envs, device=args.device)
-    rrt = SimOracleRRT(env, reasoner, mode=args.mode, batch_size=args.num_envs,
+    B = args.num_envs; K = max(1, args.batch_scenarios)
+    env = PhysGridEnv(num_envs=K * B, device=args.device, stroke_max_steps=args.stroke_max_steps)  # K*B envs
+    rrt = SimOracleRRT(env, reasoner, mode=args.mode, batch_size=B,
                        max_samples=args.max_samples, action_min=action_min, action_max=action_max,
-                       device=args.device)
+                       steer_cone_deg=args.steer_cone_deg, patience=args.patience, device=args.device)
 
-    acc, records = {}, []
-    print(f"[sim-oracle] {args.mode} | {len(pair_dirs)} pairs | max/pair={args.max} | max_samples={args.max_samples}")
+    # Flatten all (pair, scenario) so the batched runner can pack K at a time (a chunk may span pairs --
+    # fine, run_batch grounds goal cell + constraint per scenario).
+    flat = []
     for pd in pair_dirs:
         pdir = bench / pd
         states = torch.load(pdir / "states.pth").float().numpy()            # (V,2,31) [init, goal]
         pmeta = json.loads((pdir / "metadata.json").read_text()) if (pdir / "metadata.json").exists() else {}
-        metric_cell = args.metric_cell if args.metric_cell is not None else pmeta.get("metric_cell", 4)
+        mc = args.metric_cell if args.metric_cell is not None else pmeta.get("metric_cell", 4)
         V = states.shape[0] if args.max is None else min(args.max, states.shape[0])
         for i in range(V):
-            init_s, goal_s = states[i, 0], states[i, 1]
-            goal_cell = int(np.atleast_1d(gm.which_cell(goal_s[None, _CUBE_XY]))[0])
-            e_states, constraint, alen = rrt.run(init_s, goal_s, max_iter=args.max_iter)
-            m = build_eval_metrics(
-                e_states=e_states[None], action_len=np.array([alen], dtype=float),
-                last_metrics=_last_metrics(e_states[-1], goal_s, goal_cell),
-                constraint=constraint, scene_filter={}, metric_cell=metric_cell,
-                scene_offset=0, pool_size=1, n_evals=1, seed=0, goal_states=goal_s[None])
-            for k in ("success", "law_violated", "law_violated_swept", "law_violated_center",
-                      "illegal_frame_frac", "n_steps", "path_efficiency", "optimal_path_len", "cube_l2"):
-                acc.setdefault(k, []).extend(v for v in m.get(k, []) if v is not None)
-            records.append({"pair": pd, "scenario": i, "metric_cell": metric_cell,
-                            "success": m["success"][0], "law_violated": m["law_violated"][0],
-                            "steps": m["n_steps"][0]})
-            print(f"  {pd} #{i}: success={m['success'][0]} law_violated={m['law_violated'][0]} steps={m['n_steps'][0]}")
+            flat.append((pd, i, mc, states[i, 0].copy(), states[i, 1].copy()))
+
+    acc, records = {}, []
+    print(f"[sim-oracle] {args.mode} | {len(flat)} scenarios ({len(pair_dirs)} pairs) | "
+          f"K={K} x B={B} = {K * B} envs | max_samples={args.max_samples}", flush=True)
+
+    def _record(pd, i, mc, goal_s, e_states, constraint, alen):
+        """Full per-eval eval_metrics.json (eval_sweep layout) + accumulate acc/records. Returns m."""
+        gc = int(np.atleast_1d(gm.which_cell(goal_s[None, _CUBE_XY]))[0])
+        m = build_eval_metrics(
+            e_states=e_states[None], action_len=np.array([alen], dtype=float),
+            last_metrics=_last_metrics(e_states[-1], goal_s, gc),
+            constraint=constraint, scene_filter={}, metric_cell=mc,
+            scene_offset=0, pool_size=1, n_evals=1, seed=0, goal_states=goal_s[None])
+        sc_dir = Path(args.out) / pd / f"scenario_{i:03d}"; sc_dir.mkdir(parents=True, exist_ok=True)
+        (sc_dir / "eval_metrics.json").write_text(json.dumps(m, indent=2))   # drop-in for the diagnostics
+        for kk in ("success", "law_violated", "law_violated_swept", "law_violated_center",
+                   "illegal_frame_frac", "n_steps", "path_efficiency", "optimal_path_len", "cube_l2"):
+            acc.setdefault(kk, []).extend(v for v in m.get(kk, []) if v is not None)
+        records.append({"pair": pd, "scenario": i, "metric_cell": mc, "success": m["success"][0],
+                        "law_violated": m["law_violated"][0], "steps": m["n_steps"][0]})
+        return m
+
+    if K == 1:                                                              # sequential (env num_envs == B)
+        for (pd, i, mc, init_s, goal_s) in flat:
+            print(f"[sim-oracle] >>> {pd} #{i} planning...", flush=True)
+            e_states, constraint, alen, timing = rrt.run(init_s, goal_s, max_iter=args.max_iter)
+            m = _record(pd, i, mc, goal_s, e_states, constraint, alen)
+            acc.setdefault("wall_s", []).append(timing["wall_s"])
+            print(f"  {pd} #{i}: success={m['success'][0]} law_violated={m['law_violated'][0]} "
+                  f"steps={m['n_steps'][0]} | {timing['wall_s']}s ({timing['n_extends']} extends, "
+                  f"sim {timing['sim_s']}s)", flush=True)
+    else:                                                                   # batched (env num_envs == K*B)
+        for c0 in range(0, len(flat), K):
+            chunk = flat[c0:c0 + K]; realK = len(chunk)
+            if realK < K:                                                   # pad tail so num_envs == K*B holds
+                chunk = chunk + [chunk[-1]] * (K - realK)
+            init_states = np.stack([c[3] for c in chunk]); goal_states = np.stack([c[4] for c in chunk])
+            print(f"[sim-oracle] >>> batch {c0}..{c0 + realK}/{len(flat)} (K={K}) planning...", flush=True)
+            e_list, constraints, alens, timing = rrt.run_batch(init_states, goal_states, max_iter=args.max_iter)
+            for j in range(realK):                                          # skip padded duplicates
+                pd, i, mc, _init, goal_s = chunk[j]
+                _record(pd, i, mc, goal_s, e_list[j], constraints[j], alens[j])
+            acc.setdefault("wall_s", []).append(timing["wall_s"])
+            print(f"  batch done: {timing['wall_s']}s / {realK} scenarios "
+                  f"({timing['wall_s'] / max(realK, 1):.1f}s each) | {timing['n_extends']} extends "
+                  f"sim {timing['sim_s']}s ({100 * timing['sim_s'] / max(timing['wall_s'], 1e-6):.0f}%)", flush=True)
     env.close()
 
     n = len(acc.get("success", []))
@@ -122,8 +172,9 @@ def main():
     }
     print("[sim-oracle] SUMMARY:", json.dumps(summary, indent=2))
     if args.out:
-        Path(args.out).write_text(json.dumps({"summary": summary, "records": records}, indent=2))
-        print(f"[sim-oracle] wrote {args.out}")
+        outdir = Path(args.out); outdir.mkdir(parents=True, exist_ok=True)
+        (outdir / "summary.json").write_text(json.dumps({"summary": summary, "records": records}, indent=2))
+        print(f"[sim-oracle] wrote {outdir}/summary.json + per-scenario eval_metrics.json under {outdir}/")
 
 
 if __name__ == "__main__":

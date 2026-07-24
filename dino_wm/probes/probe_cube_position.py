@@ -217,7 +217,7 @@ def main():
                     "(probe_cube_pred.pth); 'both' = train ONE head on the UNION of encoded ∪ "
                     "predicted latents (at --pred_horizons, default 1) -- matches the mixed latent "
                     "stream the constraint reads at plan time (encoded history + predicted future).")
-    ap.add_argument("--model_dir", default="outputs/2026-06-25/16-46-57",
+    ap.add_argument("--model_dir", default="outputs/reg_dino",
                     help="WM dir (only used for --source predicted)")
     ap.add_argument("--epoch", default="20", help="WM epoch (only used for --source predicted)")
     ap.add_argument("--pred_horizons", default="1",
@@ -235,6 +235,10 @@ def main():
                     help="encoder input resolution — MUST match the WM: (img_size//16)*patch_size "
                     "= 196 for vits14@224, giving a 14x14=196 token grid. Do NOT use 224 (that's "
                     "16x16=256 tokens, which the WM never produces -> probe is OOD at plan time).")
+    ap.add_argument("--hidden", type=int, default=256, help="MLP hidden width (probe capacity knob)")
+    ap.add_argument("--encoder_name", default="dinov2_vits14",
+                    help="frozen DINOv2 variant for the ENCODED floor (dinov2_vits14=384d, "
+                    "dinov2_vitb14=768d). Note: same patch size (14) -> same token grid; wider, not finer.")
     ap.add_argument("--val_frac", type=float, default=0.2, help="fraction of EPISODES held out")
     ap.add_argument("--epochs", type=int, default=120)
     ap.add_argument("--batch_size", type=int, default=256)
@@ -261,7 +265,7 @@ def main():
 
     parts = []   # each: (X, Y, ep, V); >1 only for --source both (encoded ∪ predicted)
     if args.source in ("encoded", "both"):
-        encoder = DinoV2Encoder(name="dinov2_vits14", feature_key="x_norm_patchtokens").to(device).eval()
+        encoder = DinoV2Encoder(name=args.encoder_name, feature_key="x_norm_patchtokens").to(device).eval()
         for prm in encoder.parameters():
             prm.requires_grad_(False)
         parts.append(encode_dataset(args.data_dir, encoder, device, args.frame_stride,
@@ -317,7 +321,7 @@ def main():
     Yn = ((Yt - ymu) / ysd).to(device)
     ymu_np, ysd_np = ymu.numpy(), ysd.numpy()
 
-    probe = MLP(X.shape[1], d_out=2).to(device)
+    probe = MLP(X.shape[1], d_out=2, hidden=args.hidden).to(device)
     opt = torch.optim.Adam(probe.parameters(), lr=args.lr, weight_decay=1e-4)
     lossf = nn.MSELoss()
 
@@ -425,8 +429,8 @@ def main():
             "kind": "regression", "state_dict": probe.state_dict(),
             "x_mu": mu.numpy(), "x_sd": sd.numpy(),
             "y_mu": ymu_np, "y_sd": ysd_np,
-            "pool_grid": args.pool_grid, "d_in": X.shape[1], "out_dim": 2, "hidden": 256,
-            "encoder": "dinov2_vits14", "feature_key": "x_norm_patchtokens",
+            "pool_grid": args.pool_grid, "d_in": X.shape[1], "out_dim": 2, "hidden": args.hidden,
+            "encoder": args.encoder_name, "feature_key": "x_norm_patchtokens",
             "source": args.source, "pred_horizons": args.pred_horizons,  # provenance: encoded vs predicted head
         }, args.save_path)
         print(f"[save] probe + norm stats -> {args.save_path}")

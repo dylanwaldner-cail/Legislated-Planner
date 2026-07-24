@@ -146,17 +146,27 @@ class PlanWorkspace:
         _goal_source = cfg_dict.get("goal_source")
         _sf = {k: v for k, v in (cfg_dict.get("scene_filter") or {}).items() if v is not None}
         _scene_offset = cfg_dict.get("scene_offset")
+        # CHERRY-PICK (scene_ids): explicit GLOBAL pool indices override the contiguous offset slice.
+        _scene_ids = cfg_dict.get("scene_ids")
+        self.scene_ids = [int(i) for i in _scene_ids] if _scene_ids else None
+        if self.scene_ids is not None:
+            cfg_dict["n_evals"] = len(self.scene_ids)
         if _goal_source == "law_eval":
             # LAW-EVAL BENCHMARK: the pool is the pre-generated scenarios in goal_file_path/states.pth,
             # NOT the dset scene_pool. Read its size early so the last batch's n_evals is clamped
             # (mutually exclusive with the scene_filter/scene_offset dset pool path below).
             _M = int(torch.load(Path(cfg_dict["goal_file_path"]) / "states.pth").shape[0])
             self.law_eval_size = _M
-            _off = int(_scene_offset or 0)
-            _avail = max(0, _M - _off)
-            if _avail == 0:
-                raise ValueError(f"scene_offset {_off} >= law_eval size {_M} ({cfg_dict['goal_file_path']} exhausted)")
-            cfg_dict["n_evals"] = min(cfg_dict["n_evals"], _avail)
+            if self.scene_ids is not None:
+                _bad = [i for i in self.scene_ids if not (0 <= i < _M)]
+                if _bad:
+                    raise ValueError(f"scene_ids {_bad} out of range for law_eval size {_M}")
+            else:
+                _off = int(_scene_offset or 0)
+                _avail = max(0, _M - _off)
+                if _avail == 0:
+                    raise ValueError(f"scene_offset {_off} >= law_eval size {_M} ({cfg_dict['goal_file_path']} exhausted)")
+                cfg_dict["n_evals"] = min(cfg_dict["n_evals"], _avail)
         elif _sf or _scene_offset is not None:          # build the pool for filtered runs OR pool sweeps
             from scripts.scene_index import select_pairs_from_states
             _base = getattr(self.dset, "dataset", self.dset)             # TrajSubset -> base dataset
@@ -169,7 +179,11 @@ class PlanWorkspace:
                 raise ValueError(f"scene_filter {_sf} matched 0 segments (goal_H={cfg_dict['goal_H']}); loosen it.")
             # POOL SWEEP: run the DETERMINISTIC slice pool[offset:offset+n_evals] (one eval per distinct
             # segment, no shuffle). Clamp n_evals so the last batch doesn't over-run the pool.
-            if _scene_offset is not None:
+            if self.scene_ids is not None:
+                _bad = [i for i in self.scene_ids if not (0 <= i < len(self.scene_pool))]
+                if _bad:
+                    raise ValueError(f"scene_ids {_bad} out of range for pool size {len(self.scene_pool)}")
+            elif _scene_offset is not None:
                 _avail = max(0, len(self.scene_pool) - int(_scene_offset))
                 if _avail == 0:
                     raise ValueError(f"scene_offset {_scene_offset} >= pool size {len(self.scene_pool)} (pool exhausted)")
@@ -184,8 +198,13 @@ class PlanWorkspace:
         # Per-eval env seeds. Under a pool sweep, index by the GLOBAL pool position (scene_offset + n)
         # so a given segment gets the SAME env seed regardless of --batch -> the same episode is set
         # up identically across techniques and batchings.
-        _off0 = int(_scene_offset) if _scene_offset is not None else 0
-        self.eval_seed = [cfg_dict["seed"] * (_off0 + n) + 1 for n in range(cfg_dict["n_evals"])]
+        # scene_ids: seed each picked scene by its GLOBAL index so the re-run reproduces the exact
+        # env setup it had in the full sweep (seed*id+1). Else index by the contiguous slice position.
+        if self.scene_ids is not None:
+            self.eval_seed = [cfg_dict["seed"] * i + 1 for i in self.scene_ids]
+        else:
+            _off0 = int(_scene_offset) if _scene_offset is not None else 0
+            self.eval_seed = [cfg_dict["seed"] * (_off0 + n) + 1 for n in range(cfg_dict["n_evals"])]
         print("eval_seed: ", self.eval_seed)
         self.n_evals = cfg_dict["n_evals"]
         self.goal_source = cfg_dict["goal_source"]
@@ -293,6 +312,14 @@ class PlanWorkspace:
             from legislation.enforcement import LawEvaluator
             from probes.probe_cube_cells import CUBE_HALF
             reg = ProbeRegistry(device=self.device)
+            # SINGLE PROBE SOURCE (no mismatch): tie the legislation cube_position probe to the SAME
+            # probe the planner navigates with (objective.pos_probe_path). Perception used for law
+            # enforcement then CANNOT differ from perception used for planning -- one CLI knob controls
+            # both. (probes.yaml's cube_position path is only a fallback default when no objective probe.)
+            _pos_path = (self.cfg_dict.get("objective") or {}).get("pos_probe_path")
+            if _pos_path:
+                reg.set_probe("cube_position", _pos_path)
+                print(f"[legislation] cube_position tied to planner probe -> {_pos_path}")
             base_facts = list(leg.get("facts", ["cube"]))
             _db = leg.get("db_path")                       # null -> geometry 1 (legal_database.yaml)
             reasoner = LegislativeReasoner(db_path=_db) if _db else LegislativeReasoner()
@@ -307,6 +334,18 @@ class PlanWorkspace:
             evaluator = LawEvaluator(reasoner, reg, base_facts=base_facts, cube_half=_ch)
             penalty = float(leg.get("violation_penalty", 1e6))
             target.law_fn = evaluator
+            # GOAL AS SPECIFICATION: on a law_eval benchmark run, hand the evaluator the pair's
+            # GROUND-TRUTH goal cell (metadata.json) so the reach-goal obligation targets the DESIGNATED
+            # cell, not a probe-perceived one (cube_cells argmax flips near cell boundaries). The goal
+            # cell is a task spec (like a prompt), not a perception; current-STATE facts stay grounded.
+            if self.cfg_dict.get("goal_source") == "law_eval" and self.cfg_dict.get("goal_file_path"):
+                import json as _json
+                _mdp = Path(self.cfg_dict["goal_file_path"]) / "metadata.json"
+                if _mdp.exists():
+                    _gc = (_json.loads(_mdp.read_text()) or {}).get("goal_cell")
+                    if _gc is not None:
+                        evaluator.gt_goal_cell = int(_gc)
+                        print(f"[law_eval] GT goal_cell = {int(_gc)} (task spec, not perceived)")
             target.violation_penalty = penalty
             # initial/static constraint from base facts only -- the setup verdict, and the fallback
             # for planners that don't re-evaluate per step (e.g. the chained CEM). RRT overwrites
@@ -394,9 +433,12 @@ class PlanWorkspace:
             # from the saved states (deterministic; the saved obses/ images are for inspection).
             _d = Path(self.cfg_dict["goal_file_path"])
             _st = torch.load(_d / "states.pth").float().numpy()          # (M, 2, 31)  [init, goal]
-            _off = int(self.cfg_dict.get("scene_offset") or 0)
-            _sl = slice(_off, _off + self.n_evals)
-            init_state, goal_state = _st[_sl, 0], _st[_sl, 1]            # (b, 31) each
+            if getattr(self, "scene_ids", None) is not None:             # cherry-picked indices
+                _pick = self.scene_ids
+            else:
+                _off = int(self.cfg_dict.get("scene_offset") or 0)
+                _pick = range(_off, _off + self.n_evals)
+            init_state, goal_state = _st[list(_pick), 0], _st[list(_pick), 1]   # (b, 31) each
             # sign-flip: set the PRE-FLIP baseline colour before the first perception so MPC step 0
             # (and the goal frame) is grounded at a known sign, not the sim's default. See conf sign_flip.
             _sf = self.cfg_dict.get("sign_flip")
@@ -495,7 +537,9 @@ class PlanWorkspace:
         picks = None
         if use_pool:
             _off = self.cfg_dict.get("scene_offset")
-            if _off is not None:                            # pool sweep: deterministic slice, one seg per eval
+            if getattr(self, "scene_ids", None) is not None:  # cherry-picked global indices
+                picks = [list(pool)[i] for i in self.scene_ids]
+            elif _off is not None:                          # pool sweep: deterministic slice, one seg per eval
                 picks = list(pool)[int(_off):]              # n_evals already clamped in __init__ to fit this slice
             else:
                 picks = list(pool); random.shuffle(picks)
@@ -619,6 +663,8 @@ class PlanWorkspace:
                 wm_pred_err=getattr(self.planner, "wm_pred_err_mean", None),
                 wm_latent_err=getattr(self.planner, "wm_latent_err_mean", None),
                 wm_pred_err_steps=getattr(self.planner, "wm_pred_err_steps", None),
+                wm_pred_xy_steps=getattr(self.planner, "wm_pred_xy_steps", None),
+                wm_real_xy_steps=getattr(self.planner, "wm_real_xy_steps", None),
                 wm_latent_err_steps=getattr(self.planner, "wm_latent_err_steps", None),
                 runtime_breakdown=_rb, goal_states=getattr(self, "state_g", None))
             with open("eval_metrics.json", "w") as _f:
@@ -795,7 +841,12 @@ def planning_main(cfg_dict):
     # re-clamps identically (this just moves the clamp ahead of env construction).
     _sf = {k: v for k, v in (cfg_dict.get("scene_filter") or {}).items() if v is not None}
     _soff = cfg_dict.get("scene_offset")
-    if cfg_dict.get("goal_source") == "law_eval":
+    _sids = cfg_dict.get("scene_ids")
+    if _sids:
+        # CHERRY-PICK: n_evals is exactly the number of picked indices (bounds checked in PlanWorkspace).
+        cfg_dict["n_evals"] = len(_sids)
+        print(f"[scene_ids] n_evals -> {cfg_dict['n_evals']} (explicit indices {list(_sids)})")
+    elif cfg_dict.get("goal_source") == "law_eval":
         # law-eval benchmark: clamp n_evals to the (init,goal) SET SIZE (states.pth (M,2,31)), sliced
         # by scene_offset -- env num_envs must match the states prepare_targets teleports to.
         _m = int(torch.load(Path(cfg_dict["goal_file_path"]) / "states.pth").shape[0])

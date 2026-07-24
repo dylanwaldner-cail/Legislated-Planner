@@ -103,6 +103,8 @@ class MPCPlanner(BasePlanner):
         ### END HARNESS EDIT ###
         self._wm_pred_err = {}   ### HARNESS EDIT ### eval_index -> list of per-step WM 1-step cube-pred errors (m)
         self._wm_latent_err = {} ### HARNESS EDIT ### eval_index -> list of per-step WM 1-step latent MSE (decoder-free)
+        self._wm_pred_xy = {}    ### HARNESS EDIT ### eval_index -> [[x,y],...] WM-PREDICTED committed-stroke cube
+        self._wm_real_xy = {}    ### HARNESS EDIT ### eval_index -> [[x,y],...] REAL sim committed-stroke cube (pred-vs-real diag)
         self._imagined_regrounded = []   ### HARNESS EDIT ### per-step re-grounded decoded frames -> closed-loop output_final
         ### HARNESS EDIT ### optional RRT/MPC introspection (rrt_introspect.enabled=true). OFF by default.
         self._introspector = None
@@ -202,7 +204,7 @@ class MPCPlanner(BasePlanner):
             #     (the open-loop rollout is misleading for a re-planning MPC system).
             try:
                 from planning.planning_metrics import wm_regrounded_eval
-                _err, _lat, _imag = wm_regrounded_eval(
+                _err, _lat, _imag, _pred, _real = wm_regrounded_eval(
                     self.wm, self.preprocessor, self.objective_fn, cur_obs_0, taken_actions,
                     e_final_state, real_obs=e_final_obs,
                     decode=(getattr(self.wm, "decoder", None) is not None))
@@ -212,6 +214,10 @@ class MPCPlanner(BasePlanner):
                 if _lat is not None:
                     for _i in range(len(_lat)):
                         self._wm_latent_err.setdefault(_i, []).append(float(_lat[_i]))
+                if _pred is not None and _real is not None:   # record pred-vs-real committed cube (x,y)
+                    for _i in range(len(_pred)):
+                        self._wm_pred_xy.setdefault(_i, []).append([float(_pred[_i][0]), float(_pred[_i][1])])
+                        self._wm_real_xy.setdefault(_i, []).append([float(_real[_i][0]), float(_real[_i][1])])
                 if _err is not None:
                     print(f"[wm 1-step err] iter {self.iter}: probe {float(_err.mean()):.4f} m"
                           + (f" | latent-mse {float(_lat.mean()):.4f}" if _lat is not None else "")
@@ -297,6 +303,8 @@ class MPCPlanner(BasePlanner):
         # STEP INDEX -- e.g. is step 0 (the first big contact push) systematically the worst?
         self.wm_pred_err_steps = [self._wm_pred_err.get(i, []) for i in range(n_evals)]
         self.wm_latent_err_steps = [self._wm_latent_err.get(i, []) for i in range(n_evals)]
+        self.wm_pred_xy_steps = [self._wm_pred_xy.get(i, []) for i in range(n_evals)]   # pred-vs-real diag
+        self.wm_real_xy_steps = [self._wm_real_xy.get(i, []) for i in range(n_evals)]
         # stitched re-grounded imagination (N, 1+n_steps, 3, H, W) -> closed-loop output_final
         self.imagined_regrounded = (torch.stack(self._imagined_regrounded, dim=1)
                                     if self._imagined_regrounded else None)

@@ -80,7 +80,9 @@ def run_video_preview(args):
     env.seed(args.seed)
     rng = np.random.RandomState(args.seed)
     sampler = StrokeSampler(rng, aimed_frac=args.aimed_frac, push_max=args.push_max,
-                            start_margin=args.start_margin)
+                            start_margin=args.start_margin,
+                            aim_push_range=(args.aim_push_min, args.aim_push_max),
+                            aim_offset_sd=args.aim_offset_sd)
     try:
         obs, state = env.reset()
         env.set_sign_color(SIGN_PALETTE[int(rng.randint(0, len(SIGN_PALETTE)))][1])
@@ -134,6 +136,19 @@ def main():
                     help="UNIFORM strokes: per-axis push displacement bound (m): dx,dy ~ U(-push_max, "
                     "push_max). ~20%% of the grid span, matching the deformable short-push ratio. "
                     "Short pushes = small per-step cube motion = easier one-step dynamics.")
+    ap.add_argument("--aim_push_min", type=float, default=0.03,
+                    help="AIMED strokes: MIN cube-travel per push (m). 0.03 ~= 1/4 cell -> fine terminal "
+                    "control; near the contact floor, so some of these barely move the cube (expected).")
+    ap.add_argument("--aim_push_max", type=float, default=0.13,
+                    help="AIMED strokes: MAX cube-travel per push (m). 0.13 ~= one CELL -> advance a cell "
+                    "in one stroke (fewer strokes = less chaining drift). Widened from 0.09 for the bigger "
+                    "WM. NOTE: match the planner's push_min/push_max (conf/planner/mpc_rrt.yaml) to this.")
+    ap.add_argument("--aim_offset_sd", type=float, default=0.0,
+                    help="AIMED strokes: lateral aim-offset std (m). Aims at a FALSE point ~N(0,sd) "
+                    "perpendicular to the push, mimicking the planner aiming at its probe estimate "
+                    "(off by the perception error ~0.03-0.05 m). |offset|<cube_half(0.045) still "
+                    "contacts, larger grazes->misses. 0.0 = exact-contact (old). Use with --aimed_frac 1.0 "
+                    "to REPLACE blind uniform coverage with distribution-matched near-misses.")
     ap.add_argument("--start_margin", type=float, default=0.06,
                     help="Contact point sampled uniformly in +/-(GRID_HALF + start_margin) per "
                     "axis, so the pusher can get behind a cube sitting at/just past a grid edge.")
@@ -179,7 +194,9 @@ def main():
     # One sampler per env (all identical mixed aimed/uniform; the StrokeExecutor itself
     # is already vectorized across envs). Each draws independent strokes.
     samplers = [StrokeSampler(rng, aimed_frac=args.aimed_frac, push_max=args.push_max,
-                              start_margin=args.start_margin)
+                              start_margin=args.start_margin,
+                              aim_push_range=(args.aim_push_min, args.aim_push_max),
+                              aim_offset_sd=args.aim_offset_sd)
                 for _ in range(N)]
     T = args.episode_len
 
@@ -202,6 +219,8 @@ def main():
             "action_repr": "planar_stroke_start_disp_grid_meters",  # [x_start, y_start, dx, dy]
             "img_hw": IMG_HW, "sampling": "mixed", "aimed_frac": args.aimed_frac,
             "push_max": args.push_max, "start_margin": args.start_margin,
+            "aim_push_range": [args.aim_push_min, args.aim_push_max],
+            "aim_offset_sd": args.aim_offset_sd,
             "num_envs": args.num_envs, "stroke_max_steps": args.stroke_max_steps, "task_id": args.task_id,
             "render_mode": args.render_mode, "spp": args.spp, "ep_pad": EP_PAD,
             "sign_palette": [name for name, _ in SIGN_PALETTE],  # sign_colors.pth indexes this
@@ -252,9 +271,11 @@ def main():
                 ep_count += 1
 
             elapsed = time.perf_counter() - t0
-            eta = elapsed / ep_count * (target - ep_count)
-            print(f"[collect] {ep_count}/{target} episodes (batch {b+1}/{n_batches})  "
-                  f"{elapsed/60:.1f}m elapsed, ETA {eta/60:.1f}m")
+            rate = ep_count / elapsed if elapsed > 0 else 0.0          # episodes / sec
+            eta = (target - ep_count) / rate if rate > 0 else 0.0      # seconds to go
+            finish = time.strftime("%a %H:%M", time.localtime(time.time() + eta))  # projected wall-clock done
+            print(f"[collect] {ep_count}/{target} eps (batch {b+1}/{n_batches})  "
+                  f"elapsed {elapsed/3600:.2f}h  ETA {eta/3600:.2f}h  ({rate:.2f} ep/s, done ~{finish})")
             if ep_count - last_saved >= args.save_every:
                 save_arrays()
                 last_saved = ep_count

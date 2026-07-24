@@ -75,6 +75,7 @@ class ProbeRegistry:
 
     def __init__(self, manifest=_DEFAULT_MANIFEST, device="cpu", root=_REPO):
         self.device = device
+        self.root = Path(root)
         with open(manifest, "r", encoding="utf-8") as f:   # YAML has non-ascii (em dashes); container default is ascii
             spec = yaml.safe_load(f) or {}
         self.probes = {}
@@ -85,6 +86,17 @@ class ProbeRegistry:
             if not path.is_absolute():
                 path = Path(root) / path
             self.probes[entry["name"]] = Probe(entry["name"], path, device=device)
+
+    def set_probe(self, name, path):
+        """Force probe `name` to (re)load from `path` (absolute or repo-relative), replacing the
+        manifest entry. TIES the legislation cube_position probe to the planner's probe
+        (objective.pos_probe_path) so perception used for law enforcement physically cannot differ
+        from perception used for planning -- one CLI knob, no silent mismatch (see plan.py). The
+        probe's kind/source are read from its own .pth."""
+        p = Path(path)
+        if not p.is_absolute():
+            p = self.root / p
+        self.probes[name] = Probe(name, p, device=self.device)
 
     def by_source(self, source):
         return {n: p for n, p in self.probes.items() if p.source == source}
