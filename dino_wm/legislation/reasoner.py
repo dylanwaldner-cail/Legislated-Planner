@@ -171,15 +171,21 @@ class LegislativeReasoner:
         # RELOADS the 5 engine .asp files from disk + re-grounds the whole theory on EVERY call.
         self._cache = {}
 
-    def _solve(self, facts, predicates):
-        """Run the DDL engine on theory + the given ground facts; return the first answer
-        set's atoms whose predicate name is in `predicates`, grouped by name (as Symbols)."""
+    def _ground(self, facts):
+        """Build + ground a clingo Control over (engine files + theory + the given ground facts).
+        Shared by _solve (filtered verdict query) and solve_all (full-trace query)."""
         ctl = clingo.Control(["0", "--warn=no-atom-undefined"])
         for ef in _ENGINE_FILES:
             ctl.load(str(self.ddl_root / ef))
         ctl.add("base", [], self.theory_asp)
         ctl.add("base", [], "".join(f"fact({lit})." for lit in facts))
         ctl.ground([("base", ())])
+        return ctl
+
+    def _solve(self, facts, predicates):
+        """Run the DDL engine on theory + the given ground facts; return the first answer
+        set's atoms whose predicate name is in `predicates`, grouped by name (as Symbols)."""
+        ctl = self._ground(facts)
         res = {p: [] for p in predicates}
         for model in ctl.solve(yield_=True):
             for sym in model.symbols(atoms=True):
@@ -187,6 +193,20 @@ class LegislativeReasoner:
                     res[sym.name].append(sym)
             break  # determinate theory + fixed facts -> single answer set
         return res
+
+    def solve_all(self, facts):
+        """FULL engine trace: run the DDL engine on theory + facts and return EVERY atom of the
+        (single) answer set, grouped by predicate name -> sorted list of atom strings. Unlike
+        derive()/assess(), nothing is filtered -- this exposes the whole derivation (applicable,
+        discarded, defeated, rebutted, obligation(R,X,N), violation, ...) so a law can be traced
+        from input facts through defeat/superiority to the deontic verdict. Used by engine_trace."""
+        ctl = self._ground(facts)
+        out = {}
+        for model in ctl.solve(yield_=True):
+            for sym in model.symbols(atoms=True):
+                out.setdefault(sym.name, []).append(str(sym))
+            break  # determinate theory + fixed facts -> single answer set
+        return {k: sorted(v) for k, v in out.items()}
 
     def derive(self, facts, predicates=None):
         """General query. `facts`: ground literals true in the (perceived/predicted) state.

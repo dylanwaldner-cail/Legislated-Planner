@@ -6,7 +6,7 @@
 
 probes:
   - name: cube_position          # continuous cube (x,y) in meters   [regression, encoded-only]
-    path: probes/weights/pos_enc_pred1.pth   # FALLBACK default only: at plan time plan.py OVERRIDES this with
+    path: probes/weights/cube_pos_encoded.pth   # FALLBACK default only: at plan time plan.py OVERRIDES this with
     enabled: true                            # objective.pos_probe_path, so legislation & planner ALWAYS share one probe (no mismatch).
 
   - name: cube_position_pred     # cube (x,y) read off predicted latents   [regression, predicted]
@@ -14,12 +14,18 @@ probes:
     enabled: false               # the 1-5 mix was a wash at h<=2 (chaining diag); enable when retrained per-horizon
 
   - name: cube_cells             # per-cell occupancy, 9-d multi-label   [multilabel, encoded]
-    path: probes/weights/probe_cube_cells.pth
-    enabled: true                # trained (macro-F1 0.975); used by the legislation CellConstraint
+    path: probes/weights/legacy/probe_cube_cells.pth
+    enabled: false               # OUTDATED — legislation now uses the position probe + privileged cell geometry
+                                 # (probe_cube_cells.py still provides swept_cells/gm helpers). Weights moved to legacy/.
 
   - name: sign_color             # stop-sign colour, 4-class {white,red,yellow,green}   [classification, encoded]
-    path: probes/weights/probe_sign_color.pth
-    enabled: false               # gate: 100% held-out acc. Train+save: probe_sign_color.py --save_path probes/weights/probe_sign_color.pth ; flip when saved
+    path: probes/weights/probe_sign_color.pth   # RETRAIN on the current data (isaaclab_stroke_5k) — the OLD probe_sign_color.pth
+                                 # (now in probes/weights/legacy/) was pre-refactor. Encoded/WM-independent, but must match the
+                                 # current env's sign rendering. Train+save:
+                                 #   probe_sign_color.py --data_dir data/isaaclab_stroke_5k --save_path probes/weights/probe_sign_color.pth
+    enabled: true                # ENABLED 2026-08-03: held-out balanced_acc 1.0 (probe_sign_color.pth.metrics.json,
+                                 # 4-class, current shift025 data) clears the >=95% gate. Required by the sign-change
+                                 # experiment (experiments/sign_change/) — sign(...) laws are DORMANT until enabled.
 
 
   # - name: cube_cells_pred      # per-cell occupancy on predicted latents   [multilabel, predicted]

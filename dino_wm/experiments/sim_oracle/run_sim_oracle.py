@@ -32,11 +32,14 @@ for p in (str(_HERE), str(_REPO)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+import provenance
+
 from phys_env import PhysGridEnv
 from sim_rrt import SimOracleRRT
 from legislation.reasoner import LegislativeReasoner
 from legislation.grounding import gm
 from planning.planning_metrics import build_eval_metrics
+from probes.probe_cube_cells import CUBE_HALF
 
 _CUBE_XY = slice(18, 20)
 
@@ -75,7 +78,24 @@ def main():
                     "one GPU; memory is free at B=64). 1 = sequential. Try 8-32 (env count = K*B).")
     ap.add_argument("--steer_cone_deg", type=float, default=90.0,
                     help="push-direction cone around the bearing to target (90 = WM-RRT parity; 360 = uniform A/B)")
+    ap.add_argument("--cushion", type=float, default=0.0,
+                    help="keep-clear MARGIN delta (m) added to the illegal cell: the planner keeps the cube "
+                    "footprint delta beyond the true cell (cube_half -> CUBE_HALF+delta in the Constraint), "
+                    "while the METRIC still scores the true cell. delta=0 = no cushion (the razor-edge arm "
+                    "where jitter/batch-noise/tight-cornering graze). Sweep {0,0.02,0.03,0.04,0.05} to find "
+                    "the knee: max swept-abidance before success drops (too big => no legal route past cell 4).")
+    ap.add_argument("--push_min", type=float, default=0.05, help="per-stroke cube-travel MIN (m); lower = finer")
+    ap.add_argument("--push_max", type=float, default=0.09, help="per-stroke cube-travel MAX (m)")
+    ap.add_argument("--no_clamp", action="store_true",
+                    help="drop the training-range action clamp so finer strokes (push_min<0.05) are not "
+                    "clipped back up. Use WITH --push_min 0.03 to test the granularity hypothesis; note this "
+                    "leaves the WM's training distribution, so it's a CEILING probe, not a WM-comparison.")
     ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--grid_away_shift", type=float, default=None,
+                    help="GEOMETRY INTERVENTION (m): override the robot-base away-from-grid shift for THIS "
+                    "oracle run only, WITHOUT editing the shared cfg. None (default) = the cfg's current "
+                    "shift (0.025 -> base x=-0.475). 0.0 = the pre-shift -0.45 geometry. base_x = -0.45 - shift. "
+                    "Use to reproduce a pre-shift ceiling or A/B the shift's effect on reachability.")
     ap.add_argument("--out", default="results/jul22/oracle_sim",
                     help="output DIR: writes <out>/<pair>/scenario_<i>/eval_metrics.json (FULL per-eval "
                     "dict, eval_sweep layout -> drop-in for the diagnostics/plots) + <out>/summary.json. "
@@ -91,12 +111,18 @@ def main():
     _a = torch.load(Path(args.template) / "actions.pth").float().reshape(-1, 4)
     action_min = _a.min(dim=0).values.numpy(); action_max = _a.max(dim=0).values.numpy()
 
+    if args.no_clamp:                                                   # finer-stroke probe: don't clip to training range
+        action_min = action_max = None
     reasoner = LegislativeReasoner(db_path=args.db_path) if args.db_path else LegislativeReasoner()
     B = args.num_envs; K = max(1, args.batch_scenarios)
-    env = PhysGridEnv(num_envs=K * B, device=args.device, stroke_max_steps=args.stroke_max_steps)  # K*B envs
+    env = PhysGridEnv(num_envs=K * B, device=args.device, stroke_max_steps=args.stroke_max_steps,
+                      grid_away_shift=args.grid_away_shift)  # K*B envs
     rrt = SimOracleRRT(env, reasoner, mode=args.mode, batch_size=B,
                        max_samples=args.max_samples, action_min=action_min, action_max=action_max,
+                       push_min=args.push_min, push_max=args.push_max, cube_half=CUBE_HALF + args.cushion,
                        steer_cone_deg=args.steer_cone_deg, patience=args.patience, device=args.device)
+    print(f"[sim-oracle] cushion delta={args.cushion:.3f} (cube_half {CUBE_HALF:.3f}->{CUBE_HALF+args.cushion:.3f}) "
+          f"| push=[{args.push_min},{args.push_max}] | clamp={'OFF' if args.no_clamp else 'training-range'}", flush=True)
 
     # Flatten all (pair, scenario) so the batched runner can pack K at a time (a chunk may span pairs --
     # fine, run_batch grounds goal cell + constraint per scenario).
@@ -169,11 +195,15 @@ def main():
         "path_efficiency_mean": float(np.mean(acc["path_efficiency"])) if acc.get("path_efficiency") else None,
         "n_steps_mean": float(np.mean(acc["n_steps"])) if acc.get("n_steps") else None,
         "max_samples": args.max_samples,
+        "cushion": args.cushion,
+        "grid_away_shift": env.grid_away_shift,   # geometry provenance (see the silent-cfg-shift bug)
+        "robot_base_x": env.robot_base_x,
     }
     print("[sim-oracle] SUMMARY:", json.dumps(summary, indent=2))
     if args.out:
         outdir = Path(args.out); outdir.mkdir(parents=True, exist_ok=True)
         (outdir / "summary.json").write_text(json.dumps({"summary": summary, "records": records}, indent=2))
+        provenance.write(outdir, __file__, args=args)
         print(f"[sim-oracle] wrote {outdir}/summary.json + per-scenario eval_metrics.json under {outdir}/")
 
 

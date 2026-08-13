@@ -1,0 +1,112 @@
+"""Positive-obligation -> planner target: the small switch that makes an obligation SELECT a goal image.
+
+A positive obligation ([O]in_cell(k), or [O]in_yellow_cell -> {3,5}) is an ACHIEVEMENT goal, not a
+prohibition, so it maps onto the planner OBJECTIVE, not the pruning constraint. The planner already
+steers toward a goal image: goal image -> encode -> position probe -> target xy -> RRT steers there.
+This just swaps WHICH goal image feeds that same pipeline: when an obligation is live, feed the
+obligated cell's centered goal image (from the goal-cell bank, scripts/gen_goal_cell_bank.py) instead
+of the task goal. Goal-image-as-subgoal has precedent in hierarchical latent world models (HWM).
+
+Nothing here is new machinery -- it is one substitution of the objective's target, re-evaluated each
+MPC step (so it tracks a sign flip / a discharged obligation automatically). Discharge is temporal:
+once the cube has been in an obligated cell (visited(k) in the ledger) the obligation is satisfied and
+the target reverts to the real goal.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import torch
+
+from utils import move_to_device
+from probes.probe_cube_position import gm
+
+_YELLOW_CELLS = frozenset(k for k in range(gm.N_CELLS)
+                          if gm.CELL_COLORS[k // gm.N_COLS][k % gm.N_COLS] == "yellow")
+
+
+class GoalBank:
+    """The 9 centered goal images (one per cell) + their encoded target, and the obligation->cell switch.
+
+    Load the bank dir (scripts/gen_goal_cell_bank.py output); call encode() once with the planner's
+    wm / preprocessor / position_probe to get, per cell k: z[k] (goal latent) and pos[k] (probed target
+    xy, derived EXACTLY like the task goal so RRT's goal_tol compares like-with-like)."""
+
+    def __init__(self, bank_dir):
+        d = Path(bank_dir)
+        self.states = torch.load(d / "states.pth").float()                 # (9, 31)
+        self.proprio = torch.load(d / "proprio.pth").float()               # (9, 18)
+        self.n = self.states.shape[0]
+        self.visual = torch.stack([torch.load(d / "obses" / f"cell_{k:02d}.pth")
+                                   for k in range(self.n)])                 # (9, H, W, 3) uint8
+        self.z = None          # (9, P, D) encoded goal latents (per cell) -- filled by encode()
+        self.pos = None        # (9, 2) probed target xy                    -- filled by encode()
+
+    @torch.no_grad()
+    def encode(self, wm, preprocessor, position_probe, device):
+        """Encode all 9 goal images the SAME way the task goal is encoded (obs T=1 -> encode -> [:,-1]),
+        then read the target xy off the position probe. Idempotent; run once per episode/planner."""
+        obs = {"visual": self.visual.unsqueeze(1),                         # (9, 1, H, W, 3)
+               "proprio": self.proprio.unsqueeze(1)}                       # (9, 1, 18)
+        trans = move_to_device(preprocessor.transform_obs(obs), device)
+        self.z = wm.encode_obs(trans)["visual"][:, -1]                     # (9, P, D)
+        self.pos = position_probe(self.z).detach().cpu().numpy()           # (9, 2)
+        return self
+
+    @staticmethod
+    def obligation_targets(obligations):
+        """Each positive POSITIONAL obligation -> the SET of cells that satisfies it, as a LIST of sets
+        (one per obligation) so the disjunction (any-one-satisfies) is preserved for discharge:
+          in_cell(k) / passed_through(k) -> {k};   in_yellow_cell -> the yellow cells {3,5}.
+        Non-positional obligations (off_grid, moving, exit_cell...) map to no target and are skipped."""
+        targets = []
+        for name, args in (obligations or []):
+            if name in ("in_cell", "passed_through") and args:
+                try:
+                    targets.append({int(args[-1])})
+                except (ValueError, TypeError):
+                    pass
+            elif name == "in_yellow_cell":
+                targets.append(set(_YELLOW_CELLS))
+        return targets
+
+    @staticmethod
+    def obligated_cells(obligations):
+        """Flattened union of every obligated cell -- for display/logging only (the disjunction
+        structure needed for steering/discharge lives in obligation_targets)."""
+        out = set()
+        for t in GoalBank.obligation_targets(obligations):
+            out |= t
+        return out
+
+    def waypoint(self, obligations, visited_cells, cur_pos, goal_cell):
+        """The obligated WAYPOINT cell to steer toward, or None (use the real goal). Handles each
+        obligation's disjunction SEPARATELY -- an obligation is skipped when:
+          - the real GOAL cell already satisfies it (goal in its set) -> the objective handles it, no
+            waypoint (so a live goal obligation in_cell(goal) never overrides the real goal), or
+          - the cube has already been in a satisfying cell (visited -> discharged, temporal).
+        Of the obligations still unsatisfied, steer to the single NEAREST cell (min probed-target
+        distance from the current cube). Swap `min` for random.choice to pick a random yellow cell."""
+        visited = set(visited_cells)
+        cur = np.asarray(cur_pos)
+        cands = []
+        for tset in self.obligation_targets(obligations):
+            if goal_cell in tset or (tset & visited):
+                continue                                          # goal satisfies it, or already discharged
+            cands.append(min(tset, key=lambda k: float(np.linalg.norm(cur - self.pos[k]))))
+        if not cands:
+            return None
+        return min(cands, key=lambda k: float(np.linalg.norm(cur - self.pos[k])))
+
+
+def visited_cells_from_ledger(ledger):
+    """Ledger -> set of cell ints the cube has occupied (visited(k) facts). Encoded-executed history only."""
+    out = set()
+    for f in ledger.derived_facts():                      # 'visited(3)' -> 3
+        if f.startswith("visited(") and f.endswith(")"):
+            try:
+                out.add(int(f[len("visited("):-1]))
+            except ValueError:
+                pass
+    return out

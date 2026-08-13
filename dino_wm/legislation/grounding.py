@@ -7,8 +7,10 @@ not in DDL (which can't do continuous geometry) and not in env/planning (never i
 Goal: maximize the normatively-relevant facts up front; the reasoner/laws decide what to use.
 
 Each derived predicate is its OWN method (add a method per case we care about). Facts are
-cube-indexed: predicate(cube, cell). Composite predicates (e.g. stroke overlap) use the
-continuous position probe to SUPPLEMENT the discrete cell probe.
+cell-indexed: predicate(cell) -- the domain is single-cube and the whole law layer is 1-ary, so no
+subject term is emitted (a multi-cube extension would reintroduce predicate(cube, cell) HERE and in
+the laws). Composite predicates (e.g. stroke overlap) use the continuous position probe to
+SUPPLEMENT the discrete cell probe.
 
     from probes.registry import ProbeRegistry
     from legislation.grounding import Grounder
@@ -17,7 +19,7 @@ continuous position probe to SUPPLEMENT the discrete cell probe.
     out = {}
     out.update(reg.forward(enc_tokens,  source="encoded"))     # cube_cells, cube_position
     out.update(reg.forward(pred_tokens, source="predicted"))   # cube_position_pred (end of stroke)
-    facts = Grounder(out).ground()                             # ['in_cell(cube,4)', 'passed_through(cube,1)', ...]
+    facts = Grounder(out).ground()                             # ['in_cell(4)', 'passed_through(1)', ...]
     LegislativeReasoner().assess(facts)
 """
 from __future__ import annotations
@@ -79,27 +81,64 @@ class Grounder:
     probe_outputs: dict {probe_name: output} from the probe registry (merge the encoded and
         predicted passes into one dict). Methods read the keys they need and no-op if absent."""
 
-    def __init__(self, probe_outputs, cube_names=("cube",), cube_half=CUBE_HALF, occ_thresh=0.5):
+    def __init__(self, probe_outputs, cube_names=("cube",), cube_half=CUBE_HALF, occ_thresh=0.5,
+                 gt_cube_xy=None):
         self.out = dict(probe_outputs)
         self.cube_names = cube_names
         self.cube_half = cube_half
         self.occ_thresh = occ_thresh
+        self.gt_cube_xy = gt_cube_xy    # env GROUND-TRUTH cube xy (authority) -> occupies(); None => probe-only
         self.facts = set()
 
-    # --- atomic: resting per-cell occupancy from the cell-occupancy probe ---
-    def in_cell(self, key="cube_cells"):
-        """cube_cells probe (per-cell sigmoid) -> in_cell(cube, c) for occupied cells."""
+    # --- atomic: resting per-cell occupancy ---
+    def in_cell(self, key="cube_cells", pos_key="cube_position"):
+        """in_cell(c) for every cell the cube's resting footprint occupies. PREFERS the cell-occupancy
+        probe (per-cell sigmoid) if present -- but that probe is retired (probes.yaml: OUTDATED), so the
+        LIVE path derives occupancy from the continuous POSITION probe + static cell geometry: the
+        footprint (center +/- cube_half) overlaps cell c iff |x-cx| < CELL/2+cube_half and
+        |y-cy| < CELL/2+cube_half (edges included) -- the SAME predicate constraint.py enforces
+        (_footprint_in_cell) and the metric scores, so grounded facts and enforcement agree. Multilabel:
+        a boundary-hugging cube can be in_cell of two neighbours at once (feeds visited() / R7b taint)."""
         occ = self.out.get(key)
-        if occ is None:
+        if occ is not None:                                            # legacy cell-occupancy probe (if ever re-enabled)
+            for _cube, row in zip(self.cube_names, _as_cube_rows(occ)):  # single-cube domain -> emit 1-ary
+                for c in np.where(row > self.occ_thresh)[0]:
+                    self.facts.add(f"in_cell({int(c)})")
             return
-        for cube, row in zip(self.cube_names, _as_cube_rows(occ)):
-            for c in np.where(row > self.occ_thresh)[0]:
-                self.facts.add(f"in_cell({cube},{int(c)})")
+        pos = self.out.get(pos_key)                                   # live path: position probe + geometry
+        if pos is None:
+            return
+        H = gm.CELL / 2.0 + self.cube_half
+        for _cube, xy in zip(self.cube_names, _as_cube_rows(pos)):     # single-cube domain -> emit 1-ary
+            for c in range(gm.N_CELLS):
+                cx, cy = gm.cell_center(c)
+                if abs(float(xy[0]) - cx) < H and abs(float(xy[1]) - cy) < H:
+                    self.facts.add(f"in_cell({int(c)})")
+
+    # --- authority: GROUND-TRUTH cell occupancy (env cube position, NOT the perception probe) ---
+    def occupies(self):
+        """occupies(c) for every cell the cube's TRUE FOOTPRINT overlaps, from the env's ground-truth cube
+        position (set via LawEvaluator.set_gt_cube) -- NOT the probe. The SIGN is an external control signal
+        (part of the env), so its constitutive flip (R7 yellow->green, R7b visited(4)->red) is adjudicated on
+        TRUTH: a probe position error must never fabricate a permission or a taint. FOOTPRINT (center +/-
+        cube_half) overlap -- the SAME geometry as in_cell() / the swept abidance metric, so the sign taint
+        and the metric agree on "entered cell 4" (a footprint graze of 4, center or not, taints the history).
+        MULTILABEL: a boundary-hugging cube occupies two neighbours at once (feeds visited() / R7b taint).
+        No-op if no GT position was provided (sign laws stay dormant); the probe-derived in_cell() is
+        untouched and still drives the agent's prohibition + planning."""
+        if self.gt_cube_xy is None:
+            return
+        xy = np.asarray(self.gt_cube_xy, dtype=float).reshape(-1)[:2]
+        H = gm.CELL / 2.0 + self.cube_half                             # footprint half-extent (matches in_cell)
+        for c in range(gm.N_CELLS):
+            cx, cy = gm.cell_center(c)
+            if abs(float(xy[0]) - cx) < H and abs(float(xy[1]) - cy) < H:
+                self.facts.add(f"occupies({int(c)})")
 
     # --- composite: cells the cube SWEEPS over during the stroke (start obs -> predicted end) ---
     def stroke_overlap(self, start_key="cube_position", end_key="cube_position_pred"):
         """position probe at the stroke START (encoded obs) + END (predicted latent) ->
-        passed_through(cube, c) for every cell the footprint crosses along the stroke. Catches
+        passed_through(c) for every cell the footprint crosses along the stroke. Catches
         mid-stroke transit invisible to the boundary-only occupancy. Kept DISTINCT from in_cell
         so the rest-vs-transit distinction survives; a DDL constitutive rule can union them
         (e.g. touched(C) :- in_cell(C); touched(C) :- passed_through(C)) if a law wants that."""
@@ -107,9 +146,9 @@ class Grounder:
         if c0 is None or c1 is None:
             return
         c0, c1 = _as_cube_rows(c0), _as_cube_rows(c1)
-        for i, cube in enumerate(self.cube_names):
+        for i, _cube in enumerate(self.cube_names):                     # single-cube domain -> emit 1-ary
             for c in np.where(swept_cells(c0[i], c1[i], self.cube_half))[0]:
-                self.facts.add(f"passed_through({cube},{int(c)})")
+                self.facts.add(f"passed_through({int(c)})")
 
     # --- atomic: sign colour from the sign-colour classifier (scene fact for conditional laws) ---
     def sign_color(self, key="sign_color", names=("white", "red", "yellow", "green")):
@@ -136,6 +175,7 @@ class Grounder:
     def ground(self):
         """Run every grounder method and return the sorted DDL fact list."""
         self.in_cell()
+        self.occupies()
         self.stroke_overlap()
         self.sign_color()
         return sorted(self.facts)

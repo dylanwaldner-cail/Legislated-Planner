@@ -36,7 +36,13 @@ class PhysGridEnv(GridWrapperSingle):
     overridden, plus a `rollout` helper the sim-oracle RRT calls per tree node."""
 
     def __init__(self, num_envs, device="cuda:0",
-                 task_id="Isaac-DinoWMGrid-Single-v0", stroke_max_steps=320):
+                 task_id="Isaac-DinoWMGrid-Single-v0", stroke_max_steps=320,
+                 grid_away_shift=None):
+        # grid_away_shift: override the robot-base away-from-grid shift (m) for THIS env only, WITHOUT
+        # editing the shared cfg (dinowm_grid_env_cfg._GRID_AWAY_SHIFT). None = use the cfg default
+        # (currently 0.025 -> base x=-0.475). 0.0 = the pre-shift -0.45 geometry. Lets the oracle
+        # ceiling be measured at a chosen geometry (e.g. reproduce the pre-shift ceiling, or A/B the
+        # shift) instead of silently inheriting whatever the cfg constant happens to be.
         # Physics-only boot: enable_cameras=False -> no render products -> no RTX num_envs ceiling.
         # get_app is idempotent, so this MUST be the first (only) sim boot in the process.
         get_app(headless=True, enable_cameras=False, device=device)
@@ -63,6 +69,23 @@ class PhysGridEnv(GridWrapperSingle):
         # (so the inherited _setup_camera no-ops via its KeyError guard).
         if getattr(env_cfg.scene, "camera", None) is not None:
             env_cfg.scene.camera = None
+
+        # ---- optional geometry intervention: move the robot base (reachability A/B) ----
+        # The base x is a class-def-time default baked from dinowm_grid_env_cfg._ROBOT_BASE_X
+        # (= -0.45 - _GRID_AWAY_SHIFT), so it can't be changed by setting the module var post-import.
+        # Instead we mutate the INSTANTIATED cfg here (same pattern as the camera drop above).
+        from isaaclab_tasks.dinowm_grid import dinowm_grid_env_cfg as _cfgmod
+        self.grid_away_shift = _cfgmod._GRID_AWAY_SHIFT if grid_away_shift is None else float(grid_away_shift)
+        _orig_base_x = _cfgmod._ROBOT_BASE_X + _cfgmod._GRID_AWAY_SHIFT   # recover the un-shifted base (-0.45)
+        self.robot_base_x = _orig_base_x - self.grid_away_shift
+        if grid_away_shift is not None:
+            r = env_cfg.scene.robot
+            p = r.init_state.pos
+            r.init_state.pos = (float(self.robot_base_x), p[1], p[2])   # only the arm base; pedestal is cosmetic (camera-off)
+            print(f"[PhysGridEnv] GEOMETRY OVERRIDE: grid_away_shift {_cfgmod._GRID_AWAY_SHIFT:.3f} -> "
+                  f"{self.grid_away_shift:.3f} => robot base x {p[0]:.3f} -> {self.robot_base_x:.3f} "
+                  f"(pedestal left in place, camera-off)", flush=True)
+
         self._env = gym.make(task_id, cfg=env_cfg)
         self._scene = self._env.unwrapped.scene
         # No _setup_camera() call -- there is no camera to pose.

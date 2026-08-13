@@ -44,6 +44,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent   # repo root (this file liv
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+import provenance
 from models.dino import DinoV2Encoder
 
 # Load grid_metadata by file path so we don't trigger env/isaaclab/__init__ (which
@@ -197,6 +198,11 @@ def _err_percentiles(pred, true):
     def row(v):
         return "  ".join(f"p{q}={np.percentile(v, q):.4f}" for q in qs) + f"  max={v.max():.4f}"
 
+    def pcts(v):
+        out = {f"p{q}": float(np.percentile(v, q)) for q in qs}
+        out["max"] = float(v.max())
+        return out
+
     print("\n[error percentiles] (meters) — pick the constraint cushion delta off the PER-AXIS tail")
     print(f"  bias (mean signed)  x={d[:, 0].mean():+.4f}  y={d[:, 1].mean():+.4f}   "
           "(a systematic offset — subtract it instead of cushioning it)")
@@ -250,6 +256,9 @@ def main():
     ap.add_argument("--boundary_margin", type=float, default=0.03,
                     help="m from nearest cell edge; frames closer than this are 'near-edge' (the "
                     "boundary breakdown that tests whether cell-acc loss is just edge discretization)")
+    ap.add_argument("--metrics_json", default=None,
+                    help="write results + provenance manifest JSON here; defaults to "
+                         "<save_path>.metrics.json when --save_path is set")
     ap.add_argument("--save_path", default=None,
                     help="if set, save probe weights + normalization stats here for use at "
                     "planning time (plan.py reads cube position off the WM's predicted latent)")
@@ -367,6 +376,9 @@ def main():
     print(f"\n[RESULT] L2 {l2:.4f} m (baseline {base_l2:.4f}) | MAE(x,y) ({mae[0]:.4f},{mae[1]:.4f}) | "
           f"cell-acc {cell_acc:.3f} (baseline {base_cell_acc:.3f})")
     print(f"         best test L2 during training = {min(best_l2, l2):.4f} m (optimistic — peeks at test)")
+    result_metrics = {"l2": float(l2), "mae_x": float(mae[0]), "mae_y": float(mae[1]),
+                      "cell_acc": float(cell_acc), "best_l2": float(min(best_l2, l2))}
+    pct_metrics = motion_metrics = boundary_metrics = None
     if l2 < 0.5 * base_l2 and cell_acc > base_cell_acc + 0.2:
         print("         -> cube position is cleanly decodable; the probe-objective plan is viable.")
     else:
@@ -379,7 +391,7 @@ def main():
         with torch.no_grad():
             pred = probe(Xn[te]).cpu().numpy() * ysd_np + ymu_np   # (Nte, 2) meters
 
-        _err_percentiles(pred, Y_te)                               # cushion-sizing table
+        pct_metrics = _err_percentiles(pred, Y_te)                 # cushion-sizing table (returns dict)
 
         def _bm(mask):
             n = int(mask.sum())
@@ -405,9 +417,12 @@ def main():
         }
         print(f"\n[motion breakdown]  vel_thresh={args.vel_thresh} m/frame  "
               "(tests the arm-occludes-cube-on-toward-self-push hypothesis)")
+        motion_metrics = {}
         for name, m in buckets.items():
-            n, l2, ca = _bm(m)
-            print(f"  {name:<23s} n={n:6d}  L2={l2:.4f} m  cell-acc={ca:.3f}")
+            n, l2b, ca = _bm(m)
+            motion_metrics[name] = {"n": int(n), "l2": None if np.isnan(l2b) else float(l2b),
+                                    "cell_acc": None if np.isnan(ca) else float(ca)}
+            print(f"  {name:<23s} n={n:6d}  L2={l2b:.4f} m  cell-acc={ca:.3f}")
 
         # (2) boundary breakdown — are the cell-acc errors just edge discretization of an
         # otherwise-accurate position? Distance from true xy to the nearest grid line.
@@ -423,6 +438,8 @@ def main():
               "(tests whether cell-acc loss is just edge discretization)")
         print(f"  interior  (> margin)  n={n_far:6d}  cell-acc={ca_far:.3f}")
         print(f"  near-edge (<= margin) n={n_near:6d}  cell-acc={ca_near:.3f}")
+        boundary_metrics = {"interior": {"n": int(n_far), "cell_acc": None if np.isnan(ca_far) else float(ca_far)},
+                            "near_edge": {"n": int(n_near), "cell_acc": None if np.isnan(ca_near) else float(ca_near)}}
 
     if args.save_path:
         torch.save({
@@ -434,6 +451,27 @@ def main():
             "source": args.source, "pred_horizons": args.pred_horizons,  # provenance: encoded vs predicted head
         }, args.save_path)
         print(f"[save] probe + norm stats -> {args.save_path}")
+
+    metrics = {
+        "d_in": int(X.shape[1]),
+        "n_train_ep": int(len(ep_ids) - n_val), "n_test_ep": int(n_val),
+        "n_train_frames": int(train_mask.sum()), "n_test_frames": int(test_mask.sum()),
+        "baseline": {"l2": float(base_l2), "cell_acc": float(base_cell_acc)},
+        "result": result_metrics,
+    }
+    if pct_metrics is not None:
+        metrics["error_percentiles"] = pct_metrics
+    if motion_metrics is not None:
+        metrics["motion_breakdown"] = motion_metrics
+    if boundary_metrics is not None:
+        metrics["boundary_breakdown"] = boundary_metrics
+
+    mj = args.metrics_json or (args.save_path + ".metrics.json" if args.save_path else None)
+    if mj:
+        p = provenance.write(mj, "probes/probe_cube_position.py", args=args,
+                             extra={"results": metrics}, repo=_REPO_ROOT)
+        if p:
+            print(f"[metrics] results + provenance -> {p}")
 
 
 if __name__ == "__main__":

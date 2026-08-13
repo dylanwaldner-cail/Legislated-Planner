@@ -3,8 +3,9 @@
 A neurosymbolic planner: **Defeasible Deontic Logic (DDL) norms shape a world-model planner.**
 Learned probes read facts from a frozen-DINO world model, a DDL reasoner turns human-authored laws
 into obligations/prohibitions, and those verdicts prune the planner's search — so the *same*
-scenario yields a law-abiding agent (detours around a forbidden cell) or a rational one (goes
-straight through), just by toggling enforcement.
+scenario yields a **social** agent (obeys the law — detours around a forbidden cell), a **deviant**
+agent (minimizes violations — breaks the law only when detouring costs too much), or a **rational**
+agent (ignores the law — goes straight through), just by switching the enforcement `mode`.
 
 Built on DINO-WM (frozen DINOv2 + ViT predictor) over an IsaacLab single-Franka cube-pushing task.
 For the base world-model / training / dataset docs see **[DINOREADME.md](DINOREADME.md)**.
@@ -67,7 +68,7 @@ probes/                   perception — frozen-DINO latent → world facts
   probe_cube_position.py    cube (x,y) regression
   probe_cube_cells.py       per-cell occupancy + swept_cells() footprint sweep ("any part of the cube")
   probes.yaml               probe manifest
-  weights/                  trained probe .pth (probe_cube_1500 / _cells / _pred)
+  weights/                  trained probe .pth (cube-position + cell-occupancy; encoded/predicted variants)
 
 planning/                 planners over the DINO world model
   rrt.py                    closed-loop kinodynamic RRT: law footprint prune, node facts
@@ -82,7 +83,7 @@ planning/                 planners over the DINO world model
   objectives.py             probe-based cost (cube-L2 in probe space)
 
 conf/
-  plan.yaml                 legislation {enforce,facts,penalty}; scene_filter (+goal_not_in_cells);
+  plan.yaml                 legislation {mode: social|deviant|off, facts, violation_penalty, constraint_margin, db_path}; scene_filter (+goal_not_in_cells);
                             has_decoder/decoder_path (viz); tiled_camera; rrt_introspect
   planner/mpc_rrt.yaml      closed-loop RRT (MPC-wrapped)  ← DEFAULT planner (max_path≈H*=3, goal_bias=0.5)
   planner/rrt.yaml          open-loop RRT
@@ -105,23 +106,29 @@ The law in `legal_database.yaml` forbids the center cell (`[O]~in_cell(4)`). For
 direct path crosses the center:
 
 ```bash
-# social agent — obeys the law: RRT detours around cell 4  (mpc_rrt is the DEFAULT planner)
-python plan.py scene_filter.init_cell=3 scene_filter.goal_cell=5 video=true n_evals=1
+# social — obeys the law: RRT detours around cell 4  (mpc_rrt is the DEFAULT planner; mode defaults to social)
+python plan.py scene_filter.init_cell=3 scene_filter.goal_cell=5 video=true n_evals=1 legislation.mode=social
 
-# rational agent — ignores the law: goes straight through
-python plan.py scene_filter.init_cell=3 scene_filter.goal_cell=5 video=true n_evals=1 legislation.enforce=false
+# deviant — minimizes violations: crosses cell 4 only when detouring costs more than deviant_lambda
+python plan.py scene_filter.init_cell=3 scene_filter.goal_cell=5 video=true n_evals=1 legislation.mode=deviant
+
+# rational — ignores the law: goes straight through
+python plan.py scene_filter.init_cell=3 scene_filter.goal_cell=5 video=true n_evals=1 legislation.mode=off
 ```
 
 `output_final.png` (+ per-step `plan{i}.png`) show the executed sim rollout vs the decoder's
 **closed-loop re-grounded** imagination — needs `has_decoder=true` + `decoder_path=<viz decoder>`
 (both default on in `plan.yaml`).
 
-Sweep the whole matching pool (social vs rational, per init→goal pair) and write metrics + plots:
+Sweep the whole matching pool (per init→goal pair) and write metrics + plots:
 
 ```bash
 python scripts/eval_sweep.py --pairs 1:7 3:5 --batch 10 --out sweep_social -- \
-    metric_cell=4 legislation.enforce=true 'scene_filter.goal_not_in_cells=[4]'
+    metric_cell=4 legislation.mode=social 'scene_filter.goal_not_in_cells=[4]'
 ```
+
+For the head-to-head agent comparison, run a law-eval benchmark across all modes at once:
+`--law_eval <pair_dir> --modes social deviant off` (one sub-sweep per mode × init→goal pair).
 
 To change the law (forbid a different cell, add contrary-to-duty / conditional / permissive rules),
 edit **only** `legislation/legal_database.yaml` — no code changes.
@@ -134,6 +141,9 @@ edit **only** `legislation/legal_database.yaml` — no code changes.
   prunes); `wm_regrounded_eval` logs the per-step 1-step error (probe m + latent MSE) so you can watch it.
 - The prune is **footprint-based** (cube half-extent), enforced on every stroke endpoint; frame 0
   (current position) is exempt so the agent isn't frozen on the boundary it's leaving.
+- The prune footprint can be inflated by a planner-only **cushion** (`legislation.constraint_margin`,
+  meters) so the agent routes wider to stay clear despite WM/probe perception error. The metric always
+  scores reality with the true half-extent, so cushion `δ=0` is the honest baseline / ablation arm.
 - The **decoder is trained separately** (viz only — latent planning never decodes). It renders the
   imagined rollout in `output_final.png`; MPC feeds it the re-grounded per-step frames so the picture
   matches the closed-loop system rather than a misleading open-loop rollout.

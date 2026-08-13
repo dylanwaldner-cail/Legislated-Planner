@@ -12,8 +12,8 @@ hydra:
 # model to load for planning. Resolves to <cwd>/outputs/<model_name>/ (hydra.yaml
 # + checkpoints/model_<epoch>.pth). 2026-06-17 = the single-robot WM (15 epochs).
 ckpt_base_path: ./ # put absolute path here. Checkpoints will be loaded from ${ckpt_base_path}/outputs
-model_name: lg_pred_dino  # 5k-set WM, depth-12 predictor (renamed from 2026-07-16/21-06-27). Old default: reg_dino (2026-06-25/16-46-57, 1500-set depth-6)
-model_epoch: 25  # lg_pred_dino best-val checkpoint (plateau knee before overfit); reg_dino used epoch 20
+model_name: wm_5k  # canonical WM: symlink -> outputs/2026-07-26/03-21-16 (trained on data/isaaclab_stroke_5k). Legacy: outputs/legacy/{lg_pred_dino,reg_dino,5k_tight}
+model_epoch: 30  # wm_5k balanced checkpoint (val-rollout knee before late-epoch drift)
 
 # GPU for the WM + sim/renderer. HARNESS: AppLauncher derives the renderer's
 # active_gpu + physics_gpu from this, so e.g. device=cuda:7 puts rendering on GPU 7.
@@ -27,7 +27,7 @@ max_offset: 50
 # Useful when planning in a container where the repo is mounted at a different
 # prefix than during training (e.g. /workspace/dino_wm vs /newdata2/...).
 # Leave null to use the path stored in the model's hydra.yaml.
-data_path: null
+data_path: ${ckpt_base_path}/data/isaaclab_stroke_5k  # canonical; overrides the checkpoint's baked (pre-rename) path
 
 # Optional: attach a standalone-trained decoder so the evaluator renders the IMAGINED
 # rollout (top=executed sim, bottom=decoded WM prediction) into output_final.png + .mp4.
@@ -35,7 +35,9 @@ data_path: null
 # (mirrors the data_path override in plan.py). decoder_path is relative to the repo root.
 # Both null = no decoder (executed-only video). e.g.:
 #   has_decoder=true decoder_path=outputs/2026-07-08/16-26-03/checkpoints/model_20.pth
-has_decoder: true
+has_decoder: false  # LOCKED default for data collection / eval: no decoder viz, no fragile decoder load.
+                    # Opt in for the imagined-rollout video with has_decoder=true (+ decoder_path). The
+                    # decoder-free EXECUTED video (video=true) works regardless.
 decoder_path: outputs/2026-07-08/16-26-03/checkpoints/model_15.pth
 
 seed: 99
@@ -85,7 +87,13 @@ debug_dset_init: False
 # (Back-compat: `enforce: true|false` still maps to social|off if `mode` is absent.)
 legislation:
   mode: social        # social | deviant | off
+  active_lawsets: [geometric_laws]  # which law CATEGORY(ies) in the database to enforce
+                      # (geometric_laws | full_lawset). null -> the db's own default. Current default =
+                      # geometric_laws (center-cell + sign geometry). Set [full_lawset] for the R1-R10 sign runs.
   facts: [cube]
+  yellow_cells: []    # static yellow-cell ids for full_lawset (R5/R7/R7b). e.g. [3, 5] flanking the
+                      # center. Expanded to yellow_cell(Y) base facts in plan.py (int list avoids Hydra's
+                      # paren-in-override problem). [] -> no yellow cells (geometric_laws runs ignore it).
   violation_penalty: 1.0e6
   db_path: null       # null -> legislation/legal_database.yaml (geometry 1). Set to
                       # legislation/laws/geometric_2.yaml for the border-of-goal regime.
@@ -94,6 +102,11 @@ legislation:
                       # PLANNER-ONLY (metric scores reality with true cube_half), so delta=0 vs delta>0 is an
                       # honest ablation -- ALWAYS report the delta=0 arm too. Safe ceiling ~0.02 for this grid
                       # (cube_half 0.045 vs CELL/2 0.0667); delta above ~0.021 prunes the legal detour. Default 0.
+  goal_bank: null     # POSITIVE-OBLIGATION enforcement: path to a goal-cell bank (scripts/gen_goal_cell_bank.py
+                      # output, e.g. data/goal_cell_bank). When set, a live positive obligation
+                      # ([O]in_cell(k) / [O]in_yellow_cell) retargets the planner to that cell's centered
+                      # goal image as a WAYPOINT (discharged once the cube has been there). null -> obligations
+                      # are parsed but not acted on (prohibitions still enforced). See legislation/goal_bank.py.
 # Exogenous stop-sign flip during the MPC rollout (tests real-time law adaptation / deadlock).
 # `frame` = the MPC replan step at which the sign becomes `color`; before it the sign is `base_color`.
 # The flip is PERCEIVED (re-grounded each replan), so it needs the sign_color probe registered
@@ -134,7 +147,8 @@ scene_ids: null
 # Cell to SCORE entering for the law-abidance metric (eval_metrics.json), independent of the
 # scene_filter. Lets the RATIONAL agent (no constraint) still be scored on the forbidden cell, and
 # lets one metric cell apply across many init/goal pairs. null = score only the constraint's cells.
-metric_cell: null
+metric_cell: 4      # geom1 center/forbidden cell — scored for entry across ALL modes (so OFF is scored
+                    # too, not just the legislated agents). Change per law set (e.g. geom2 border-of-goal).
 
 objective:
   # HARNESS EDIT: probe-based objective (independent of create_objective_fn).
@@ -147,6 +161,6 @@ objective:
   mode: last
   probe_lambda: 1.0 # legislation P(illegal) penalty (separate probe; inert in GD, used in cem.py)
   use_probe: true # probe gives a SHARP cube-position objective (latent MSE alone barely weights the few cube patches)
-  pos_probe_path: probes/weights/pos_enc_5k.pth # encoded-only probe on 5k + lg_pred_dino (encoded floor L2 ~0.016m). Old: pos_enc_pred1.pth (both/pred-h1, reg_dino)
+  pos_probe_path: probes/weights/cube_pos_encoded.pth # canonical encoded cube-position probe (wm_5k / isaaclab_stroke_5k). Legacy probes in probes/weights/legacy/
   pos_probe_weight: 50.0 # PRIMARY. squared-L2 in m^2 (~0.03 for a 1-cell error); large so cube term dominates latent MSE (O(0.1-1))
   visual_weight: 0.1 # weak manifold regularizer only (limits probe-gaming); demoted so the cube-position probe dominates

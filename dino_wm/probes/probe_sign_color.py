@@ -35,6 +35,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent   # repo root (this file liv
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+import provenance
 from models.dino import DinoV2Encoder
 
 _DEFAULT_NAMES = ["white", "red", "yellow", "green"]  # matches collect SIGN_PALETTE order
@@ -238,6 +239,17 @@ def main():
             "names": list(names),
         }, args.save_path)
         print(f"[save] sign-color probe + norm stats -> {args.save_path}")
+        provenance.write(args.save_path + ".metrics.json", __file__, args=args, repo=_REPO_ROOT,
+                         extra={"results": {
+                             "frame_acc": float(acc), "balanced_acc": float(bal), "episode_acc": float(ep_acc),
+                             "best_frame_acc": float(max(best, acc)), "chance": float(1.0 / n_cls),
+                             "n_classes": int(n_cls), "class_names": list(names),
+                             "confusion_rows_true_cols_pred": cm.tolist(),
+                             "n_test_ep": int(n_val), "n_test_frames": int(test_mask.sum()),
+                             "enable_gate": "enable in probes.yaml (sign_color enabled:true) iff balanced_acc >= 0.95",
+                         }})
+        print(f"[metrics] results + provenance -> {args.save_path}.metrics.json  "
+              f"(balanced-acc {bal:.3f}; gate >=0.95)")
 
 
 if __name__ == "__main__":

@@ -25,7 +25,9 @@ sub_planner:
                      # branches are open-loop rollouts past the WM's capacity (garbage latents ->
                      # meaningless geometry + drift-poisoned constraint checks). MPC re-plans every
                      # step and commits only the first stroke, so far goals still solve across steps.
-  aim_back: 0.12     # standoff behind the cube (matches mpc_cem_aimed)
+  aim_back: 0.125    # standoff behind the cube. LOCKED operating point (2026-07-28): compensates the
+                     # ~0.024 m encoded-probe corner grounding bias that ate the standoff at 0.10/0.12
+                     # and froze corner-spawn scenes; validated on the off sweep (0_8 0.88->0.92). Was 0.12.
   steer_cone_deg: 90 # sample push directions within +/-45deg of the bearing to the sampled target
                      # (a stochastic steering fn) instead of blind uniform. Set 360 for the old
                      # target-agnostic uniform sampling (A/B baseline). Spread should cover the WM heading err.

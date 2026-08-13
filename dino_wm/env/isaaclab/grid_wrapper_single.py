@@ -74,6 +74,7 @@ class GridWrapperSingle:
         stroke_max_steps: int = 320,
         fast_stroke_render: bool = True,
         tiled_camera: bool = False,
+        cam_wh: tuple | None = None,
     ):
         # renderer/physics GPU follows the wrapper's device (Vulkan ignores
         # CUDA_VISIBLE_DEVICES; AppLauncher derives the active GPU from device).
@@ -100,6 +101,12 @@ class GridWrapperSingle:
         self._home_jp = None   # (N,J) reset joint config -> teleported back after each stroke (exact park)
 
         env_cfg = parse_env_cfg(task_id, device=device, num_envs=num_envs)
+        # FIGURE render (opt-in): override the WM's 224x224 camera with a high-res square so a
+        # PathTracing frame is crisp for a paper figure. None -> keep the 224x224 WM resolution
+        # (every training/eval path). Keep width==height to preserve the pinhole framing/FOV.
+        if cam_wh is not None:
+            env_cfg.scene.camera.width = int(cam_wh[0])
+            env_cfg.scene.camera.height = int(cam_wh[1])
         # EVAL speedup (opt-in): render all envs into ONE tiled render product instead of a
         # per-env Camera -> far lower RTX memory + faster -> a much higher num_envs ceiling.
         # Same 224x224 rgb + pose, so each env still sees ONLY its own frame. Data collection

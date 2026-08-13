@@ -39,10 +39,17 @@ class GridVectorEnv:
         return self._w.step(action)
 
     def set_sign_color(self, color):
-        """Recolour the octagonal rule sign at runtime. `color` is a palette NAME
-        (white|red|yellow|green) or an RGB 3-tuple. Persists across prepare/rollout (it's a
-        shader property, not part of the written physics state) -- used by the MPC sign-flip hook."""
-        rgb = SIGN_PALETTE[color] if isinstance(color, str) else color
+        """Recolour the octagonal rule sign at runtime. `color` is EITHER a single value for all envs
+        -- a palette NAME (white|red|yellow|green) or an RGB 3-tuple -- OR a per-env SEQUENCE of length
+        num_envs (palette names) so parallel evals can hold DIFFERENT signs (the DDL render-back latches
+        one eval green while another is red). Persists across prepare/rollout (a shader property, not
+        physics state) -- used by the MPC exogenous sign-flip and the DDL sign render-back."""
+        if isinstance(color, str):                                   # one name -> all envs
+            rgb = SIGN_PALETTE[color]
+        elif all(isinstance(c, str) for c in color):                # per-env names -> (N,3)
+            rgb = np.asarray([SIGN_PALETTE[c] for c in color], dtype=np.float32)
+        else:                                                        # (3,) single rgb or (N,3) per-env rgb
+            rgb = np.asarray(color, dtype=np.float32)
         self._w.set_sign_color(rgb)
 
     def prepare(self, seeds, init_states):

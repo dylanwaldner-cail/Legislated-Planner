@@ -16,7 +16,7 @@ against the probe on the ENCODED latent of the real frame (the floor, ~0.015 m).
 No sim needed: WM (frozen DINO + predictor) + probe + the .pth dataset. Run with the
 container python OR the host conda env (torch + cached dinov2 hub):
     python scripts/wm_cube_pred_check.py \
-        --model_dir outputs/reg_dino --epoch 20 \
+        --model_dir outputs/wm_5k --epoch 30 \
         --data_dir data/isaaclab_stroke_1500 --probe probes/weights/probe_cube_1500.pth
 """
 from __future__ import annotations
@@ -110,7 +110,7 @@ def probe_xy(mlp, pinfo, tokens, device):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model_dir", default="outputs/reg_dino")
+    ap.add_argument("--model_dir", default="outputs/wm_5k")
     ap.add_argument("--epoch", default="20")
     ap.add_argument("--data_dir", default="data/isaaclab_stroke_1500")
     ap.add_argument("--probe", default="probes/weights/probe_cube_1500.pth")

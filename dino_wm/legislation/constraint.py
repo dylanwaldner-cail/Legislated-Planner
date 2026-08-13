@@ -1,7 +1,7 @@
 """Translate DDL verdicts into an explicit, inspectable planning constraint.
 
 reasoner.assess(facts) returns deontic verdicts as SYMBOLS — prohibitions / obligations /
-permissions over arbitrary literals (in_cell(4), passed_through(cube,5), near(human),
+permissions over arbitrary literals (in_cell(4), passed_through(5), near(human),
 pushing_hard, ...). A Constraint turns those into a per-candidate violation check the planner
 applies.
 
@@ -29,7 +29,8 @@ _GRID_HALF = gm.GRID_HALF   # workspace half-extent (m); "off the grid" = cube c
 
 # ----------------------------------------------------------------- predicate parsing
 def parse_literal(lit):
-    """'in_cell(cube,4)' -> ('in_cell', ['cube','4']);  'pushing' -> ('pushing', [])."""
+    """'in_cell(4)' -> ('in_cell', ['4']);  'pushing' -> ('pushing', []). Multi-arg tolerated
+    (checkers read args[-1] as the cell), so a subject-carrying literal still parses."""
     m = re.match(r"^([A-Za-z_]\w*)\s*(?:\((.*)\))?\s*$", str(lit).strip())
     if not m:
         return (str(lit).strip(), [])

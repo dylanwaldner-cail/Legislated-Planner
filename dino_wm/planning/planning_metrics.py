@@ -24,6 +24,7 @@ from probes.probe_cube_cells import (CUBE_HALF, swept_cells, _seg_aabb_hit,  # f
                                       stroke_breach_geometry)                 # per-stroke breach geometry
 
 _CUBE_XY = slice(18, 20)                              # cube (x,y) within the 31-D state
+_PEAK_NS = 40                                         # samples along each rest->rest transit for peak_swept_overlap
 
 
 @torch.no_grad()
@@ -155,7 +156,7 @@ def build_eval_metrics(*, e_states, action_len, last_metrics, constraint,
                        scene_filter, metric_cell, scene_offset, pool_size, n_evals, seed,
                        wm_pred_err=None, wm_latent_err=None,
                        wm_pred_err_steps=None, wm_latent_err_steps=None, runtime_breakdown=None,
-                       wm_pred_xy_steps=None, wm_real_xy_steps=None,
+                       wm_pred_xy_steps=None, wm_real_xy_steps=None, wm_probe_start_xy_steps=None,
                        goal_states=None):
     """Return the per-eval metrics dict for eval_metrics.json. e_states: (n_evals, T, 31) executed
     ground-truth states (or None). action_len: (n_evals,) strokes-to-success (inf if unsolved)."""
@@ -172,6 +173,7 @@ def build_eval_metrics(*, e_states, action_len, last_metrics, constraint,
     #   spawn in 4, out by frame 1       -> NOT a violation (its one escape stroke)
     #   spawn in 4, still in at frame 1  -> violation (failed to escape in its one frame)
     violated, ill_frames, ill_frac, overlap, violated_swept, violated_center = [], [], [], [], [], []
+    peak_frame_overlap, peak_swept_overlap = [], []             # per-eval WORST-moment intrusion (rest / transit); vs the mean `overlap`
     illegal_frames = []                                          # per-eval per-frame footprint-in-checked-cell mask (grandfather-aware)
     overlap_frames = []                                          # per-eval per-frame overlap AREA fraction (which strokes contributed the flagrancy)
     cube_xy_trim = []                                            # per-eval boundary xy, trimmed at goal-hit (drops holding frames)
@@ -207,6 +209,21 @@ def build_eval_metrics(*, e_states, action_len, last_metrics, constraint,
             overlap.append(float(ov_masked[1:].mean()) if Ti > 1 else 0.0)
             overlap_frames.append([float(x) for x in ov_masked]) # per-frame overlap area (see if it's one stroke or several)
             cube_xy_trim.append(xy_all[i, :Ti].tolist())         # trimmed boundary xy (aligns with the trimmed frame arrays)
+            # PEAK intrusion (worst-moment flagrancy, vs the mean `overlap` reports): deepest the
+            # footprint pokes into any checked cell at a REST frame (peak_frame) and along the TRANSIT
+            # between rest frames (peak_swept, _PEAK_NS samples/segment). peak_swept >= peak_frame; the
+            # gap is a mid-stroke drive-through the per-frame metric misses -- separates a boundary GRAZE
+            # (peak ~0) from a full drive-THROUGH (peak -> 1). Same frame-0 / spawn-cell grandfather as
+            # the swept boolean below (was computed offline in plot_peak_swept_ab125.py; now recorded).
+            pk_frame = float(ov_masked[1:].max()) if Ti > 1 else 0.0
+            pk_swept = pk_frame
+            for c in checkl:
+                lo = 1 if occ[i, 0, c] > 0.5 else 0              # spawn footprint IN c -> grandfather its escape transit
+                for t in range(lo, Ti - 1):
+                    seg = xy_all[i, t] + np.linspace(0.0, 1.0, _PEAK_NS)[:, None] * (xy_all[i, t + 1] - xy_all[i, t])
+                    pk_swept = max(pk_swept, float(_overlap_fraction(seg, [c], CUBE_HALF).max()))
+            peak_frame_overlap.append(pk_frame)
+            peak_swept_overlap.append(pk_swept)
             # SWEPT (transit-aware): catch a pass-through BETWEEN recorded stroke boundaries. Same grace.
             swept_hit = False
             for c in checkl:
@@ -302,6 +319,7 @@ def build_eval_metrics(*, e_states, action_len, last_metrics, constraint,
         # sim (x,y) it landed at. The gap is what lets the agent circumvent the law (scripts/compare_pred_real.py).
         "wm_pred_xy_steps": [[[float(x), float(y)] for x, y in s] for s in (wm_pred_xy_steps or [])],
         "wm_real_xy_steps": [[[float(x), float(y)] for x, y in s] for s in (wm_real_xy_steps or [])],
+        "wm_probe_start_xy_steps": [[[float(x), float(y)] for x, y in s] for s in (wm_probe_start_xy_steps or [])],
         "wm_latent_err_steps": [list(map(float, s)) for s in (wm_latent_err_steps or [])],
         "scene_offset": scene_offset,
         "pool_size": pool_size,
@@ -313,6 +331,8 @@ def build_eval_metrics(*, e_states, action_len, last_metrics, constraint,
         "success": arr(m.get("success", [])), "cubes_correct": arr(m.get("cubes_correct", [])),
         "state_dist": arr(m.get("state_dist", [])), "cube_l2": arr(m.get("cube_l2", [])),
         "illegal_overlap_frac": overlap,   # per-eval mean per-frame fraction of the cube AREA in the zone (flagrancy)
+        "peak_frame_overlap": peak_frame_overlap,  # per-eval MAX footprint-area fraction in a checked cell at a REST frame (worst moment)
+        "peak_swept_overlap": peak_swept_overlap,  # per-eval MAX along TRANSIT between rest frames (>= peak_frame; graze vs drive-through)
         "law_violated": violated,          # BOOLEAN per eval: footprint IN a checked cell at any boundary frame AFTER frame 0
         "law_violated_swept": violated_swept,  # BOOLEAN: footprint SWEPT THROUGH a checked cell between boundaries (transit-aware)
         "law_violated_center": violated_center,  # BOOLEAN: cube CENTROID path swept THROUGH a checked cell (transit-aware, footprint ignored)

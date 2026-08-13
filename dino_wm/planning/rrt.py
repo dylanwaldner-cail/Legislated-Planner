@@ -144,7 +144,10 @@ class RRTPlanner(AimedContactCEMPlanner):
         # LEGALITY: delegated entirely to the injected Constraint (constraint.py). No constraint =
         # rational (no pruning). n_pred = full length -> the constraint sees every frame, current included.
         constraint = getattr(self, "constraint", None)
-        if constraint is not None:
+        # OFF (rational / observe-only): a Constraint may be present so the LawEvaluator can flip the
+        # EXTERNAL sign + record the ledger, but the realistic agent must NOT be pruned or steered by it
+        # -- skip the legality check so no candidate is ever marked violating (viol stays all-False).
+        if constraint is not None and getattr(self, "mode", "social") != "off":
             # skip_current=True: frame 0 is the cube's CURRENT position (context), not a prediction --
             # enforce the law on where the strokes GO, so a grazing current footprint can't freeze it.
             # actions=strokes_m -> the off_grid checker can prune strokes whose INTENDED endpoint is
@@ -244,6 +247,22 @@ class RRTPlanner(AimedContactCEMPlanner):
         # SOCIAL/off: any goal hit already returned in-loop; here nothing reached -> closest legal node.
         return min(nodes, key=lambda n: float(np.linalg.norm(n.pos - goal_cube))), nodes
 
+    def _ensure_goal_bank(self):
+        """Lazily load + encode the positive-obligation goal-cell bank (OPT-IN via self.goal_bank_path,
+        injected by plan.py from legislation.goal_bank). Returns the GoalBank or None. Encoded once with
+        THIS planner's wm/preprocessor/position-probe, so its target xy matches root_cube/goal_cube."""
+        path = getattr(self, "goal_bank_path", None)
+        if not path:
+            return None
+        bank = getattr(self, "_goal_bank", None)
+        if bank is None:
+            from legislation.goal_bank import GoalBank
+            bank = GoalBank(path).encode(self.wm, self.preprocessor,
+                                         self.objective_fn.position_probe, self.device)
+            self._goal_bank = bank
+            print(f"[rrt oblige] goal-cell bank loaded from {path} ({bank.n} cells)")
+        return bank
+
     def plan(self, obs_0, obs_g, actions=None):
         _tp0 = time.perf_counter()          # RUNTIME: total plan() wall-clock (RRT search + legislation)
         trans_obs_0 = move_to_device(self.preprocessor.transform_obs(obs_0), self.device)
@@ -281,7 +300,27 @@ class RRTPlanner(AimedContactCEMPlanner):
                 self.constraint = law_fn.observe(z_root[e:e + 1], e)
                 self._t_reason += time.perf_counter() - _tr
                 print(f"  [rrt law e{e}] facts {law_fn.ledger(e).last_facts()} -> {self.constraint}")
-            final_node, nodes = self._build_tree(trans_obs_0, e, root_cube[e], goal_cube[e])
+            # POSITIVE OBLIGATION -> objective switch: if a live obligation names a cell (and the real
+            # goal doesn't already satisfy it, and it isn't discharged), steer this eval toward that
+            # cell's goal image instead of the task goal (a waypoint). Same pipeline, swapped target;
+            # re-evaluated every MPC step, so it tracks sign flips + discharges. Opt-in (bank is None else).
+            tgt_cube = goal_cube[e]
+            wp = None                                # obligation waypoint cell this eval/step (None = real goal)
+            bank = self._ensure_goal_bank()
+            if (bank is not None and getattr(self, "constraint", None) is not None and law_fn is not None
+                    and getattr(self, "mode", "social") != "off"):   # off: never steer toward an obligation waypoint
+                from legislation.goal_bank import visited_cells_from_ledger
+                _obl = list(getattr(self.constraint, "obligations", []) or [])
+                wp = bank.waypoint(_obl, visited_cells_from_ledger(law_fn.ledger(e)),
+                                   root_cube[e], int(gm.which_cell(goal_cube[e])))
+                if wp is not None:
+                    tgt_cube = bank.pos[wp]
+                    # SELECTED: greppable marker in plan.log + recorded in the ledger commit below.
+                    print(f"[OBLIGE] step {self._step} e{e}: obligation cells "
+                          f"{sorted(bank.obligated_cells(_obl))} -> steering to WAYPOINT cell {wp} "
+                          f"({tgt_cube[0]:+.3f},{tgt_cube[1]:+.3f}) instead of goal cell "
+                          f"{int(gm.which_cell(goal_cube[e]))}")
+            final_node, nodes = self._build_tree(trans_obs_0, e, root_cube[e], tgt_cube)
             path, final = final_node.prefix, final_node.pos
             # POST-HOC: record the agent's INTENT (committed first stroke + predicted route) in the
             # ledger. Analysis only -- never read during planning; compared offline against the next
@@ -293,6 +332,7 @@ class RRTPlanner(AimedContactCEMPlanner):
                     "predicted_final_cell": int(final_node.cell),
                     "predicted_final_pos": [float(final[0]), float(final[1])],
                     "path_len": int(len(path)),
+                    "obligation_waypoint": wp,   # cell the positive-obligation switch steered to (None = real goal)
                 })
             self._trees.append(nodes)
             paths.append(path)

@@ -305,7 +305,15 @@ class PlanWorkspace:
         target = getattr(self.planner, "sub_planner", self.planner)  # MPC -> sub_planner
         target.mode = mode                                 # how the planner USES the constraint (prune vs rank)
         self.planner.sign_flip = self.cfg_dict.get("sign_flip")   # exogenous sign-flip schedule (MPC loop reads it)
-        if mode in ("social", "deviant"):
+        # OBSERVE-ONLY OFF: the SIGN is an EXTERNAL world authority adjudicated on GROUND TRUTH (R7/R7b),
+        # so when an exogenous sign exists (sign_flip configured) it must flip for the realistic agent too.
+        # Build the LawEvaluator in off as well -- it perceives, flips the sign, and dumps the ledger (so
+        # off gets the SAME gt_banned abidance metric as social/deviant) -- but the planner IGNORES the
+        # verdict entirely (no prune / reweight / obligation-steer; gated on mode=="off" in rrt.py). With
+        # no sign_flip, off stays truly rational (no evaluator, no ledger). See the mode gates in rrt.py.
+        _sf = self.cfg_dict.get("sign_flip") or {}
+        _observe_off = (mode == "off") and (_sf.get("frame") is not None)
+        if mode in ("social", "deviant") or _observe_off:
             from probes.registry import ProbeRegistry
             from legislation.reasoner import LegislativeReasoner
             from legislation.constraint import Constraint
@@ -321,8 +329,19 @@ class PlanWorkspace:
                 reg.set_probe("cube_position", _pos_path)
                 print(f"[legislation] cube_position tied to planner probe -> {_pos_path}")
             base_facts = list(leg.get("facts", ["cube"]))
+            # Static yellow-cell designations (full_lawset R5/R7/R7b guard on yellow_cell(Y)). Kept as a
+            # plain int-list config key (not literal facts) so Hydra never has to parse `yellow_cell(3)`
+            # -- the parens break its override grammar. Grounding stays otherwise probe-derived.
+            base_facts += [f"yellow_cell({int(c)})" for c in (leg.get("yellow_cells") or [])]
             _db = leg.get("db_path")                       # null -> geometry 1 (legal_database.yaml)
-            reasoner = LegislativeReasoner(db_path=_db) if _db else LegislativeReasoner()
+            _lawsets = leg.get("active_lawsets")            # null -> the db's own active_lawsets default
+            _lawsets = list(_lawsets) if _lawsets else None
+            _rkw = {}
+            if _db:
+                _rkw["db_path"] = _db
+            if _lawsets is not None:
+                _rkw["active_lawsets"] = _lawsets           # which law CATEGORY(ies) to enforce
+            reasoner = LegislativeReasoner(**_rkw)
             # CUSHION (robust constraint tightening): inflate the footprint the PLANNER checks against by
             # `constraint_margin` delta (m) to stay clear despite WM/probe perception error. PLANNER-ONLY
             # -- the metric (planning_metrics) scores reality with the true CUBE_HALF, so the delta=0 vs
@@ -334,6 +353,11 @@ class PlanWorkspace:
             evaluator = LawEvaluator(reasoner, reg, base_facts=base_facts, cube_half=_ch)
             penalty = float(leg.get("violation_penalty", 1e6))
             target.law_fn = evaluator
+            # POSITIVE-OBLIGATION GOAL BANK (opt-in): a path to scripts/gen_goal_cell_bank.py output.
+            # When set, a live positive obligation ([O]in_cell(k) / [O]in_yellow_cell) retargets the
+            # planner objective to that cell's centered goal image (a waypoint); null -> obligations are
+            # parsed but not acted on (current behaviour). See legislation/goal_bank.py.
+            target.goal_bank_path = leg.get("goal_bank")
             # GOAL AS SPECIFICATION: on a law_eval benchmark run, hand the evaluator the pair's
             # GROUND-TRUTH goal cell (metadata.json) so the reach-goal obligation targets the DESIGNATED
             # cell, not a probe-perceived one (cube_cells argmax flips near cell boundaries). The goal
@@ -351,11 +375,31 @@ class PlanWorkspace:
             # for planners that don't re-evaluate per step (e.g. the chained CEM). RRT overwrites
             # target.constraint each step via law_fn.
             target.constraint = Constraint.from_reasoner(reasoner, base_facts, reg.probes, cube_half=_ch)
-            print(f"[legislation] mode={mode} | base facts {base_facts} | cushion δ={_margin:.3f}m "
+            _obs_note = "  [OBSERVE-ONLY: sign+ledger, planner ignores verdict]" if _observe_off else ""
+            print(f"[legislation] mode={mode}{_obs_note} | base facts {base_facts} | cushion δ={_margin:.3f}m "
                   f"| initial {target.constraint} | violation_penalty={penalty:g}")
+            _law_meta = {"mode": mode, "observe_only_off": _observe_off,
+                         "db_path": _db or "legislation/legal_database.yaml",
+                         "active_lawsets": list(reasoner.active_lawsets) if reasoner.active_lawsets else None,
+                         "cushion_margin": _margin}
         else:
             print("[legislation] mode=off (rational agent) -- no constraint")
+            _law_meta = {"mode": "off", "db_path": None, "active_lawsets": None, "cushion_margin": 0.0}
         ### END HARNESS EDIT ###
+        # PROVENANCE: mark the DATASET + resolved LAW SET for this plan run (manifest.json beside
+        # eval_metrics.json). Best-effort — never break planning over it.
+        try:
+            import provenance
+            provenance.write(".", "plan.py", extra={
+                "dataset": {"data_path": self.cfg_dict.get("data_path"),
+                            "goal_source": self.cfg_dict.get("goal_source"),
+                            "goal_file_path": (str(self.cfg_dict.get("goal_file_path"))
+                                               if self.cfg_dict.get("goal_file_path") else None)},
+                "laws": _law_meta,
+                "model": {"name": self.cfg_dict.get("model_name"), "epoch": self.cfg_dict.get("model_epoch")},
+            })
+        except Exception as _pe:
+            print("[provenance] plan manifest skipped:", _pe)
 
         self.dump_targets()
 
@@ -650,6 +694,16 @@ class PlanWorkspace:
             _rb = {"plan_total_s": round(_tp, 2), "rrt_s": round(_tp - _trs - _tpr, 2),
                    "legislation_s": round(_trs + _tpr, 2),
                    "legislation_reason_s": round(_trs, 2), "legislation_prune_s": round(_tpr, 2)}
+            # FINE split of legislation_reason_s (probe/ground/logic/build), from the LawEvaluator's per-
+            # episode accumulators -- lets Q5 show the clingo DDL logic is a negligible slice. off/rational
+            # has no law_fn -> the dict is absent and these keys are simply omitted.
+            _tim = getattr(getattr(_tgt, "law_fn", None), "timing", None)
+            if _tim:
+                _rb.update({"leg_probe_s": round(_tim.get("probe_s", 0.0), 3),
+                            "leg_ground_s": round(_tim.get("ground_s", 0.0), 3),
+                            "leg_logic_s": round(_tim.get("logic_s", 0.0), 3),
+                            "leg_build_s": round(_tim.get("build_s", 0.0), 3),
+                            "leg_n_observe": int(_tim.get("n_observe", 0))})
             _metrics = build_eval_metrics(
                 e_states=e_states, action_len=action_len,
                 last_metrics=getattr(self.evaluator, "last_metrics", {}),
@@ -665,11 +719,18 @@ class PlanWorkspace:
                 wm_pred_err_steps=getattr(self.planner, "wm_pred_err_steps", None),
                 wm_pred_xy_steps=getattr(self.planner, "wm_pred_xy_steps", None),
                 wm_real_xy_steps=getattr(self.planner, "wm_real_xy_steps", None),
+                wm_probe_start_xy_steps=getattr(self.planner, "wm_probe_start_xy_steps", None),
                 wm_latent_err_steps=getattr(self.planner, "wm_latent_err_steps", None),
                 runtime_breakdown=_rb, goal_states=getattr(self, "state_g", None))
             with open("eval_metrics.json", "w") as _f:
                 json.dump(_metrics, _f, indent=2)
             print("Dumped eval metrics to", os.path.abspath("eval_metrics.json"))
+            # DENORMALIZED committed strokes per eval (b, T, 4) -> replay via env.rollout(seed, init_state, actions)
+            _strokes = getattr(self.planner, "executed_strokes", None)
+            if _strokes:
+                import numpy as _np
+                _np.save("executed_actions.npy", _np.concatenate(_strokes, axis=1))
+                print("Saved executed actions to", os.path.abspath("executed_actions.npy"))
         except Exception as _ex:  # noqa: BLE001
             print("[eval_metrics] dump failed:", _ex)
         logs = {f"final_eval/{k}": v for k, v in logs.items()}

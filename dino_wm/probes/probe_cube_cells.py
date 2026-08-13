@@ -31,6 +31,7 @@ _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
+import provenance
 from probes.probe_cube_position import MLP, encode_dataset, predict_dataset, gm  # shared head + features + grid_metadata
 from models.dino import DinoV2Encoder
 
@@ -139,9 +140,14 @@ def stroke_breach_geometry(cube_xy, cells, cube_half=CUBE_HALF, move_eps=STROKE_
                 continue
             hn = head / np.linalg.norm(head)
             edge = np.clip(c0, cc - H, cc + H)                     # nearest point of the H-box to c0
+            # ESCAPE EXCLUSION: if the stroke STARTS with the footprint already in cell c, it's leaving,
+            # not entering -- the entry (jitter or a prior action) is scored elsewhere (occupancy), so
+            # the exit transit is not a fresh swept violation. So a breach = a MOVING stroke (move_eps,
+            # above) that started OUTSIDE the cell and swept the footprint through it (a real drive-in).
+            start_in = bool((np.abs(c0 - cc) < H).all())
             out.append(dict(
                 t=int(t), cell=c,
-                breach=bool(swept_cells(c0, c1, cube_half)[c]),
+                breach=(bool(swept_cells(c0, c1, cube_half)[c]) and not start_in),
                 approach_deg=_angle_deg(head, cc - c0),           # toward the CENTER
                 approach_edge_deg=_angle_deg(head, edge - c0),    # toward the NEAREST BOUNDARY point (NaN if inside)
                 dmin=_seg_point_dist(c0, c1, cc),
@@ -285,6 +291,7 @@ def main():
             "source": args.source, "pred_horizons": args.pred_horizons,  # encoded vs predicted-trained
         }, args.save_path)
         print(f"[save] occupancy probe -> {args.save_path}")
+        provenance.write(args.save_path + ".metrics.json", __file__, args=args, repo=_REPO)
 
 
 if __name__ == "__main__":

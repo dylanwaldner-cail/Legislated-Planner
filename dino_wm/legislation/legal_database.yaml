@@ -29,12 +29,22 @@ atoms:
   # --- full_lawset (R1-R10) additions ---
   - yellow_cell(0..8)              # which cells are YELLOW. Static grid geometry today (cells 3,5);
                                    # swap the grounding for a probe to make cell colour dynamic.
-  - in_yellow_cell                 # derived: cube occupies SOME yellow cell (counts-as over yellow_cell)
+  - occupies(0..8)                 # AUTHORITY: cells the cube's TRUE FOOTPRINT overlaps (env ground-truth,
+                                   # center +/- cube_half -- same geometry as the swept abidance metric).
+                                   # Drives the SIGN flip (R5c/R7/R7b) so perception error can't fabricate
+                                   # a permission/taint; probe-derived in_cell drives prohibition + planning.
+  - in_yellow_cell                 # derived: cube TRULY occupies SOME yellow cell (counts-as over yellow_cell)
   - move_slow                      # robot moving slowly (yellow-sign duty, R6)
   - move_fast                      # robot moving fast (contrary-to-duty exit duty, R10)
   - perm_conflict(0..8)            # R9: cell N is permitted BOTH ways (derived in asp_helpers from the
                                    # permission predicates -- a plain-literal proxy, since the engine
                                    # won't gate on [P] literals placed directly in an antecedent)
+  - visited(0..8)                  # HISTORY: cube occupied cell N at some past-or-current step. Ledger-
+                                   # derived (memory.NormativeMemory.derived_facts) from ENCODED executed
+                                   # observations only -- never WM predictions. Makes verdicts temporal.
+  - may_move                       # lifted [P]moving proxy: the robot is PERMITTED to move (moving not
+                                   # forbidden). Gates reach_goal so a FROZEN robot ([O]~moving) has its
+                                   # goal duty SUSPENDED (ought-implies-can). Derived in asp_helpers.
 
 # Which law CATEGORY(ies) below are ENFORCED. Exactly one set is active at a time; alternative
 # sets may reuse label names because only the selected category is rendered (they never collide).
@@ -172,32 +182,81 @@ laws:
     # WITHOUT touching this law.
     - label: yellow_counts_as
       expand: {Y: "0..8"}
-      antecedent: ["in_cell(Y)", "yellow_cell(Y)"]
+      antecedent: ["occupies(Y)", "yellow_cell(Y)"]   # GT occupancy (authority), not the probe footprint
       consequent: ["in_yellow_cell"]
 
-    # R6: a YELLOW sign obliges moving slowly.
-    - label: yellow_slow
-      antecedent: [sign(yellow)]
-      consequent: ["[O]move_slow"]
-
-    # R7: reaching a yellow cell flips the sign GREEN (constitutive -- no deontic operator). Same
-    # yellow_cell(Y) guard/grounding as R5's counts-as.
+    # R7: reaching a yellow cell WHILE THE SIGN IS YELLOW flips the sign GREEN (constitutive -- no
+    # deontic operator). Same yellow_cell(Y) guard/grounding as R5's counts-as. The sign(yellow) gate
+    # makes this a genuine yellow-sign mechanic: under a white/red/green sign, entering a yellow cell
+    # does NOT flip the sign.
     - label: yellow_to_green
       expand: {Y: "0..8"}
-      antecedent: ["in_cell(Y)", "yellow_cell(Y)"]
+      antecedent: ["occupies(Y)", "yellow_cell(Y)", "sign(yellow)"]   # GT occupancy (authority)
       consequent: ["sign(green)"]
 
+    # R7b: HISTORY-DEPENDENT DEFEATER (the non-Markovian norm). If the cube has ALREADY passed through
+    # the forbidden centre earlier in THIS trajectory -- visited(4), a ledger fact derived from the
+    # AUTHORITY's GROUND-TRUTH FOOTPRINT occupancy: the union of rest-frame occupies AND the SWEPT
+    # passed_through of each executed transit (over records[1:], grandfathering spawn), NOT the perception
+    # probe -- so a mid-stroke drive-THROUGH 4 taints even if the cube rests clear (matches the swept
+    # abidance metric). Then reaching a yellow cell turns the sign RED instead of green. The taint is
+    # adjudicated on TRUTH because the sign is an external control signal: a probe position error must
+    # never be able to fabricate the taint (or, via R7, a green permission). The SAME act (reaching
+    # yellow) means "go" or "stop" depending on the history: meaning from the SEQUENCE, not the current
+    # geometry. Constitutive (concludes sign(red)); made SUPERIOR to R7/yellow_to_green in `superiority`
+    # and OPPOSED to sign(green) via strongConflict in `asp_helpers`, so red DEFEATS the green flip.
+    # Downstream, sign(red) engages R3/R9 -> freeze (tainted trajectory -> halt). in_yellow_cell + the
+    # occupies feeding visited(4) are both GT (grounding.occupies / MPC set_gt_cube); the exogenous sign
+    # colour is still perceived by the (accurate) sign_color probe.
+    - label: yellow_to_red_if_tainted
+      antecedent: ["in_yellow_cell", "visited(4)", "sign(yellow)"]
+      consequent: ["sign(red)"]
+
     # R8: cube ought to reach its perceived goal cell (schema over N; goal_cell(N) from the cube-cell
-    # probe on the GOAL latent activates exactly one copy).
+    # probe on the GOAL latent activates exactly one copy) -- BUT ONLY IF permitted to move (may_move,
+    # a lifted [P]moving). This is the mentor's [P]A => [O]B "permission in the body": when the robot is
+    # frozen ([O]~moving, from R9's genuine-conflict fallback), it is not permitted to move, so may_move
+    # fails and the goal obligation is SUSPENDED (ought-implies-can) -- a construct FOL / plain deontic
+    # logic programming can't express.
     - label: reach_goal
       expand: {N: "0..8"}
-      antecedent: ["goal_cell(N)"]
+      antecedent: ["goal_cell(N)", "may_move"]
       consequent: ["[O]in_cell(N)"]
 
-    # MOTION ONTOLOGY (issue A): relate the speed atoms so the motion DUTIES actually conflict --
-    # without this the engine treats move_fast / move_slow / moving as unrelated, so R10>R9 and R10>R6
-    # never bite. Both speeds count as moving; fast excludes slow. Constitutive (no deontic operator).
-    - label: fast_is_moving
+    # R9: conflicting permissions on the center oblige a full stop. The intended antecedent is
+    # "[P]in_cell(4) AND [P]~in_cell(4)", but the engine does not enforce [P] literals placed directly
+    # in an antecedent (findings.md: applicable/2 bug), so it's LIFTED into the plain proxy atom
+    # perm_conflict(4), derived in asp_helpers from the (correct) permission predicates. Hardcoded to
+    # cell 4 (the only contested cell). Under sign(red), R2 and R3 conflict -> neither obligation wins
+    # -> in_cell(4) and ~in_cell(4) are both (weakly) permitted -> perm_conflict(4) -> freeze, like a
+    # stop sign. Baseline stays free. perm_conflict now requires the GENUINE deadlock (both directions
+    # only WEAKLY permitted, NEITHER strongly permitted), so a strong permission -- e.g. R4 under green --
+    # no longer trips it: green permits the centre and the robot stays free (fixes the old green-freeze).
+    - label: conflicting_permissions
+      antecedent: ["perm_conflict(4)"]
+      consequent: ["[O]~moving"]
+
+    # R10: contrary-to-duty on the center prohibition, as a COMPENSATION chain (the paper's form).
+    # Primary duty [O]~in_cell(4); if VIOLATED (cube in cell 4), the reparative duty [O]exit_cell(4)
+    # becomes active via the engine's compensate/4 mechanism -- a graceful CTD instead of a dead breach.
+    # (The [O]move_fast reparative variant + the R10>R9/R6 speed race are parked in `potential_laws`.)
+    - label: contrary_to_duty
+      antecedent: [cube]
+      consequent: ["[O]~in_cell(4)", "[O]exit_cell(4)"]
+
+  # POTENTIAL LAWS (STORAGE ONLY -- never in active_lawsets, never compiled). A parking lot for rules
+  # pulled out of an active set but worth remembering. NOT runnable on its own (it references atoms /
+  # context that live in full_lawset). To revive: move a rule back into its target category and restore
+  # any superiority pairs noted below.
+  potential_laws:
+    # Motion sub-demo, pulled from full_lawset 2026-07-30: it caused [O]moving vs [O]~moving cross-talk
+    # and wasn't a distinct FOL-can't point (the speed race is the same superiority mechanism as R4>R2).
+    # To revive: also restore R10's [O]move_fast consequent and the superiority pairs
+    # ["contrary_to_duty","conflicting_permissions"] (R10>R9) and ["contrary_to_duty","yellow_slow"] (R10>R6).
+    - label: yellow_slow            # R6: a YELLOW sign obliges moving slowly.
+      antecedent: [sign(yellow)]
+      consequent: ["[O]move_slow"]
+    - label: fast_is_moving         # motion ontology: both speeds count as moving; fast excludes slow.
       antecedent: [move_fast]
       consequent: ["moving"]
     - label: slow_is_moving
@@ -206,26 +265,6 @@ laws:
     - label: fast_not_slow
       antecedent: [move_fast]
       consequent: ["~move_slow"]
-
-    # R9: conflicting permissions on the center oblige a full stop. The intended antecedent is
-    # "[P]in_cell(4) AND [P]~in_cell(4)", but the engine does not enforce [P] literals placed directly
-    # in an antecedent (findings.md: applicable/2 bug), so it's LIFTED into the plain proxy atom
-    # perm_conflict(4), derived in asp_helpers from the (correct) permission predicates. Hardcoded to
-    # cell 4 (the only contested cell). Under sign(red), R2 and R3 conflict -> neither obligation wins
-    # -> in_cell(4) and ~in_cell(4) are both (weakly) permitted -> perm_conflict(4) -> freeze, like a
-    # stop sign. Baseline stays free. (Known gap to iterate on: sign(green)+R4 also yields both
-    # permissions, so this still freezes under green.)
-    - label: conflicting_permissions
-      antecedent: ["perm_conflict(4)"]
-      consequent: ["[O]~moving"]
-
-    # R10: contrary-to-duty on the center prohibition, as a COMPENSATION chain (the paper's form).
-    # Primary duty [O]~in_cell(4); if VIOLATED (cube in cell 4), the reparative duties [O]move_fast
-    # and [O]exit_cell(4) become active via the engine's compensate/4 mechanism. Superior to R9/R6
-    # (see superiority) so the exit-fast reaction beats the stop/slow duties.
-    - label: contrary_to_duty
-      antecedent: [cube]
-      consequent: ["[O]~in_cell(4)", "[O]move_fast", "[O]exit_cell(4)"]
 
   # ---- Illustrative forms the schema ALREADY supports (commented; not active norms) ----
   #
@@ -269,8 +308,17 @@ superiority:
   - ["green_sign_permits_center", "no_center_cell"]
   # full_lawset:
   - ["green_sign", "no_center_cell"]         # R4 > R2: green permits the center (defeats the prohibition)
-  - ["contrary_to_duty", "conflicting_permissions"]  # R10 > R9: exit-fast beats the full stop
-  - ["contrary_to_duty", "yellow_slow"]      # R10 > R6: exit-fast beats moving slow
+  - ["green_sign", "contrary_to_duty"]       # R4 > R10: green ALSO defeats the CTD's center prohibition.
+                                             # Both R2 and R10 carry [O]~in_cell(4); permission(in_cell(4))
+                                             # needs BOTH rebutted, else R10 survives -> center limbo ->
+                                             # perm_conflict -> spurious freeze. (Green = no center
+                                             # violation, so the repair duty shouldn't apply.)
+  # (R10 > R9 and R10 > R6 -- the "exit-fast beats stop/slow" race -- are parked with the motion rules
+  # in `potential_laws`; without move_fast/move_slow they no longer bite.)
+  # R7b > R7: a TAINTED history (visited(4)) makes the red flip DEFEAT the green flip. yellow_to_green
+  # expands per yellow cell, so one pair per live yellow_cell (3, 5); these track the yellow_cell set.
+  - ["yellow_to_red_if_tainted", "yellow_to_green_3"]
+  - ["yellow_to_red_if_tainted", "yellow_to_green_5"]
   # NOTE: R2 vs R3 is deliberately UNRESOLVED (no pair) -> ambiguity-blocks under sign(red) -> R9.
 
 # Raw ASP clauses appended verbatim to the compiled theory (reasoner.py). Used to LIFT a deontic
@@ -280,4 +328,20 @@ asp_helpers:
   # R9: perm_conflict(4) holds iff the center is permitted BOTH ways (entry and non-entry). Built from
   # the engine's own (correct) permission predicates, so it's False in the baseline (R2 refutes
   # [P]in_cell(4)) and True under the sign(red) R2/R3 conflict.
-  - "defeasible(perm_conflict(4)) :- permissionOrWeakPermission(in_cell(4)), permissionOrWeakPermission(non(in_cell(4)))."
+  # perm_conflict(4) = the GENUINE deadlock ONLY: cell 4 WEAKLY permitted BOTH ways (neither obligation
+  # wins -- the R2/R3 ambiguity-block) AND neither STRONGLY permitted. The `not permission(...)` guards
+  # are load-bearing: weakPermission fires whenever the opposite isn't obligated, so it is TRUE under
+  # green too -- only excluding a strong permission distinguishes a real contest from "the centre is
+  # simply allowed" (R4/green). This is the [P]A & [P]~A fallback trigger; kept narrow so R9 freezes on a
+  # true conflict (sign red), not whenever cell 4 is permitted.
+  - "defeasible(perm_conflict(4)) :- weakPermission(in_cell(4)), weakPermission(non(in_cell(4))), not permission(in_cell(4)), not permission(non(in_cell(4)))."
+  # may_move: the robot is PERMITTED to move (moving not forbidden). Lifts [P]moving into a plain atom so
+  # reach_goal can gate on it (the engine won't take a [P] literal directly in an antecedent). Under R9's
+  # freeze ([O]~moving) moving is not permitted -> may_move fails -> the goal obligation drops.
+  - "defeasible(may_move) :- permissionOrWeakPermission(moving)."
+  # Sign colours are MUTUALLY EXCLUSIVE: red opposes green, so R7b's red flip can DEFEAT R7's green
+  # flip (with R7b > R7) instead of the two co-deriving. This pair is the only one that ever
+  # co-derives; declaring the conflict is what lets the superiority resolve to a SINGLE sign rather
+  # than ambiguity-blocking to none. (Global, but inert for geometric_laws: no rule there derives a
+  # second sign, so red and green never co-occur.)
+  - "strongConflict(sign(red), sign(green))."

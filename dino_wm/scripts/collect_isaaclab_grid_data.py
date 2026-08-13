@@ -45,6 +45,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+import provenance
 import numpy as np
 import torch
 
@@ -283,6 +284,7 @@ def main():
 
         save_arrays()
         print(f"[collect] DONE: wrote {len(all_states)} episodes (T={T}) to {out}")
+        provenance.write(out, __file__, args=args, repo=_REPO_ROOT)
     except KeyboardInterrupt:
         print(f"\n[collect] interrupted — saving {len(all_states)} episodes collected so far")
         save_arrays()

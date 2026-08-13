@@ -16,6 +16,47 @@ How the IV is realized without breaking the match:
     only the SOURCE of positions/occupancy is GT instead of WM+probe.
   * the sim resumes from each node's stored full state, so a candidate's full root->end trajectory is
     the node's stored boundary positions + the new GT end (deterministic sim => == a re-roll).
+
+========================= REVIEWER GUIDE (read me first) =========================
+This file is the CEILING baseline; its whole value is being a FAITHFUL mirror of the deployed
+planner (planning/rrt.py + planning/mpc.py) with exactly ONE change (GT reads, not WM+probe).
+When reviewing, verify each correspondence below rather than the code in isolation:
+
+  1. CANDIDATE SET == rrt.py. `_sample_strokes` is byte-for-byte rrt.py `_extend`'s stroke math
+     (steer cone, L~U[push_min,push_max], start=base-aim_back*dir, disp=dir*(aim_back+L)). The clamp
+     is in RAW meters to actions.pth min/max; that equals rrt.py's normalized clamp to _aim_lo/_aim_hi
+     because normalization is per-dim monotonic. If you change either, they must stay in lockstep.
+  2. EDGE ROLLOUT == a WM rollout, but exact. rrt.py re-rolls the whole prefix through the WM every
+     extend (and accumulates WM error); the oracle instead RESUMES from `near.state` (the exact GT
+     sim state after the prefix) and rolls only the new stroke. Deterministic sim => identical to a
+     re-roll, and strictly cleaner (no error). This is why every _Node stores its full (31,) state.
+  3. LEGALITY == constraint.violations, GT-sourced. `_pick_from_block` calls the SAME Constraint with
+     the SAME (skip_current=True, actions=, n_pred=full-length) as rrt.py:153. The ONLY difference:
+     positions + occupancy come from GT (`positions=full_t`, occ=_GTOcc) instead of the WM latent +
+     probes. Same checkers, same occ_thresh, same Liang-Barsky swept transit. This IS the independent
+     variable -- do not add any other GT shortcut into the legal path.
+  4. SELECTION == rrt.py. social: prune violators, argmin dist, None if all illegal. deviant: argmin
+     (dist + lambda*cum_viol). Goal test + final tree pick mirror rrt.py `_build_tree` exactly.
+  5. MPC == mpc.py. Commit the FIRST stroke (or a HOLD), execute, re-plan; success = goal-CELL match
+     (== env.grid_venv.eval_state, which is a discrete 3x3 cell match, NOT cube_l2); action_len = the
+     MPC step index at success (n_taken=1, so == mpc.py's (iter+1)*n_taken).
+  6. METRICS == the SAME build_eval_metrics as the deployed sweep (see run_sim_oracle._record). The
+     oracle feeds GT e_states; the swept/occupancy/path metrics are literally the deployed functions.
+
+  CONFIG NOTE for interpreting results: `_make_constraint` passes cube_half=CUBE_HALF with NO margin
+  inflation => this is the delta=0 (NO-CUSHION) arm. A cushion would raise abidance. Always report
+  the no-cushion number as such.
+
+  KNOWN STRUCTURAL GAP (not a bug): the planner prunes each candidate's PLANNED path per MPC step with
+  skip_current grandfathering the CURRENT cube every step and commits only stroke 0; the metric scores
+  the EXECUTED committed-stroke chain with a frame-0-only grandfather. So a chain of individually-legal
+  strokes can, as an executed sequence, still swept-graze -- which is why a PERFECT WM still grazes.
+
+  PERF NOTE: run_sim_oracle timing shows ~100% of wall is env.roll_strokes (physics); pruning is ~0.
+  Speed knobs are all physics-side: stroke_max_steps (substeps/roll), max_samples + patience + max_iter
+  (fewer rolls). Per-substep cost is env-count-INDEPENDENT (fixed Kit/manager overhead), so raising
+  batch_scenarios K packs more scenarios per roll for ~free; lowering num_envs B does NOT speed a roll.
+==================================================================================
 """
 from __future__ import annotations
 
