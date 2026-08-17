@@ -315,9 +315,11 @@ class RRTPlanner(AimedContactCEMPlanner):
                                    root_cube[e], int(gm.which_cell(goal_cube[e])))
                 if wp is not None:
                     tgt_cube = bank.pos[wp]
+                    _exit = bank.exit_obligations(_obl)   # reparative exit_cell(k) duties, if any
+                    _duty = (f"exit cells {sorted(_exit)}" if _exit
+                             else f"obligation cells {sorted(bank.obligated_cells(_obl))}")
                     # SELECTED: greppable marker in plan.log + recorded in the ledger commit below.
-                    print(f"[OBLIGE] step {self._step} e{e}: obligation cells "
-                          f"{sorted(bank.obligated_cells(_obl))} -> steering to WAYPOINT cell {wp} "
+                    print(f"[OBLIGE] step {self._step} e{e}: {_duty} -> steering to WAYPOINT cell {wp} "
                           f"({tgt_cube[0]:+.3f},{tgt_cube[1]:+.3f}) instead of goal cell "
                           f"{int(gm.which_cell(goal_cube[e]))}")
             final_node, nodes = self._build_tree(trans_obs_0, e, root_cube[e], tgt_cube)

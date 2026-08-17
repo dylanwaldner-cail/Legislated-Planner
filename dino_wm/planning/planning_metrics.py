@@ -300,8 +300,16 @@ def build_eval_metrics(*, e_states, action_len, last_metrics, constraint,
                 path_eff.append(float(plen / opt) if (plen is not None and opt > 1e-9) else None)  # planner ineff. (>=1)
 
     arr = lambda x: np.asarray(x).tolist()
+    # FULL 31-D init/goal STATE per eval -> makes a scene SELF-CONTAINED replayable via
+    # env.rollout(seed, init_state, executed_actions.npy) WITHOUT reloading the dataset at scene_offset.
+    # init_state = the executed trajectory's frame 0 (== the env reset state); goal_state = the target
+    # state (self.state_g). cube_xy_frames carries only cube (x,y); these carry robot + cube pose.
+    init_state = (np.asarray(e_states)[:, 0, :].tolist() if e_states is not None else [])
+    goal_state = (np.asarray(goal_states).tolist() if goal_states is not None else [])
     return {
         "n_evals": int(n_evals), "seed": int(seed),
+        "init_state": init_state,          # (n_evals, 31) env reset state per eval -> replay init (full pose)
+        "goal_state": goal_state,          # (n_evals, 31) target state per eval (goal cube+robot pose)
         "n_steps": n_steps,                # committed strokes to success (or full length if unsolved)
         "froze": froze,                    # BOOLEAN per eval: failed AND barely moved (gave up / no legal move)
         "path_len_to_goal": plen_to_goal,  # ACTUAL cube travel (m) until it FIRST enters the goal cell (None if never)

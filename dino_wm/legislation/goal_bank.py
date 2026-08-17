@@ -59,7 +59,8 @@ class GoalBank:
         """Each positive POSITIONAL obligation -> the SET of cells that satisfies it, as a LIST of sets
         (one per obligation) so the disjunction (any-one-satisfies) is preserved for discharge:
           in_cell(k) / passed_through(k) -> {k};   in_yellow_cell -> the yellow cells {3,5}.
-        Non-positional obligations (off_grid, moving, exit_cell...) map to no target and are skipped."""
+        Non-positional obligations (off_grid, moving...) map to no target and are skipped. exit_cell is
+        the ONE reparative duty handled elsewhere (exit_obligations + waypoint), not here."""
         targets = []
         for name, args in (obligations or []):
             if name in ("in_cell", "passed_through") and args:
@@ -80,14 +81,33 @@ class GoalBank:
             out |= t
         return out
 
+    @staticmethod
+    def exit_obligations(obligations):
+        """Each exit_cell(k) -> the cell int k the cube must LEAVE (the reparative CTD duty in R10's
+        center-cell chain). 'exit_cell(k)' means 'be in any cell but k', so it maps to the COMPLEMENT of
+        {k}; waypoint() steers to the nearest such cell while the cube is still in k."""
+        out = []
+        for name, args in (obligations or []):
+            if name == "exit_cell" and args:
+                try:
+                    out.append(int(args[-1]))
+                except (ValueError, TypeError):
+                    pass
+        return out
+
     def waypoint(self, obligations, visited_cells, cur_pos, goal_cell):
         """The obligated WAYPOINT cell to steer toward, or None (use the real goal). Handles each
-        obligation's disjunction SEPARATELY -- an obligation is skipped when:
+        obligation's disjunction SEPARATELY -- an ACHIEVEMENT obligation (in_cell/passed_through/
+        in_yellow_cell) is skipped when:
           - the real GOAL cell already satisfies it (goal in its set) -> the objective handles it, no
             waypoint (so a live goal obligation in_cell(goal) never overrides the real goal), or
           - the cube has already been in a satisfying cell (visited -> discharged, temporal).
-        Of the obligations still unsatisfied, steer to the single NEAREST cell (min probed-target
-        distance from the current cube). Swap `min` for random.choice to pick a random yellow cell."""
+        A REPARATIVE exit_cell(k) duty is different: it means 'get out of k'. It is live only while the
+        cube is currently IN k (else discharged), and it steers to the NEAREST cell != k, OVERRIDING the
+        real goal -- so the agent vacates the forbidden center before resuming. (An exit duty must not be
+        skipped on 'goal already satisfies it', or it would never fire when the goal is a normal cell.)
+        Of all live candidates, steer to the single NEAREST cell (min probed-target distance from the
+        current cube). Swap `min` for random.choice to pick a random yellow cell."""
         visited = set(visited_cells)
         cur = np.asarray(cur_pos)
         cands = []
@@ -95,6 +115,13 @@ class GoalBank:
             if goal_cell in tset or (tset & visited):
                 continue                                          # goal satisfies it, or already discharged
             cands.append(min(tset, key=lambda k: float(np.linalg.norm(cur - self.pos[k]))))
+        # reparative exit: while the cube is still in the forbidden cell, steer to the nearest cell != k
+        cur_cell = int(gm.which_cell(cur))
+        for k in self.exit_obligations(obligations):
+            if cur_cell != k:
+                continue                                          # already outside k -> discharged
+            others = [c for c in range(self.n) if c != k]
+            cands.append(min(others, key=lambda c: float(np.linalg.norm(cur - self.pos[c]))))
         if not cands:
             return None
         return min(cands, key=lambda k: float(np.linalg.norm(cur - self.pos[k])))

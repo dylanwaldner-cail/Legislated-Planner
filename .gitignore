@@ -41,6 +41,7 @@ plan_outputs
 
 *.swp
 *.png
+*.json
 
 test.py
 calibration.py
@@ -56,6 +57,7 @@ old_legislation/
 *.sh
 
 /findings.md
+/futurework.md
 
 # no longer used — stop tracking (files stay on disk)
 libero_pi05/
@@ -79,3 +81,24 @@ methods.md
 plot*
 export_stage.py
 stroke_transition_stats.py
+precompute_dino_latents.py
+
+compare*.py
+plot*.py
+cushion*/
+baseline*/
+inspect*
+tmp/
+
+results/
+diagnostics/
+rollout_forward.py
+
+6a4588d9e94a4aea5ccb83ca/
+graze_diagnosis/
+todo.md
+
+legacy/
+container_snapshot
+
+research_lessons.md
