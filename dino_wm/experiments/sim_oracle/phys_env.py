@@ -112,7 +112,7 @@ class PhysGridEnv(GridWrapperSingle):
 
     # ---- sim-oracle helper ----
 
-    def roll_strokes(self, state, strokes):
+    def roll_strokes(self, state, strokes, pos_sink=None):
         """Restore `state` to ALL envs, apply per-env `strokes`, return the resulting states (N,31).
         (NOT an override of GridWrapperSingle.rollout -- distinct name + signature to avoid confusion.)
 
@@ -123,5 +123,5 @@ class PhysGridEnv(GridWrapperSingle):
         so returned states carry the parked arm + true pushed cube -- matching the training frames."""
         self._write_state(np.asarray(state, dtype=np.float32))
         self._materialize_state()
-        _, state_out = self.execute_stroke(np.asarray(strokes, dtype=np.float32))
+        _, state_out = self.execute_stroke(np.asarray(strokes, dtype=np.float32), pos_sink=pos_sink)
         return state_out

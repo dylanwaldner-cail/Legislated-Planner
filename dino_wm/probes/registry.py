@@ -6,7 +6,8 @@ a manifest (probes.yaml) and runs them on a latent, returning a named dict of ou
 the perception layer that feeds (later) the legislation grounding + the planner objective.
 
 Each probe .pth carries:
-  kind:    'regression' | 'multilabel' | 'classification'   (how to post-process the head)
+  kind:    'regression' | 'multilabel' | 'classification' | 'yaw_mod90_sincos4'
+           (how to post-process the head)
   source:  'encoded' | 'predicted'                          (which latent it was TRAINED on)
 The `source` is the key to handling latent-prediction probes: an 'encoded' probe must be
 applied to phi(obs) (encoded real frame), a 'predicted' probe to a WM-rolled latent. The
@@ -23,6 +24,8 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import os
+
 import yaml
 
 _HERE = Path(__file__).resolve().parent
@@ -67,6 +70,11 @@ class Probe:
             return torch.sigmoid(z)
         if self.kind == "classification":
             return torch.softmax(z, dim=-1)
+        if self.kind == "yaw_mod90_sincos4":
+            # (B,2) = (sin 4t, cos 4t) on the unit circle. Returned RAW: there is no y_mu/y_sd to undo
+            # (the target was never standardised), and the caller decodes with atan2(s,c)/4. The 4t
+            # encoding folds the square cube's 90deg symmetry, so the decode lands in (-45,45] deg.
+            return z
         raise ValueError(f"unknown probe kind: {self.kind}")
 
 
@@ -86,6 +94,16 @@ class ProbeRegistry:
             if not path.is_absolute():
                 path = Path(root) / path
             self.probes[entry["name"]] = Probe(entry["name"], path, device=device)
+        # PER-RUN OPT-IN for the orientation probe. Left OUT of probes.yaml deliberately: enabling it
+        # there would switch every run in the repo from the axis-aligned body model to the oriented
+        # one at once. With this unset the constraint sees no "cube_yaw" probe and behaves exactly as
+        # it always has (verified: yaw=0 reproduces the axis-aligned verdicts bit for bit).
+        _yp = os.environ.get("DINOWM_YAW_PROBE", "").strip()
+        if _yp:
+            pth = Path(_yp) if Path(_yp).is_absolute() else Path(root) / _yp
+            self.probes["cube_yaw"] = Probe("cube_yaw", pth, device=device)
+            print(f"[registry] cube_yaw ENABLED from DINOWM_YAW_PROBE={pth} -- enforcement will use "
+                  f"the true oriented footprint instead of the axis-aligned one")
 
     def set_probe(self, name, path):
         """Force probe `name` to (re)load from `path` (absolute or repo-relative), replacing the

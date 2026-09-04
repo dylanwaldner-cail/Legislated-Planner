@@ -237,18 +237,27 @@ class PlanEvaluator:  # evaluator for planning
 
         return logs, successes, e_obses, e_states
 
-    def _save_executed_video(self, e_visuals, successes, filename):
+    def _save_executed_video(self, e_visuals, successes, filename, goal_log=None):
         """Decoder-free video: the REAL executed sim rollout per eval, each frame the
         executed camera image with the goal frame appended on the right. e_visuals:
-        (b, T, H, W, c) raw uint8 camera frames (one per executed stroke / env step)."""
+        (b, T, H, W, c) raw uint8 camera frames (one per executed stroke / env step).
+
+        goal_log: optional [(frame_index, (b,H,W,3) goal visual), ...], ascending, from a run whose
+        goal MOVES mid-episode (the obligation retarget). Without it the panel is `self.obs_g` read
+        once at render time -- i.e. the FINAL goal shown from frame 0, which hides the switch. Frame
+        indices must be in the same units as e_visuals' T axis."""
         e = np.asarray(e_visuals)                       # (b, T, H, W, c)
         goal = np.asarray(self.obs_g["visual"])         # (b, 1, H, W, c)
         n = min(self.n_plot_samples, e.shape[0])
+        log = sorted(goal_log or [], key=lambda kv: kv[0])
         for idx in range(n):
             tag = "success" if successes[idx] else "failure"
             g = goal[idx, 0]
             writer = imageio.get_writer(f"{filename}_{idx}_{tag}.mp4", fps=8)
+            k = 0
             for t in range(e.shape[1]):
+                while k < len(log) and log[k][0] <= t:   # advance to the goal in force at frame t
+                    g = log[k][1][idx]; k += 1
                 frame = np.concatenate([e[idx, t], g], axis=1)   # [executed | goal]
                 if frame.dtype != np.uint8:
                     frame = (np.clip(frame, 0, 1) * 255).astype(np.uint8) if frame.max() <= 1.0 \

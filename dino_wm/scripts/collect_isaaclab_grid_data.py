@@ -77,6 +77,7 @@ def run_video_preview(args):
         task_id=args.task_id, num_envs=1, device=args.device,
         render_mode=args.render_mode, spp=args.spp, stroke_max_steps=args.stroke_max_steps,
         fast_stroke_render=False,  # render every step (frame_sink forces it anyway)
+        lock_cube_yaw=args.lock_cube_yaw,
     )
     env.seed(args.seed)
     rng = np.random.RandomState(args.seed)
@@ -110,16 +111,17 @@ def run_video_preview(args):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task_id", default="Isaac-DinoWMGrid-Single-v0")
-    ap.add_argument("--num_episodes", type=int, default=1500,
-                    help="MIXED sampling (--aimed_frac): ~60%% of strokes aim at the cube, so contact "
-                    "density is high (unlike pure-uniform). 1500 eps x 20 strokes x 0.6 ~= 18k contact "
-                    "frames, comparable to the old contact-only run, plus uniform misses for planner "
-                    "action-space coverage.")
+    ap.add_argument("--num_episodes", type=int, default=5000,
+                    help="5000 eps x 20 strokes = 100k strokes, ALL aimed at the default --aimed_frac "
+                    "1.0, with planner-like near-misses supplied by --aim_offset_sd rather than by a "
+                    "uniform regime. These defaults reproduce data/isaaclab_stroke_5k (the set wm_5k "
+                    "was trained on); see its metadata.json.")
     ap.add_argument("--episode_len", type=int, default=20,
                     help="STROKES per trajectory (each is a full macro-step / many "
                     "sim steps). >= num_hist+num_pred (=4) or the slicer drops it; "
                     "20 gives 20-4+1=17 windows each.")
-    ap.add_argument("--output_dir", default=os.environ.get("DATASET_DIR", "./data") + "/isaaclab_single_stroke")
+    _DEF_OUT = os.environ.get("DATASET_DIR", "./data") + "/isaaclab_single_stroke"
+    ap.add_argument("--output_dir", default=_DEF_OUT)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cuda:0",
                     help="Must be 'cuda:0' for this Isaac Sim build. Mask with CUDA_VISIBLE_DEVICES.")
@@ -128,28 +130,31 @@ def main():
     ap.add_argument("--spp", type=int, default=128,
                     help="Samples-per-pixel for PathTracing (128 fine for training; "
                     "256+ only for demo videos).")
-    ap.add_argument("--aimed_frac", type=float, default=0.6,
+    ap.add_argument("--aimed_frac", type=float, default=1.0,
                     help="Fraction of strokes that AIM at the cube (start behind it, push through "
-                    "-> teaches dynamics) vs UNIFORM strokes (cover the planner's action space, incl. "
-                    "misses, matching the planner's miss-heavy query distribution). 0.6 = 60%% aimed / "
-                    "40%% uniform. 0.0 = pure-uniform (deformable parity).")
+                    "-> teaches dynamics) vs UNIFORM strokes (blind action-space coverage). 1.0 = every "
+                    "stroke aimed: miss coverage comes from --aim_offset_sd instead, which is "
+                    "distribution-matched to the planner's own aim error rather than blind. "
+                    "0.0 = pure-uniform (deformable parity).")
     ap.add_argument("--push_max", type=float, default=0.08,
                     help="UNIFORM strokes: per-axis push displacement bound (m): dx,dy ~ U(-push_max, "
                     "push_max). ~20%% of the grid span, matching the deformable short-push ratio. "
                     "Short pushes = small per-step cube motion = easier one-step dynamics.")
-    ap.add_argument("--aim_push_min", type=float, default=0.03,
-                    help="AIMED strokes: MIN cube-travel per push (m). 0.03 ~= 1/4 cell -> fine terminal "
-                    "control; near the contact floor, so some of these barely move the cube (expected).")
-    ap.add_argument("--aim_push_max", type=float, default=0.13,
-                    help="AIMED strokes: MAX cube-travel per push (m). 0.13 ~= one CELL -> advance a cell "
-                    "in one stroke (fewer strokes = less chaining drift). Widened from 0.09 for the bigger "
-                    "WM. NOTE: match the planner's push_min/push_max (conf/planner/mpc_rrt.yaml) to this.")
-    ap.add_argument("--aim_offset_sd", type=float, default=0.0,
+    ap.add_argument("--aim_push_min", type=float, default=0.05,
+                    help="AIMED strokes: MIN cube-travel per push (m). MUST match planner.push_min in "
+                    "conf/planner/mpc_rrt.yaml (currently 0.05) or the planner queries the WM off its "
+                    "training band.")
+    ap.add_argument("--aim_push_max", type=float, default=0.09,
+                    help="AIMED strokes: MAX cube-travel per push (m). MUST match planner.push_max in "
+                    "conf/planner/mpc_rrt.yaml (currently 0.09). A 0.03-0.13 band was drafted for a bigger "
+                    "WM but adopted by neither the data nor the planner; do not re-widen one without the "
+                    "other.")
+    ap.add_argument("--aim_offset_sd", type=float, default=0.025,
                     help="AIMED strokes: lateral aim-offset std (m). Aims at a FALSE point ~N(0,sd) "
                     "perpendicular to the push, mimicking the planner aiming at its probe estimate "
                     "(off by the perception error ~0.03-0.05 m). |offset|<cube_half(0.045) still "
-                    "contacts, larger grazes->misses. 0.0 = exact-contact (old). Use with --aimed_frac 1.0 "
-                    "to REPLACE blind uniform coverage with distribution-matched near-misses.")
+                    "contacts, larger grazes->misses. 0.0 = exact-contact. Paired with --aimed_frac 1.0 "
+                    "this REPLACES blind uniform coverage with distribution-matched near-misses.")
     ap.add_argument("--start_margin", type=float, default=0.06,
                     help="Contact point sampled uniformly in +/-(GRID_HALF + start_margin) per "
                     "axis, so the pusher can get behind a cube sitting at/just past a grid edge.")
@@ -159,10 +164,28 @@ def main():
     ap.add_argument("--no_fast_render", action="store_true",
                     help="Disable the mid-stroke render skip (path-trace every internal "
                     "step). For A/B timing vs the default fast path; much slower at PathTracing.")
+    # YAW LOCK. Spawns the cube axis-aligned and holds it there (solver clamp: zero max angular
+    # velocity + heavy angular damping, plus a per-step re-pin). Abidance is scored with an
+    # axis-aligned square footprint, so a yaw-locked dataset makes that model exact instead of an
+    # upper bound -- but the world model then has to be RETRAINED on it, since a model trained on
+    # yaw-varying data is out of distribution on locked rollouts (measured: +41% episode-mean
+    # prediction error, +27% planning steps, results/yawlock 2026-09-01).
+    # `default=None` on purpose, NOT False: None defers to DINOWM_LOCK_CUBE_YAW so the env-var path
+    # keeps working, whereas a False default would silently override it. Passing the flag records
+    # the choice in BOTH metadata.json and manifest.json, which an env var does not.
+    ap.add_argument("--lock_cube_yaw", action="store_true", default=None,
+                    help="Lock the cube's yaw to 0 (axis-aligned) for the whole collection. "
+                    "Unset -> DINOWM_LOCK_CUBE_YAW, else off.")
     ap.add_argument("--num_envs", type=int, default=10,
                     help="Parallel envs collected per batch (GPU-batched physics + the "
                     "vectorized StrokeExecutor). Each env runs an independent episode; "
                     "~Nx throughput on top of the fast render skip.")
+    ap.add_argument("--resume", action="store_true",
+                    help="continue an interrupted collection in --output_dir instead of "
+                         "overwriting it: preloads the existing episodes, keeps counting from "
+                         "there, and OFFSETS the seed by the resume count (reusing --seed "
+                         "unchanged would deterministically re-draw the same episodes). Orphan "
+                         "obs files written past the last array checkpoint are dropped.")
     ap.add_argument("--save_every", type=int, default=25,
                     help="Re-save the .pth arrays roughly every N episodes (crash safety).")
     ap.add_argument("--video", action="store_true",
@@ -177,21 +200,63 @@ def main():
                     "speed, no effect on the dataset (boundary-only) or physics.")
     args = ap.parse_args()
 
+    # Resolve the yaw lock EXACTLY as GridWrapperSingle does (flag, else env var, else off) so
+    # the directory name reflects what is actually collected -- setting DINOWM_LOCK_CUBE_YAW
+    # without the flag would otherwise write yaw-locked data into the default unlocked path.
+    # Only the DEFAULT is renamed: an explicit --output_dir is always honoured verbatim.
+    args.lock_cube_yaw = (bool(int(os.environ.get("DINOWM_LOCK_CUBE_YAW", "0")))
+                          if args.lock_cube_yaw is None else bool(args.lock_cube_yaw))
+    if args.lock_cube_yaw and args.output_dir == _DEF_OUT:
+        args.output_dir += "_no_yaw"
+
     if args.video:
         run_video_preview(args)
         return
 
     out = Path(args.output_dir)
     (out / "obses").mkdir(parents=True, exist_ok=True)
+    # BEFORE collecting, not after: the tail call is on the success path only, so an interrupted run
+    # left no manifest at all (this is why data/isaaclab_stroke_5k has none). Written here, a dataset
+    # carries its full command + parsed args even if the collection is killed part way.
+    provenance.write(out, __file__, args=args, repo=_REPO_ROOT)
 
     N = args.num_envs
     env = GridWrapperSingle(
         task_id=args.task_id, num_envs=N, device=args.device,
         render_mode=args.render_mode, spp=args.spp, stroke_max_steps=args.stroke_max_steps,
         fast_stroke_render=not args.no_fast_render,
+        lock_cube_yaw=args.lock_cube_yaw,
     )
-    env.seed(args.seed)
-    rng = np.random.RandomState(args.seed)
+    # ---- RESUME: continue an interrupted collection instead of overwriting it ----------------
+    # Episodes already on disk are counted FIRST, because the seed depends on that count.
+    _resume_n = 0
+    if args.resume:
+        _sl = out / "seq_lengths.pth"
+        if _sl.exists():
+            _resume_n = int(torch.load(_sl).numel())
+            _n_obs = len(list((out / "obses").glob("episode_*.pth")))
+            # The .pth arrays are checkpointed every --save_every, but obses are written per
+            # episode, so a kill between checkpoints leaves MORE obses than array rows. Trust the
+            # arrays and drop the orphans, or the two would be misaligned by episode index.
+            if _n_obs > _resume_n:
+                for _f in sorted((out / "obses").glob("episode_*.pth"))[_resume_n:]:
+                    _f.unlink()
+                print(f"[collect] resume: dropped {_n_obs - _resume_n} orphan obs files past the "
+                      f"last array checkpoint")
+            print(f"[collect] RESUME from {_resume_n} episodes in {out}")
+        else:
+            print(f"[collect] --resume: nothing at {out}, starting fresh")
+
+    # SEED MUST DIFFER FROM THE ORIGINAL RUN. env.seed()/RandomState() are deterministic, so
+    # resuming with args.seed would replay the exact same cube spawns and strokes and silently
+    # duplicate the episodes already collected. Offsetting by the resume count gives a fresh
+    # stream while staying reproducible (same --seed + same resume point => same continuation).
+    _seed = args.seed + _resume_n
+    if _resume_n:
+        print(f"[collect] seeding continuation with {args.seed}+{_resume_n}={_seed} "
+              f"(NOT {args.seed}, which would re-draw the episodes already on disk)")
+    env.seed(_seed)
+    rng = np.random.RandomState(_seed)
     # One sampler per env (all identical mixed aimed/uniform; the StrokeExecutor itself
     # is already vectorized across envs). Each draws independent strokes.
     samplers = [StrokeSampler(rng, aimed_frac=args.aimed_frac, push_max=args.push_max,
@@ -202,6 +267,15 @@ def main():
     T = args.episode_len
 
     all_states, all_actions, all_proprio, all_cells, all_lens, all_sign = [], [], [], [], [], []
+
+    if _resume_n:                       # preload so save_arrays() rewrites the FULL set, not just the tail
+        all_states.extend(torch.load(out / "states.pth").numpy())
+        all_actions.extend(torch.load(out / "actions.pth").numpy())
+        all_proprio.extend(torch.load(out / "proprio.pth").numpy())
+        all_cells.extend(torch.load(out / "cell_labels.pth").numpy())
+        all_lens.extend(torch.load(out / "seq_lengths.pth").tolist())
+        all_sign.extend(torch.load(out / "sign_colors.pth").tolist())
+        print(f"[collect] resume: preloaded {len(all_states)} episodes into memory")
 
     def save_arrays():
         """Persist everything collected so far (valid dataset at any checkpoint)."""
@@ -216,12 +290,21 @@ def main():
         torch.save(torch.tensor(all_sign, dtype=torch.int64), out / "sign_colors.pth")
         meta = {
             "num_episodes": n, "episode_len": T, "seed": args.seed,
+            # A --resume run is NOT reproducible from `seed` alone: episodes [0, resumed_from)
+            # came from `seed`, the rest from `effective_seed` (= seed + resumed_from, offset so
+            # the continuation does not re-draw the same episodes). Record both or the dataset
+            # cannot be regenerated.
+            "effective_seed": _seed, "resumed_from_episode": _resume_n,
             "state_dim": env.state_dim, "action_dim": ACTION_DIM, "proprio_dim": PROPRIO_DIM,
             "action_repr": "planar_stroke_start_disp_grid_meters",  # [x_start, y_start, dx, dy]
             "img_hw": IMG_HW, "sampling": "mixed", "aimed_frac": args.aimed_frac,
             "push_max": args.push_max, "start_margin": args.start_margin,
             "aim_push_range": [args.aim_push_min, args.aim_push_max],
             "aim_offset_sd": args.aim_offset_sd,
+            # The single most consequential physics switch in the set: a yaw-locked dataset is not
+            # interchangeable with an unlocked one (a WM trained on one is out of distribution on
+            # the other), so it is recorded here rather than left to manifest.json alone.
+            "lock_cube_yaw": bool(args.lock_cube_yaw),
             "num_envs": args.num_envs, "stroke_max_steps": args.stroke_max_steps, "task_id": args.task_id,
             "render_mode": args.render_mode, "spp": args.spp, "ep_pad": EP_PAD,
             "sign_palette": [name for name, _ in SIGN_PALETTE],  # sign_colors.pth indexes this
@@ -229,9 +312,10 @@ def main():
         (out / "metadata.json").write_text(json.dumps(meta, indent=2))
 
     target = args.num_episodes
-    n_batches = (target + N - 1) // N  # ceil; last batch may be partially committed
-    ep_count = 0
-    last_saved = 0
+    # Resume continues toward the SAME total: only the remaining episodes are collected.
+    n_batches = (max(0, target - _resume_n) + N - 1) // N  # ceil; last batch may be partial
+    ep_count = _resume_n                # episode file numbering continues where it left off
+    last_saved = _resume_n
     t0 = time.perf_counter()
     try:
         for b in range(n_batches):

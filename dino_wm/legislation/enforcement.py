@@ -22,15 +22,27 @@ from probes.probe_cube_cells import CUBE_HALF, swept_cells   # GT swept-footprin
 class LawEvaluator:
     """Per-step law pipeline (probe -> ground -> reason -> Constraint) + a per-eval ledger."""
 
-    def __init__(self, reasoner, registry, base_facts=("cube",), source="encoded", **constraint_kw):
+    def __init__(self, reasoner, registry, base_facts=("cube",), source="encoded",
+                 perceive_fn=None, constraint_probes=None, **constraint_kw):
         self.reasoner = reasoner
         self.registry = registry
         self.base_facts = list(base_facts)     # always-true facts (e.g. "cube")
         self.source = source                   # which probes to run for grounding (encoded = phi(obs))
+        # ORACLE HOOKS (both None in the WM pipeline -> unchanged probe behaviour). The sim oracle has no
+        # renderer and no probes: it supplies current-state facts from sim ground truth via `perceive_fn`
+        # and a GT footprint-occupancy fn via `constraint_probes`, so it reuses this class's sign latch,
+        # swept taint, normative memory and verdict path verbatim instead of reimplementing them.
+        self.perceive_fn = perceive_fn         # callable(eval_index, gt_cube_xy) -> [fact, ...]
+        self.constraint_probes = constraint_probes   # probe dict handed to Constraint (else registry.probes)
         self.constraint_kw = constraint_kw     # cube_half / occ_thresh forwarded to Constraint
         self.ledgers = {}                      # eval_index -> NormativeMemory (per-eval executed history)
         self.goal_facts = {}                   # eval_index -> ['goal_cell(k)'] (spec if gt_goal_cell set, else perceived)
         self.gt_goal_cell = None               # int -> goal cell is a GIVEN task spec; set_goal skips perception (see set_goal)
+        self.start_facts = {}                  # eval_index -> ['start_cell(k)'] (spec; see set_start)
+        self.gt_start_cell = None              # int -> spawn cell as a GIVEN task spec, same status as
+        #                                        gt_goal_cell. None -> start_facts stays empty and the
+        #                                        rule-insertion law is simply never satisfiable, which is
+        #                                        what every standard run wants.
         self._gt_cube = {}                     # eval_index -> GT cube xy (authority input for the sign; see set_gt_cube)
         self.timing = self._zero_timing()      # per-episode wall-clock split of observe() (see Q5 runtime report)
 
@@ -50,11 +62,11 @@ class LawEvaluator:
         self.timing = self._zero_timing()
 
     def set_goal(self, goal_visual_latent, eval_index=0):
-        """Perceive the GOAL frame for eval `eval_index` on the SAME probe stack as live perception
-        (probes run on the goal latent) -> goal_cell(k), held as a per-eval base fact for the whole
-        episode. This is why the goal obligation is GROUNDED (probe-derived), not read from
-        privileged sim geometry. Idempotent: the goal is constant per episode, so later re-plans skip
-        the re-perceive (reset() clears goal_facts at episode start)."""
+        """goal_cell(k) for eval `eval_index`, a per-eval base fact for the whole episode.
+
+        gt_goal_cell set -> SPECIFICATION (see below). This is the live path on every benchmark run:
+        plan.py:384 sets it under goal_source=law_eval, so the probe branch below is dead there --
+        the goal obligation is GIVEN, not perceived. Idempotent (reset() clears goal_facts)."""
         if eval_index in self.goal_facts:                # already set this eval's goal -> skip
             return
         if self.gt_goal_cell is not None:
@@ -67,6 +79,22 @@ class LawEvaluator:
             return
         out = self.registry.forward(goal_visual_latent, source=self.source)
         self.goal_facts[eval_index] = Grounder(out).goal_cell()
+
+    def set_start(self, eval_index):
+        """START AS SPECIFICATION: the cell the episode began in, taken from the benchmark's metadata
+        (plan.py sets gt_start_cell from `init_cell`) rather than perceived.
+
+        Exactly the same status as gt_goal_cell, and for exactly the same reason: a spawn footprint can
+        straddle two cells, so the probe's multilabel in_cell yields TWO cells and the injected return
+        duty would name both -- the agent then goes 'home' to whichever is nearer, which is not the
+        cell it started in. The spawn cell is a property of the scenario, not something the agent has
+        to infer; the independent variable here is whether an injected rule changes behaviour, not
+        whether perception can localise the spawn. Current-STATE facts stay probe-grounded.
+
+        Idempotent and empty unless gt_start_cell is set, so standard runs carry no extra fact."""
+        if eval_index in self.start_facts or self.gt_start_cell is None:
+            return
+        self.start_facts[eval_index] = [f"start_cell({int(self.gt_start_cell)})"]
 
     def ledger(self, eval_index):
         """The ledger for one eval (created on first use)."""
@@ -83,20 +111,33 @@ class LawEvaluator:
         p = np.asarray(positions, dtype=float)
         self._gt_cube = {i: p[i] for i in range(p.shape[0])}
 
-    def _perceive(self, visual_latent, gt_cube_xy=None):
+    def _perceive(self, visual_latent, gt_cube_xy=None, eval_index=0):
         """Run the probes on the current frame + ground them -> current-state DDL facts. gt_cube_xy (the
         env's ground-truth cube position, optional) grounds the SIGN's occupies() predicate on TRUTH;
-        all other facts (in_cell, sign colour, ...) stay probe-derived."""
+        all other facts (in_cell, sign colour, ...) stay probe-derived. If `perceive_fn` was supplied
+        (sim oracle: no renderer, no probes) it replaces this entirely and returns GT-derived facts."""
+        if self.perceive_fn is not None:
+            _t = time.perf_counter()
+            facts = list(self.perceive_fn(eval_index, gt_cube_xy))
+            self.timing["ground_s"] += time.perf_counter() - _t           # GT read counts as grounding, not probe
+            self._last_probe_out = None                                   # oracle path: no probes ran
+            return facts
         _t = time.perf_counter()
         out = self.registry.forward(visual_latent, source=self.source)   # PROBES: perception forward pass
         self.timing["probe_s"] += time.perf_counter() - _t
+        # Stashed for the ledger. The ORIENTATION probe never produces a DDL fact -- it only reshapes
+        # the body model the constraint prunes with -- so without recording it here there is no trace
+        # of what the agent believed the cube's orientation was, and a pruning decision cannot be
+        # attributed to orientation error after the fact.
+        self._last_probe_out = out
         _t = time.perf_counter()
         facts = Grounder(out, gt_cube_xy=gt_cube_xy).ground()            # GROUNDING: probe reads -> DDL facts (geometry)
         self.timing["ground_s"] += time.perf_counter() - _t
         return facts
 
     def _build_constraint(self, verdict):
-        return Constraint(verdict["prohibitions"], self.registry.probes,
+        probes = self.registry.probes if self.constraint_probes is None else self.constraint_probes
+        return Constraint(verdict["prohibitions"], probes,
                           obligations=verdict["obligations"], permissions=verdict["permissions"],
                           **self.constraint_kw)
 
@@ -106,7 +147,7 @@ class LawEvaluator:
         facts). Returns the Constraint for this eval's current state."""
         led = self.ledger(eval_index)
         gt_xy = self._gt_cube.get(eval_index)
-        current = self._perceive(visual_latent, gt_xy)             # sign occupancy from GT (authority): rest FOOTPRINT
+        current = self._perceive(visual_latent, gt_xy, eval_index)  # sign occupancy from GT (authority): rest FOOTPRINT
         # SWEPT taint: passed_through(c) for every cell the TRUE footprint crossed on the transit that just
         # completed (previous executed rest -> this rest). Fed into visited() (memory.derived_facts) so a
         # mid-stroke drive-THROUGH cell 4 taints the history even when the cube rests clear -- matching the
@@ -131,6 +172,20 @@ class LawEvaluator:
             self.timing["ground_s"] += time.perf_counter() - _t    # swept-taint geometry counts as grounding
         led.append(current, None, gt_xy=gt_xy)                     # record RAW perceived facts (verdict backfilled below)
         self.timing["n_observe"] += 1
+        # PERCEIVED ORIENTATION (only present when a cube_yaw probe is loaded -- DINOWM_YAW_PROBE).
+        # Recorded as the decoded yaw MOD 90deg, in radians, plus the half-extent it implies, so the
+        # ledger carries exactly what enforcement acted on. Pair with eval_metrics.cube_yaw_frames
+        # (ground truth, same eval/step indexing) to get the orientation grounding gap on the EVAL
+        # distribution rather than on the calibration set.
+        _po = getattr(self, "_last_probe_out", None)
+        if _po is not None and "cube_yaw" in _po:
+            sc = _po["cube_yaw"]
+            i = min(int(eval_index), sc.shape[0] - 1) if sc.dim() > 1 else 0
+            sn, cs = float(sc[i, 0]), float(sc[i, 1])
+            yaw = float(np.arctan2(sn, cs) / 4.0)                  # (sin 4t, cos 4t) -> yaw in (-45,45] deg
+            led.records[-1]["probe_yaw_rad"] = yaw
+            led.records[-1]["probe_half_extent_m"] = float(
+                CUBE_HALF * (abs(np.cos(yaw)) + abs(np.sin(yaw))))
 
         # SIGN LATCH: the yellow->green/red flip is a ONE-SHOT resolution (reaching the yellow cell). Once it
         # has resolved to a terminal colour, FREEZE it -- feed the latched colour to the reasoner instead of
@@ -143,7 +198,9 @@ class LawEvaluator:
 
         # base + PERCEIVED GOAL (goal_cell(k)) + current + history-derived facts. The goal fact
         # activates the reach_goal_k obligation, letting it interact with the cell laws.
+        self.set_start(eval_index)                                 # no-op unless gt_start_cell is set
         facts = (self.base_facts + self.goal_facts.get(eval_index, [])
+                 + self.start_facts.get(eval_index, [])            # spec, like goal_cell (see set_start)
                  + sign_facts + led.derived_facts())               # derived includes this step -> TEMPORAL scope
         _t = time.perf_counter()
         verdict = self.reasoner.assess(facts)                      # LOGIC: clingo DDL solve (memoized per fact-set)

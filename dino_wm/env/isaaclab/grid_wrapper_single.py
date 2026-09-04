@@ -23,6 +23,7 @@ Mirrors grid_wrapper.py (GridWrapper) reduced to a single robot.
 from __future__ import annotations
 
 import math
+import os
 
 import numpy as np
 import torch
@@ -75,7 +76,13 @@ class GridWrapperSingle:
         fast_stroke_render: bool = True,
         tiled_camera: bool = False,
         cam_wh: tuple | None = None,
+        lock_cube_yaw: bool | None = None,
     ):
+        # OPT-IN, default OFF (existing runs reproduce). Pins the cube axis-aligned at spawn and
+        # after every stroke step, making swept_cells' axis-aligned CUBE_HALF model EXACT -- by
+        # default yaw is randomized and the cube rotates when pushed, so that model under-detects.
+        self.lock_cube_yaw = (bool(int(os.environ.get("DINOWM_LOCK_CUBE_YAW", "0")))
+                              if lock_cube_yaw is None else bool(lock_cube_yaw))
         # renderer/physics GPU follows the wrapper's device (Vulkan ignores
         # CUDA_VISIBLE_DEVICES; AppLauncher derives the active GPU from device).
         get_app(headless=headless, enable_cameras=True, render_mode=render_mode, spp=spp, device=device)
@@ -113,6 +120,18 @@ class GridWrapperSingle:
         # leaves this False (keeps the per-env Camera). See _use_tiled_camera.
         if tiled_camera:
             self._use_tiled_camera(env_cfg)
+        if self.lock_cube_yaw:
+            # Stop the push from spinning the cube AT THE SOLVER, not just by overwriting the pose
+            # afterwards: clamp angular velocity to 0 and damp hard. _lock_yaw() stays as a backstop.
+            # Hard failure if the path is absent -- silently NOT locking would yield data that looks
+            # yaw-locked but is not, which is worse than crashing.
+            rp = getattr(getattr(getattr(env_cfg.scene, "cube", None), "spawn", None),
+                         "rigid_props", None)
+            if rp is None:
+                raise RuntimeError(f"lock_cube_yaw=True but {task_id} has no scene.cube.spawn."
+                                   "rigid_props to clamp -- refusing to run half-locked.")
+            rp.max_angular_velocity = 0.0
+            rp.angular_damping = 1000.0
         self._env = gym.make(task_id, cfg=env_cfg)
         self._scene = self._env.unwrapped.scene
         self._setup_camera()
@@ -187,6 +206,11 @@ class GridWrapperSingle:
         origins = self._scene.env_origins
         block = t[:, 2 * _ARM_JOINT_DIM : 2 * _ARM_JOINT_DIM + _CUBE_DIM].clone()
         block[:, :3] = block[:, :3] + origins
+        if self.lock_cube_yaw:
+            # stored eval init states carry their own yaw -- override it, else the flag is
+            # silently defeated on the set_init_state() path the eval harness uses.
+            block[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=block.device)
+            block[:, 10:13] = 0.0
         self._scene[_CUBE_KEY].write_root_state_to_sim(block)
 
     def _materialize_state(self):
@@ -252,6 +276,13 @@ class GridWrapperSingle:
         """(N,3) env-local cube xyz position."""
         origins = self._scene.env_origins
         return (self._scene[_CUBE_KEY].data.root_pos_w - origins).detach().cpu().numpy()
+
+    def get_cube_yaw(self) -> np.ndarray:
+        """(N,) cube yaw (rad) about +z from root_quat_w (w,x,y,z) -- the quantity the
+        axis-aligned body model omits, recorded nowhere else and unrecoverable post-hoc."""
+        q = self._scene[_CUBE_KEY].data.root_quat_w.detach().cpu().numpy()   # (N,4) w,x,y,z
+        w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+        return np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
     def get_joint_diag(self):
         """Debug: (joint_pos (J,), names list, limits (J,2) or None) for env 0 —
@@ -333,7 +364,8 @@ class GridWrapperSingle:
         y = cy + (2 * _edge(torch.rand(N, device=dev)) - 1) * _CUBE_RAND_HALF
         z = torch.full((N,), _CUBE_SPAWN_Z, device=dev)
         pos_world = torch.stack([x, y, z], dim=1) + origins  # (N,3)
-        yaw = (torch.rand(N, device=dev) * 2 - 1) * math.pi
+        yaw = (torch.zeros(N, device=dev) if self.lock_cube_yaw
+               else (torch.rand(N, device=dev) * 2 - 1) * math.pi)
         qw, qz = torch.cos(yaw / 2), torch.sin(yaw / 2)
         zeros = torch.zeros_like(qw)
         quat = torch.stack([qw, zeros, zeros, qz], dim=1)  # (N,4) wxyz
@@ -359,7 +391,8 @@ class GridWrapperSingle:
         self._executor.refresh_ref_quat()
         return self._executor
 
-    def execute_stroke(self, strokes, frame_sink=None):
+    def execute_stroke(self, strokes, frame_sink=None, pos_sink=None, yaw_sink=None,
+                       trace_stride=1):
         """strokes: (N,4) or (4,) planar [x_start, y_start, dx, dy] env-local meters
         (start point + push displacement; end = start + (dx,dy)). Runs
         approach->descend->push via the internal 7-D IK term until the executor
@@ -370,8 +403,19 @@ class GridWrapperSingle:
         frame_sink: optional list. If given, every internal step's env-0 RGB frame is
         appended (forces per-step rendering, ignoring fast_stroke_render) so a caller
         can assemble a SMOOTH dynamics preview video. Leave None for normal collection
-        (boundary-only, fast)."""
+        (boundary-only, fast).
+
+        pos_sink: optional list. If given, every internal physics step's (N,2) cube xy is
+        appended -- the SUB-FRAME cube path, which nothing else records (the ledger and the
+        training dump both store one rest position per stroke). Costs nothing: the position is
+        already read each step for the executor, and unlike frame_sink it forces no rendering.
+        Used to check what the swept-occupancy test loses by linearising a stroke.
+
+        yaw_sink: same cadence as pos_sink -> (N,) cube yaw. trace_stride: sample both every
+        k-th step (1 = lossless). Neither touches frame_sink, so video timing is unchanged."""
         recording = frame_sink is not None
+        _k = max(1, int(trace_stride))
+        _i = 0
         s = np.atleast_2d(np.asarray(strokes, dtype=np.float32))  # (N,4) or (1,4)
         if s.shape[0] == 1 and self.num_envs > 1:
             s = np.repeat(s, self.num_envs, axis=0)
@@ -395,6 +439,13 @@ class GridWrapperSingle:
                 self._env.step(self._action_tensor(a7))  # internal low-level IK step
                 self._freeze_episode_clock()              # prevent mid-stroke time_out reset
                 self._clamp_cube()                        # contain the cube to the reachable box
+                self._lock_yaw()                          # no-op unless lock_cube_yaw
+                if (pos_sink is not None or yaw_sink is not None) and _i % _k == 0:
+                    if pos_sink is not None:              # SUB-FRAME cube path, post-clamp (matches
+                        pos_sink.append(self.get_cube_positions()[:, :2].copy())  # the recorded convention)
+                    if yaw_sink is not None:
+                        yaw_sink.append(self.get_cube_yaw().copy())
+                _i += 1
                 if recording:                             # grab this step's per-env frame (smooth preview / plan video)
                     rgb = self._scene[_CAMERA_KEY].data.output["rgb"].detach().cpu().numpy()
                     frame_sink.append(np.asarray(rgb).copy())   # (N,H,W,3), all envs
@@ -406,6 +457,7 @@ class GridWrapperSingle:
         # reflect the clamped cube (a stroke runs render_interval high, so we render
         # once here). scene.update refreshes the obs/state buffers we read below.
         self._clamp_cube()
+        self._lock_yaw()                                  # no-op unless lock_cube_yaw
         # SNAP the arm to exactly the reset joint config so every recorded boundary frame
         # has an identical arm. Set BOTH the joint state AND the position target to home:
         # writing state alone left the PD actuator holding its last IK target, so the
@@ -420,7 +472,25 @@ class GridWrapperSingle:
         else:
             env.sim.render()
             self._scene.update(env.sim.get_physics_dt())
+        # RE-PIN AFTER the arm snap. _materialize_state() runs a physics step, and the earlier
+        # _lock_yaw() above happens BEFORE it -- so the pose actually recorded had drifted off axis
+        # (measured 1.72 deg residual on a 2-episode collect, i.e. ~1.35 mm of footprint extent).
+        # This is the last write before _scene_outputs() reads, so what is recorded is what is pinned.
+        self._lock_yaw()
         return self._scene_outputs()
+
+    def _lock_yaw(self):
+        """Re-pin the cube axis-aligned (identity quat, zero angular velocity). No-op unless
+        lock_cube_yaw. Runs UNCONDITIONALLY when on -- unlike _clamp_cube, which early-returns."""
+        if not self.lock_cube_yaw:
+            return
+        cube = self._scene[_CUBE_KEY]
+        d = cube.data
+        quat = torch.zeros_like(d.root_quat_w)
+        quat[:, 0] = 1.0
+        block = torch.cat([d.root_pos_w, quat, d.root_lin_vel_w,
+                           torch.zeros_like(d.root_ang_vel_w)], dim=-1)
+        cube.write_root_state_to_sim(block)
 
     def _clamp_cube(self):
         """Hard containment: project the cube back into the +/-_CUBE_CLAMP_HALF box
@@ -480,11 +550,16 @@ class GridWrapperSingle:
         self.set_init_state(init_state)
         return self._scene_outputs()
 
-    def rollout(self, seed, init_state, actions, frame_sink=None):
+    def rollout(self, seed, init_state, actions, frame_sink=None, trace_sink=None,
+                trace_stride=1):
         """actions: (T,4) or (N,T,4) strokes. One boundary obs/state per stroke.
         frame_sink: optional list -> every internal sim step's (N,H,W,3) frame is
         appended (forces per-step rendering) for a SMOOTH plan/preview video, starting
-        with the initial rest frame. Leave None for the fast boundary-only rollout."""
+        with the initial rest frame. Leave None for the fast boundary-only rollout.
+
+        trace_sink: optional dict -> SUB-FRAME cube trace: "xy" (S,N,2), "yaw" (S,N) every
+        trace_stride-th internal step, "stroke_bounds" (T+1,) slicing S per stroke. Makes
+        `swept`'s straight-line assumption measurable instead of assumed."""
         obs, state = self.prepare(seed, init_state)
         visuals = [obs["visual"]]
         proprios = [obs["proprio"]]
@@ -495,11 +570,20 @@ class GridWrapperSingle:
         a = np.asarray(actions)
         if a.ndim == 2:  # (T,4) -> (1,T,4)
             a = a[None]
+        _pos, _yaw, _bounds = ([], [], [0]) if trace_sink is not None else (None, None, None)
         for t in range(a.shape[1]):
-            o, st = self.execute_stroke(a[:, t], frame_sink=frame_sink)
+            o, st = self.execute_stroke(a[:, t], frame_sink=frame_sink, pos_sink=_pos,
+                                        yaw_sink=_yaw, trace_stride=trace_stride)
+            if trace_sink is not None:
+                _bounds.append(len(_pos))          # this stroke occupies _pos[_bounds[t]:_bounds[t+1]]
             visuals.append(o["visual"])
             proprios.append(o["proprio"])
             states.append(st)
+        if trace_sink is not None:
+            trace_sink["xy"] = (np.stack(_pos) if _pos else np.zeros((0, self.num_envs, 2), np.float32))
+            trace_sink["yaw"] = (np.stack(_yaw) if _yaw else np.zeros((0, self.num_envs), np.float32))
+            trace_sink["stroke_bounds"] = np.asarray(_bounds, dtype=np.int32)
+            trace_sink["stride"] = int(max(1, trace_stride))
         return (
             {
                 "visual": np.stack(visuals, axis=1),

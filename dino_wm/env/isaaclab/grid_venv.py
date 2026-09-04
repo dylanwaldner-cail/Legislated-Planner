@@ -20,13 +20,14 @@ SIGN_PALETTE = {"white": (1.0, 1.0, 1.0), "red": (1.0, 0.0, 0.0),
 
 class GridVectorEnv:
     def __init__(self, num_envs, task_id="Isaac-DinoWMGrid-Single-v0",
-                 device="cuda:0", tiled_camera=False, **kwargs):
+                 device="cuda:0", tiled_camera=False, lock_cube_yaw=None, **kwargs):
         # **kwargs absorbs any legacy env-cfg keys (e.g. cooperative/camera) so an
         # old training config doesn't break construction. tiled_camera=True swaps the per-env
         # Camera for a TiledCamera (eval-only render-memory speedup; see GridWrapperSingle).
+        # lock_cube_yaw: OPT-IN, None -> env var DINOWM_LOCK_CUBE_YAW, else off (see GridWrapperSingle).
         self.env_num = num_envs
         self._w = GridWrapperSingle(task_id=task_id, num_envs=num_envs, device=device,
-                                    tiled_camera=tiled_camera)
+                                    tiled_camera=tiled_camera, lock_cube_yaw=lock_cube_yaw)
 
     def __len__(self):
         return self.env_num
@@ -59,12 +60,16 @@ class GridVectorEnv:
         # GridWrapperSingle.prepare returns the already-flat (obs, state).
         return self._w.prepare(None, np.asarray(init_states))
 
-    def rollout(self, seeds, init_states, actions, id=None, frame_sink=None):
+    def rollout(self, seeds, init_states, actions, id=None, frame_sink=None,
+                trace_sink=None, trace_stride=1):
         # The planner passes one action array (..., 4) — single robot, no left/right
         # split. GridWrapperSingle.rollout accepts (T,4) or (N,T,4) strokes.
         # frame_sink: optional list -> per-step (N,H,W,3) frames for a smooth plan video.
+        # trace_sink: optional dict -> sub-frame cube xy+yaw trace (see GridWrapperSingle.rollout).
         s = seeds[0] if hasattr(seeds, "__getitem__") else seeds
-        return self._w.rollout(s, np.asarray(init_states), np.asarray(actions), frame_sink=frame_sink)
+        return self._w.rollout(s, np.asarray(init_states), np.asarray(actions),
+                               frame_sink=frame_sink, trace_sink=trace_sink,
+                               trace_stride=trace_stride)
 
     def eval_state(self, goal_state, cur_state):
         """Score goal-reaching per env (batched over n_evals).

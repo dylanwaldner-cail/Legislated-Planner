@@ -28,6 +28,7 @@ from einops import repeat
 
 from utils import move_to_device
 from .cem_aimed_contact import AimedContactCEMPlanner
+from . import trace_cfg
 
 from probes.probe_cube_position import gm  # grid extent for sampling + which_cell
 
@@ -55,7 +56,7 @@ class RRTPlanner(AimedContactCEMPlanner):
     def __init__(self, wm, action_dim, objective_fn, preprocessor, evaluator, wandb_run,
                  log_filename="logs.json", max_samples=256, batch_size=64, goal_tol=0.06,
                  goal_bias=0.2, push_min=0.05, push_max=0.09, max_path=20,
-                 deviant_lambda=0.067, steer_cone_deg=90.0, **kwargs):
+                 deviant_lambda=0.067, steer_cone_deg=90.0, freeze_fast_path=False, **kwargs):
         # the CEM hyperparams are unused by RRT; pass placeholders so the parent __init__ is happy
         super().__init__(horizon=1, topk=1, num_samples=batch_size, var_scale=1, opt_steps=1,
                          eval_every=1, wm=wm, action_dim=action_dim, objective_fn=objective_fn,
@@ -79,6 +80,9 @@ class RRTPlanner(AimedContactCEMPlanner):
         # the target (no wasted backward pushes) while the +/- spread still searches around the WM's
         # heading error. steer_cone_deg >= 360 -> full uniform (the old blind sampling, for A/B).
         self.steer_cone_deg = float(steer_cone_deg)
+        # See the freeze fast-path block in _build_tree. OFF by default (RNG-stream compatibility with
+        # every run already in results/final); the plan it produces is identical either way.
+        self.freeze_fast_path = bool(freeze_fast_path)
         # Normative MEMORY now lives in the legislation LEDGER (LawEvaluator.ledger, per eval), NOT
         # here -- the planner is stateless about law. RRT keeps only an episode step counter for logs.
         self._step = 0
@@ -89,6 +93,9 @@ class RRTPlanner(AimedContactCEMPlanner):
     def reset(self):
         """New episode (called by MPCPlanner): reset the step counter and the legislation ledger."""
         self._step = 0
+        self._return_duty = {}      # eval -> obliged return cell. MUST clear per episode: it latches the
+        #                             goal retarget, so a leftover entry would retarget episode N+1's goal
+        #                             from episode N's duty before any law had fired.
         self._query_log = []        # accumulate candidate stats across the whole episode's re-plans
         # RUNTIME accounting, accumulated over the episode's re-plans across ALL evals:
         #   _t_plan   = total wall-clock inside plan()   (RRT search + legislation)
@@ -99,6 +106,14 @@ class RRTPlanner(AimedContactCEMPlanner):
         # RRT-only time = _t_plan - _t_reason - _t_prune  (WM rollouts + position-probe tree geometry +
         #               stroke sampling + nearest/tree bookkeeping + path build).
         self._t_plan = self._t_reason = self._t_prune = 0.0
+        # PER-(eval, step) timing. The accumulators above are batch totals, which cannot answer
+        # "seconds per productive action": a batch's plan_total_s also covers evals that already
+        # reached the goal (mpc.py runs until EVERY eval succeeds, and plan() replans all of them each
+        # iteration) and steps frozen by [F]moving. Those are ~half the eval-steps in a typical batch,
+        # and a regression over batch totals cannot separate them (it returns negative seconds/step for
+        # the post-success class -- unidentified, since the counts are collinear with iteration count).
+        # Recording the split HERE makes the exclusion exact instead of estimated.
+        self._step_times = []
         law_fn = getattr(self, "law_fn", None)
         if law_fn is not None:
             law_fn.reset()
@@ -160,6 +175,12 @@ class RRTPlanner(AimedContactCEMPlanner):
             viol = np.zeros(B, dtype=bool)
         self._considered += int(viol.size)                                           # cumulative prune tally (per MPC iter)
         self._pruned += int(viol.sum())
+        # PER-LAW prune attribution, accumulated over every extend of this MPC iteration. Populated by
+        # constraint.violations(); purely additive instrumentation (the prune mask itself is unchanged).
+        for _a, _c in (getattr(constraint, "last_pruned_by", None) or {}).items():
+            self._pruned_by[_a] = self._pruned_by.get(_a, 0) + _c
+        for _a, _c in (getattr(constraint, "last_pruned_solely_by", None) or {}).items():
+            self._pruned_solely_by[_a] = self._pruned_solely_by.get(_a, 0) + _c
         if getattr(self, "_log_queries", False):
             # INTROSPECTION: record every sampled candidate (the planner's QUERY distribution) -- aim
             # |start-cube|, push |disp|, WM-PREDICTED cube move + from/to cell, and whether pruned.
@@ -176,6 +197,27 @@ class RRTPlanner(AimedContactCEMPlanner):
             })
         tdist = np.linalg.norm(end_pos - target, axis=1)
         cum = int(near.viol) + viol.astype(np.int64)                                  # path violations if candidate i is taken
+        # One row per EXTEND: rule-BLIND winner vs live-rule winner -> re-rank offline at another
+        # lambda/pruning rule. Captured before the `tdist[viol] = inf` mutation below.
+        _free = int(tdist.argmin()) if getattr(self, "_log_cands", False) else None
+        _free_d = float(tdist[_free]) if _free is not None else 0.0
+
+        def _log(chosen):
+            """chosen: winning candidate index under the LIVE rule, or -1 if every one was pruned."""
+            if _free is None:
+                return
+            c = int(chosen)
+            self._cand_log.append((
+                int(self._step), int(self._cand_eval), int(near.age),
+                float(target[0]), float(target[1]),
+                float(end_pos[_free, 0]), float(end_pos[_free, 1]), _free_d, int(viol[_free]),
+                float(end_pos[c, 0]) if c >= 0 else np.nan,
+                float(end_pos[c, 1]) if c >= 0 else np.nan,
+                float(np.linalg.norm(end_pos[c] - target)) if c >= 0 else np.nan,
+                int(viol[c]) if c >= 0 else -1,
+                int(viol.sum()), int(viol.size), int(near.viol),
+            ))
+
         if getattr(self, "mode", "social") == "deviant":
             # DEVIANT: never prune. SCALAR trade-off -- minimize (dist-to-target + lambda*cum_violations).
             # A crossing candidate (adds a violation) wins only if it gets > lambda closer to target than
@@ -186,8 +228,10 @@ class RRTPlanner(AimedContactCEMPlanner):
             # SOCIAL / off: prune law-breakers; pick the legal candidate closest to target.
             tdist[viol] = np.inf
             if not np.isfinite(tdist).any():
+                _log(-1)
                 return None                                                          # every extension violates the law
             best = int(tdist.argmin())
+        _log(best)
         new_prefix = torch.cat([near.prefix, strokes[best:best + 1]], dim=0)          # (len+1,4)
         return end_pos[best], new_prefix, int(cum[best])
 
@@ -214,6 +258,32 @@ class RRTPlanner(AimedContactCEMPlanner):
                     cell=int(gm.which_cell(np.asarray(root_cube, dtype=np.float32))),
                     age=0, law=law, prefix=torch.zeros(0, self.action_dim, device=self.device), parent=-1)
         nodes = [root]
+
+        # FREEZE FAST-PATH -- OPT-IN (freeze_fast_path=True), OFF BY DEFAULT.
+        # OFF by default for REPRODUCIBILITY, not because it is wrong: skipping the search also skips
+        # this step's ~max_samples np.random draws, so the global RNG stream shifts and every
+        # trajectory AFTER the first freeze diverges from runs made without it. Since frozen steps are
+        # now excluded exactly (runtime_breakdown["per_step"]["frozen"]), the reported cost per
+        # productive action is identical either way -- the flag only buys wall-clock. Turn it on for
+        # new work, leave it off to stay bit-comparable with the existing results/final trees.
+        # `constraint.blocks_everything` is True iff some prohibition's checker is unconditional --
+        # today only [F]moving, which flags every candidate by construction. Under SOCIAL pruning that
+        # makes _extend return None every single time, so the tree can never leave the root; the old
+        # code still burned all max_samples iterations (a batch_size-wide WM rollout each) to
+        # rediscover that. Measured on the full lawset, this made the freeze the MOST expensive state
+        # in the system: batches with a high frozen-step fraction cost 22.9 s of RRT per observe vs
+        # 10.5 s for low-freeze batches (corr +0.983 between freeze fraction and RRT s/observe).
+        # Returning the bare root produces the IDENTICAL plan (zero strokes -> plan() pads a hold), so
+        # this changes runtime only, never behaviour.
+        # NOT applied to deviant (never prunes -- it prices `moving` into its scalar cost and may move
+        # anyway) or off (skips the legality check entirely, so nothing is ever pruned).
+        _con = getattr(self, "constraint", None)
+        if (getattr(self, "freeze_fast_path", False)
+                and _con is not None and getattr(self, "mode", "social") not in ("off", "deviant")
+                and getattr(_con, "blocks_everything", False)):
+            print(f"  [rrt freeze] e{e}: {_con} rejects every candidate -> holding "
+                  f"(search skipped, 0/{self.max_samples} samples)")
+            return root, nodes
 
         for _ in range(self.max_samples):
             target = goal_cube if np.random.rand() < self.goal_bias else \
@@ -285,11 +355,33 @@ class RRTPlanner(AimedContactCEMPlanner):
         self._step += 1                           # episode re-plan counter (memory itself lives in the ledger)
         law_fn = getattr(self, "law_fn", None)    # per-step, per-eval legislation evaluator (holds the ledger)
 
+        # MID-RUN RULE INSERTION. At `rule_injection.frame` swap the reasoner's active law CATEGORIES and
+        # recompile the DDL theory in place, so a rule that did not exist when the episode began binds the
+        # planner from this step on -- no retraining, no re-synthesis. Done ONCE per step (not per eval):
+        # the reasoner is shared across the batch, and recompile() no-ops when the active set is already
+        # current, so the repeated call each later step is free. Timing lands in reasoner.recompile_log.
+        _ri = getattr(self, "rule_injection", None) or {}
+        if (_ri.get("frame") is not None and law_fn is not None
+                and self._step >= int(_ri["frame"]) and getattr(law_fn, "reasoner", None) is not None):
+            law_fn.reasoner.recompile(_ri.get("active_lawsets"))
+
+        if not hasattr(self, "_return_duty"):
+            self._return_duty = {}                # eval -> cell it is obliged to RETURN to (latched; the
+            #                                       MPC loop reads it to retarget that eval's goal image)
         self._trees = []                          # keep each eval's search nodes (planner-side)
+        self._log_cands = trace_cfg.trace_candidates()   # opt-in per-extend counterfactual (see trace_cfg)
+        self._cand_log = []                       # rows appended by _extend._log; drained per MPC iter
+        self._cand_eval = -1                      # eval the current _extend belongs to
         self._pruned = 0                          # cumulative law-pruned candidate strokes this MPC iter
         self._considered = 0
+        self._pruned_by = {}                      # prohibition atom -> candidates it flagged (may overlap)
+        self._pruned_solely_by = {}               # prohibition atom -> candidates ONLY it flagged
         paths, finals = [], []
+        _t_shared = time.perf_counter() - _tp0    # encode/preprocess done once for the whole batch
         for e in range(n_evals):
+            self._cand_eval = e                                 # tags this eval's _extend rows
+            _te0 = time.perf_counter()                          # this eval-step's own wall-clock
+            _tr0, _tpr0 = self._t_reason, self._t_prune         # its slice of the legislation totals
             # STATE-DEPENDENT LAW: perceive eval e's current frame, record it in eval e's LEDGER, and
             # get the Constraint for eval e's current state. Legislation owns the memory + reasoning;
             # RRT just receives the constraint and prunes on it (constraint.violations, in _extend).
@@ -313,6 +405,12 @@ class RRTPlanner(AimedContactCEMPlanner):
                 _obl = list(getattr(self.constraint, "obligations", []) or [])
                 wp = bank.waypoint(_obl, visited_cells_from_ledger(law_fn.ledger(e)),
                                    root_cube[e], int(gm.which_cell(goal_cube[e])))
+                # RETURN DUTY -> GOAL RETARGET. Record which cell each eval is obliged to get back to;
+                # the MPC loop swaps that eval's goal to the bank's CENTERED IMAGE of that cell, so the
+                # retarget is LAW-DRIVEN, not scheduled: `off` ignores obligations entirely (the mode gate
+                # above), so its goal never moves and it is a free control arm.
+                for _rc in bank.return_obligations(_obl):
+                    self._return_duty[e] = int(_rc)
                 if wp is not None:
                     tgt_cube = bank.pos[wp]
                     _exit = bank.exit_obligations(_obl)   # reparative exit_cell(k) duties, if any
@@ -335,10 +433,32 @@ class RRTPlanner(AimedContactCEMPlanner):
                     "predicted_final_pos": [float(final[0]), float(final[1])],
                     "path_len": int(len(path)),
                     "obligation_waypoint": wp,   # cell the positive-obligation switch steered to (None = real goal)
+                    # --- rule-insertion audit: what the LAW was and what the GOAL was, per step ---
+                    # goal_cell is read off THIS step's goal_cube, which comes from obs_g -- so once the
+                    # duty retargets an eval's goal image, this value changes on the following step and
+                    # the ledger shows the goal moving over time. active_lawsets shows the amendment.
+                    "active_lawsets": (list(law_fn.reasoner.active_lawsets)
+                                       if getattr(law_fn, "reasoner", None) is not None
+                                       and law_fn.reasoner.active_lawsets else None),
+                    "goal_cell": int(gm.which_cell(goal_cube[e])),
+                    "return_duty_cell": self._return_duty.get(e),
                 })
             self._trees.append(nodes)
             paths.append(path)
             finals.append(final)
+            # PER-(eval, step) split. `frozen` marks the steps [F]moving made unplannable; post-success
+            # steps are identified offline by comparing `step` against eval_metrics' n_steps (the MPC
+            # loop keeps replanning solved evals until the whole batch finishes). `shared_s` is the
+            # once-per-batch encode/preprocess, attributed to eval 0 only so the per-step times sum
+            # back to plan_total_s exactly.
+            self._step_times.append({
+                "eval": int(e), "step": int(self._step),
+                "total_s": (time.perf_counter() - _te0) + (_t_shared if e == 0 else 0.0),
+                "reason_s": self._t_reason - _tr0,
+                "prune_s": self._t_prune - _tpr0,
+                "frozen": bool(getattr(getattr(self, "constraint", None), "blocks_everything", False)),
+                "n_nodes": int(len(nodes)),
+            })
             print(f"  [rrt e{e}] step {self._step} | tree {len(nodes)} nodes | path {len(path)} strokes | "
                   f"law {getattr(self, 'constraint', None)} | "
                   f"start ({root_cube[e][0]:+.3f},{root_cube[e][1]:+.3f}) -> "
@@ -346,6 +466,10 @@ class RRTPlanner(AimedContactCEMPlanner):
         pct = (100.0 * self._pruned / self._considered) if self._considered else 0.0
         print(f"[rrt prune] step {self._step}: pruned {self._pruned}/{self._considered} "
               f"candidate strokes ({pct:.0f}%) | law {getattr(self, 'constraint', None)}")
+        if self._pruned_by:                       # PER-LAW attribution: which prohibition did the work
+            _by = ", ".join(f"{a}={self._pruned_by[a]}(solo {self._pruned_solely_by.get(a,0)})"
+                            for a in sorted(self._pruned_by, key=lambda k: -self._pruned_by[k]))
+            print(f"[rrt prune] step {self._step}: by law -> {_by}")
 
         # pad each path to T_max with a HOLD (zero-displacement stroke at the final cube)
         T_max = max((len(p) for p in paths), default=1) or 1

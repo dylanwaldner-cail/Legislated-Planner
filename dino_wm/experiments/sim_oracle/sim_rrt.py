@@ -110,9 +110,20 @@ class SimOracleRRT:
     def __init__(self, env, reasoner, mode="social", *, action_min=None, action_max=None,
                  batch_size=64, max_samples=512, max_path=3, goal_tol=0.06, goal_bias=0.5,
                  push_min=0.05, push_max=0.09, aim_back=0.12, deviant_lambda=0.067,
-                 steer_cone_deg=90.0, patience=0, cube_half=CUBE_HALF, device="cuda:0"):
+                 steer_cone_deg=90.0, patience=0, cube_half=CUBE_HALF, device="cuda:0",
+                 enforcement=None, sign_schedule=None, goal_bank_path=None):
         self.env = env                     # PhysGridEnv with num_envs == batch_size
         self.reasoner = reasoner
+        # SIGN-DEPENDENT LAWSETS take a per-step verdict; sign-free ones keep the legacy static path so
+        # every previously reported oracle run reproduces bit-for-bit. The ACTIVE LAWSET is the switch --
+        # no separate flag -- because a sign-free lawset cannot change verdict mid-episode by construction.
+        _sets = reasoner.active_lawsets or []
+        _sets = [_sets] if isinstance(_sets, str) else list(_sets)
+        self.dynamic = any(s != "geometric_laws" for s in _sets) and enforcement is not None
+        self.enforcement = enforcement     # shared legislation.Enforcement (GT-fed via perceive_fn)
+        self.sign_schedule = sign_schedule # callable(step_ix) -> raw sign colour, or None
+        self.goal_bank_path = goal_bank_path   # OBLIGATION CHANNEL: positive obligations swap the target
+        self._goal_bank = None
         self.mode = mode                   # social | deviant | off
         self.batch_size = batch_size
         self.max_samples = max_samples
@@ -139,12 +150,112 @@ class SimOracleRRT:
     def _make_constraint(self, goal_cell):
         """DDL verdict from GT facts (goal cell perceived perfectly) -> reused Constraint whose occ
         path uses the GT footprint-occupancy fn. Static per episode (no sign flip in the oracle). None
-        for mode=off (no pruning), matching the WM pipeline (no law_fn -> self.constraint unset)."""
+        for mode=off (no pruning), matching the WM pipeline (no law_fn -> self.constraint unset).
+
+        LEGACY PATH, kept byte-identical: used whenever the active lawset is sign-free (geometric_laws),
+        i.e. every oracle run reported so far (results/final/oracle_cushion, oracle_x2_delta0). The
+        sign-dependent lawsets take the per-step path in `_observe` instead -- see `self.dynamic`.
+
+        Both paths hand Constraint {"cube_cells": self._occ}, enabling _cell_presence's OCCUPANCY branch
+        on top of the transit test -- the INTENDED semantics: the escape grandfather excuses an inherited
+        illegal state, it does not license dipping in and out. The WM arm cannot currently run that
+        branch (probes.yaml has cube_cells enabled:false, and the branch demands a cube_cells callable),
+        so the WM agent is enforced on transit ALONE and, for a candidate starting inside the cell, on its
+        ENDPOINT alone. That asymmetry is in the WM arm, not here; see the note in constraint.py."""
         if self.mode == "off":
             return None
         v = self.reasoner.assess(["cube", f"goal_cell({int(goal_cell)})"])
         return Constraint(v["prohibitions"], {"cube_cells": self._occ}, cube_half=self.cube_half,
                           obligations=v["obligations"], permissions=v["permissions"])
+
+    def _gt_facts(self, eval_index, gt_cube_xy):
+        """Current-state DDL facts from SIM GROUND TRUTH -- the oracle's replacement for the probe
+        stack (`Enforcement.perceive_fn`). Mirrors what Grounder emits from probe reads, except every
+        fact is exact: occupies(c)/in_cell(c) from the true footprint, and sign(colour) from the
+        exogenous schedule rather than a sign_color probe read. The sign is an external authority in
+        the WM pipeline too (grounded on GT position, never flippable by perception), so feeding it
+        directly here is the same semantics, not a privilege."""
+        from legislation.grounding import Grounder
+        xy = np.asarray(gt_cube_xy, float).reshape(-1)[:2]
+        # Run the WM path's OWN Grounder, handing the true position in both slots: as the "position
+        # probe" read (-> in_cell) and as the GT authority (-> occupies). Calling Grounder rather than
+        # reimplementing its predicate is deliberate -- the footprint test, the cell loop and the
+        # cube_half default are then identical to the WM arm by construction and cannot drift.
+        # NOTE cube_half is Grounder's DEFAULT (uncushioned CUBE_HALF), matching _perceive: in the WM
+        # pipeline the cushion reaches the Constraint via constraint_kw and never the grounded facts,
+        # so an oracle cushion must not inflate occupies/in_cell/visited either.
+        # stroke_overlap and sign_color no-op here (no cube_position_pred / sign_color keys), exactly as
+        # they do in the WM run -- verified: 0/1200 aug15 episodes carry passed_through on record 0, so
+        # the only passed_through source in either arm is observe()'s GT swept-taint block.
+        facts = Grounder({"cube_position": xy}, gt_cube_xy=xy).ground()
+        if self.sign_schedule is not None:                             # step index == executed steps so far
+            colour = self.sign_schedule(len(self.enforcement.ledger(eval_index)))
+            if colour:
+                facts.append(f"sign({colour})")
+        return facts
+
+    def _begin_episode(self, goal_cells):
+        """Per-episode reset of the shared Enforcement: clear ledgers, then install each scenario's goal
+        cell as a GIVEN task spec (`goal_cell(k)`), exactly as the WM path does when gt_goal_cell is set
+        -- the obligated target is a specification, not something to be perceived."""
+        self.enforcement.reset()
+        for k, gc in enumerate(np.atleast_1d(goal_cells)):
+            self.enforcement.goal_facts[k] = [f"goal_cell({int(gc)})"]
+
+    def _ensure_goal_bank(self):
+        """Lazily load the goal-cell bank with GROUND-TRUTH target positions (rrt.py:293 analogue, but
+        pos_from_states instead of encode -- no WM, no probe). None when not opted in."""
+        if self.goal_bank_path is None:
+            return None
+        if self._goal_bank is None:
+            from legislation.goal_bank import GoalBank
+            self._goal_bank = GoalBank(self.goal_bank_path).pos_from_states()
+        return self._goal_bank
+
+    def _targets(self, cur, goal_pos, goal_cell, constraints, active=None):
+        """Per-scenario planning target for THIS step: the task goal, or an obligation WAYPOINT when a
+        live positive obligation names a cell the goal does not already satisfy and history has not
+        discharged. Mirrors planning/rrt.py:352-371 -- same GoalBank.waypoint call, same skip for
+        mode=off, re-evaluated every step so it tracks sign flips and discharges. Success is still
+        scored against the REAL goal cell; only the search target moves."""
+        cur = np.atleast_2d(np.asarray(cur, np.float32))
+        goal_pos = np.atleast_2d(np.asarray(goal_pos, np.float32))
+        goal_cell = np.atleast_1d(goal_cell)
+        tgts = goal_pos.copy()
+        bank = self._ensure_goal_bank()
+        if bank is None or self.mode == "off" or not self.dynamic:
+            return tgts, [None] * cur.shape[0]
+        from legislation.goal_bank import visited_cells_from_ledger
+        wps = []
+        for k in range(cur.shape[0]):
+            con = constraints[k] if k < len(constraints) else None
+            if con is None or (active is not None and not active[k]):
+                wps.append(None); continue
+            obl = list(getattr(con, "obligations", []) or [])
+            wp = bank.waypoint(obl, visited_cells_from_ledger(self.enforcement.ledger(k)),
+                               cur[k, 18:20], int(goal_cell[k]))
+            if wp is not None:
+                tgts[k] = bank.pos[wp]
+                print(f"    [OBLIGE] e{k}: obligations {obl} -> waypoint cell {wp} "
+                      f"({tgts[k][0]:+.3f},{tgts[k][1]:+.3f}) instead of goal cell {int(goal_cell[k])}",
+                      flush=True)
+            wps.append(wp)
+        return tgts, wps
+
+    def _observe(self, cur, active=None):
+        """One EXECUTED step for every active scenario through the SHARED Enforcement path: push all GT
+        cube xy at once as the sign authority (set_gt_cube REPLACES the dict, so it must be batch-wide),
+        then let Enforcement.observe() do the sign latch, swept taint, visited() history, DDL verdict and
+        Constraint build exactly as it does for the WM agent. Returns a per-scenario Constraint list."""
+        cur = np.atleast_2d(np.asarray(cur, np.float32))
+        self.enforcement.set_gt_cube(cur[:, 18:20])
+        out = []
+        for k in range(cur.shape[0]):
+            if active is not None and not active[k]:
+                out.append(None); continue
+            con = self.enforcement.observe(None, eval_index=k)
+            out.append(None if self.mode == "off" else con)
+        return out
 
     def _sample_strokes(self, base, target):
         """B aimed strokes from `base` toward `target` (steered cone + WM-range clamp; rrt.py:123-136).
@@ -245,7 +356,9 @@ class SimOracleRRT:
         self.env.prepare(seed, init_state)                                    # set the episode home-joint park pose
         goal_pos = np.asarray(goal_state[_CUBE_XY], np.float32)
         goal_cell = int(np.atleast_1d(gm.which_cell(goal_pos[None]))[0])
-        constraint = self._make_constraint(goal_cell)
+        if self.dynamic:
+            self._begin_episode([goal_cell])
+        constraint = None if self.dynamic else self._make_constraint(goal_cell)
         cur = init_state.copy()
         executed = [cur.copy()]
         action_len, success, it = np.inf, False, 0
@@ -253,7 +366,11 @@ class SimOracleRRT:
         _wall0 = time.perf_counter()
         while not success and it < max_iter:
             _step0 = time.perf_counter()
-            final, nodes = self._build_tree(cur, goal_pos, constraint)
+            tgt = goal_pos
+            if self.dynamic:
+                constraint = self._observe(cur)[0]                              # re-derive the verdict THIS step
+                tgt = self._targets(cur, goal_pos, goal_cell, [constraint])[0][0]   # obligation waypoint?
+            final, nodes = self._build_tree(cur, tgt, constraint)
             stroke = (final.prefix[0] if final.prefix                          # commit first stroke; else HOLD (rrt.py pad)
                       else np.array([cur[18], cur[19], 0.0, 0.0], np.float32))
             _tr = time.perf_counter()
@@ -359,8 +476,12 @@ class SimOracleRRT:
         print(f"    [run_batch] env prepared ({K * B} envs); grounding {K} constraints...", flush=True)
         goal_pos = goal_states[:, _CUBE_XY]                                     # (K,2)
         goal_cell = np.atleast_1d(gm.which_cell(goal_pos)).astype(int)          # (K,)
-        constraints = [self._make_constraint(int(goal_cell[k])) for k in range(K)]
-        print(f"    [run_batch] constraints built; starting MPC (max_iter={max_iter})...", flush=True)
+        if self.dynamic:
+            self._begin_episode(goal_cell)
+        constraints = ([None] * K if self.dynamic
+                       else [self._make_constraint(int(goal_cell[k])) for k in range(K)])
+        print(f"    [run_batch] constraints built (dynamic={self.dynamic}); "
+              f"starting MPC (max_iter={max_iter})...", flush=True)
         cur = init_states.copy()
         executed = [[cur[k].copy()] for k in range(K)]
         success = np.zeros(K, bool); action_len = np.full(K, np.inf); it = 0
@@ -368,7 +489,11 @@ class SimOracleRRT:
         _wall0 = time.perf_counter()
         while not success.all() and it < max_iter:
             active = ~success
-            finals = self._build_trees_batched(cur, goal_pos, goal_cell, constraints, active)
+            tgts = goal_pos
+            if self.dynamic:
+                constraints = self._observe(cur, active)                        # re-derive per scenario THIS step
+                tgts, _wps = self._targets(cur, goal_pos, goal_cell, constraints, active)
+            finals = self._build_trees_batched(cur, tgts, goal_cell, constraints, active)
             states_KB = np.zeros((K * B, 31), np.float32); strokes_KB = np.zeros((K * B, 4), np.float32)
             for k in range(K):                                  # commit first stroke (or HOLD) per scenario
                 f = finals[k]

@@ -125,8 +125,15 @@ def main() -> None:
     s_cal, s_test = s[is_cal], s[is_test]
 
     print(f"[split] {s.size} strokes  ({s_cal.size} calibration / {s_test.size} holdout)")
-    print(f"[split] score s = d_bel - d_true (m):  mean={s.mean():+.5f}  p50={np.median(s):+.5f}  "
-          f"p90={np.quantile(s, 0.90):+.5f}  p99={np.quantile(s, 0.99):+.5f}  max={s.max():+.5f}")
+    # TIGHT score: -inf on non-violating strokes, so report percentiles over the FULL vector (the
+    # -inf mass is what makes the quantile a bound on P(leak)) but summarise magnitudes over the
+    # finite entries only -- mean/max of a vector containing -inf is uninformative.
+    _fin = s[np.isfinite(s)]
+    print(f"[split] tight score s (m), {_fin.size} violating / {s.size} total:  "
+          f"p50={np.median(_fin):+.5f}  p90={np.quantile(_fin, 0.90):+.5f}  "
+          f"p99={np.quantile(_fin, 0.99):+.5f}  max={_fin.max():+.5f}")
+    print(f"[split] marginal leak at delta=0: {float((s > 0).mean())*100:.3f}% "
+          f"(this is why alpha >= that value yields a NEGATIVE delta)")
 
     rows = []
     for a in args.alphas:

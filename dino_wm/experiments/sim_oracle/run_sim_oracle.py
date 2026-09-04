@@ -100,6 +100,36 @@ def main():
                     help="output DIR: writes <out>/<pair>/scenario_<i>/eval_metrics.json (FULL per-eval "
                     "dict, eval_sweep layout -> drop-in for the diagnostics/plots) + <out>/summary.json. "
                     "No renders/videos: the oracle env is camera-off (state-only).")
+    ap.add_argument("--resume", action="store_true",
+                    help="skip (pair, scenario) slots already complete under --out and FOLD their saved "
+                    "metrics back into the summary, so a restarted run still reports over the whole "
+                    "benchmark. A scenario counts as complete only if eval_metrics.json parses AND (on a "
+                    "sign lawset) normative_ledger.json exists -- a half-written scenario is redone. Off "
+                    "by default: without it a rerun recomputes everything exactly as before.")
+    # SIGN-DEPENDENT LAWSETS. Selecting one (e.g. full_lawset) is itself the switch that puts the oracle
+    # on the per-step verdict path (SimOracleRRT.dynamic); a sign-free lawset keeps the legacy static
+    # path, so every previously reported oracle run reproduces unchanged.
+    ap.add_argument("--active_lawsets", default=None,
+                    help="comma-separated law CATEGORIES to enforce (e.g. full_lawset). Default: the "
+                         "db's own active_lawsets (geometric_laws -> legacy static-verdict oracle).")
+    ap.add_argument("--color", default=None, choices=["white", "yellow", "green", "red"],
+                    help="raw sign colour asserted from --frame onward (exogenous authority, fed from "
+                         "ground truth: the oracle has no renderer and no sign probe).")
+    ap.add_argument("--frame", type=int, default=1,
+                    help="executed step at which the sign turns --color (before it: white). "
+                         "Matches eval_sweep.py --frame/--color.")
+    ap.add_argument("--yellow_cells", default="",
+                    help="comma-separated yellow-cell ids for full_lawset (R5b/R7/R7b), e.g. 3,5. MUST "
+                         "match the WM run's legislation.yellow_cells: without them in_yellow_cell is "
+                         "never DERIVED, so the sign can never flip to green or red (plan.py:335).")
+    ap.add_argument("--strict_escape", action="store_true",
+                    help="escape grandfather covers ONLY the frame 0->1 segment, so a candidate that "
+                         "leaves the keep-clear zone and dips back in is pruned. OMIT to match every "
+                         "existing run (aug15/sign_color, results/final/*) -- the arms must agree on this "
+                         "or an oracle-vs-WM gap measures the enforcement rule, not perception error.")
+    ap.add_argument("--goal_bank", default=None,
+                    help="goal-cell bank for the obligation channel (R5/R8 target swap). Omit to leave "
+                         "obligations unenforced on the goal, matching a prohibition-only oracle.")
     args = ap.parse_args()
 
     bench = Path(args.benchmark).resolve()
@@ -113,14 +143,50 @@ def main():
 
     if args.no_clamp:                                                   # finer-stroke probe: don't clip to training range
         action_min = action_max = None
-    reasoner = LegislativeReasoner(db_path=args.db_path) if args.db_path else LegislativeReasoner()
+    _lawsets = args.active_lawsets.split(",") if args.active_lawsets else None
+    _rkw = {"active_lawsets": _lawsets} if _lawsets else {}
+    reasoner = (LegislativeReasoner(db_path=args.db_path, **_rkw) if args.db_path
+                else LegislativeReasoner(**_rkw))
     B = args.num_envs; K = max(1, args.batch_scenarios)
     env = PhysGridEnv(num_envs=K * B, device=args.device, stroke_max_steps=args.stroke_max_steps,
                       grid_away_shift=args.grid_away_shift)  # K*B envs
+
+    # Sign-dependent lawsets need a per-step verdict, so hand the oracle the SAME Enforcement object the
+    # WM agent uses -- with the probe stack swapped for sim ground truth. Reusing it (rather than
+    # reimplementing) is what makes the two arms share the sign latch, swept taint, visited() history and
+    # verdict semantics, so an oracle-vs-WM gap is perception error and not a harness difference.
+    enforcement = sign_schedule = None
+    if _lawsets and any(s.strip() != "geometric_laws" for s in _lawsets):
+        from legislation.enforcement import LawEvaluator
+        _rrt_holder = {}
+        sign_schedule = (lambda step: (args.color if (args.color and step >= args.frame) else "white"))
+        _yc = [int(c) for c in args.yellow_cells.split(",") if c.strip()]
+        enforcement = LawEvaluator(
+            reasoner, registry=None, cube_half=CUBE_HALF + args.cushion,
+            base_facts=["cube"] + [f"yellow_cell({c})" for c in _yc],   # plan.py:335 -- static config facts
+            strict_escape=args.strict_escape,
+            perceive_fn=lambda ev, xy: _rrt_holder["rrt"]._gt_facts(ev, xy),
+            # OCCUPANCY BRANCH ON (matches the legacy static path). The transit test alone is too weak
+            # for a candidate that STARTS inside the cell: its escape grandfather reduces legality to
+            # "the endpoint clears", so a plan may leave and re-enter freely. The grandfather is only
+            # meant to excuse an INHERITED illegal state, not to license dipping in and out, so the
+            # per-frame occupancy check has to stay. Filled in with the GT occ fn once rrt exists.
+            constraint_probes={"cube_cells": None})
+        if not _yc:
+            print("[sim-oracle] WARNING: --yellow_cells is empty; in_yellow_cell can never be derived, "
+                  "so R7/R7b cannot flip the sign and the run degenerates to R1/R2/R8/R10.", flush=True)
+        print(f"[sim-oracle] lawsets={_lawsets} -> PER-STEP verdict; sign: white then "
+              f"{args.color} from step {args.frame}", flush=True)
+
     rrt = SimOracleRRT(env, reasoner, mode=args.mode, batch_size=B,
                        max_samples=args.max_samples, action_min=action_min, action_max=action_max,
                        push_min=args.push_min, push_max=args.push_max, cube_half=CUBE_HALF + args.cushion,
-                       steer_cone_deg=args.steer_cone_deg, patience=args.patience, device=args.device)
+                       steer_cone_deg=args.steer_cone_deg, patience=args.patience, device=args.device,
+                       enforcement=enforcement, sign_schedule=sign_schedule,
+                       goal_bank_path=args.goal_bank)
+    if enforcement is not None:
+        _rrt_holder["rrt"] = rrt
+        enforcement.constraint_probes = {"cube_cells": rrt._occ}   # GT footprint-occupancy, not a probe
     print(f"[sim-oracle] cushion delta={args.cushion:.3f} (cube_half {CUBE_HALF:.3f}->{CUBE_HALF+args.cushion:.3f}) "
           f"| push=[{args.push_min},{args.push_max}] | clamp={'OFF' if args.no_clamp else 'training-range'}", flush=True)
 
@@ -137,11 +203,51 @@ def main():
             flat.append((pd, i, mc, states[i, 0].copy(), states[i, 1].copy()))
 
     acc, records = {}, []
+
+    # ---- RESUME ------------------------------------------------------------------------------
+    # Drop (pair, scenario) slots already on disk AND fold their saved metrics back into acc/records.
+    # The fold-back is the load-bearing half: summary.json below is computed from `acc`, so a resume
+    # that only skipped work would report every rate over the RESUMED SUBSET -- a wrong denominator,
+    # not a smaller sample. With the fold-back a resumed run and a from-scratch run summarise the same
+    # population. Completeness requires eval_metrics.json to PARSE (a kill can truncate it) and, on a
+    # sign lawset, the ledger to exist too -- _record writes them in that order, so a scenario with the
+    # first and not the second died between the two writes and must be redone.
+    _ACC_KEYS = ("success", "law_violated", "law_violated_swept", "law_violated_center",
+                 "illegal_frame_frac", "n_steps", "path_efficiency", "optimal_path_len", "cube_l2")
+    if args.resume and args.out:
+        def _loaded(pd, i):
+            d = Path(args.out) / pd / f"scenario_{i:03d}"
+            if enforcement is not None and not (d / "normative_ledger.json").exists():
+                return None
+            try:
+                return json.loads((d / "eval_metrics.json").read_text())
+            except (OSError, json.JSONDecodeError):
+                return None                            # missing or truncated -> redo
+        todo, skipped = [], 0
+        for row in flat:
+            pd, i, mc = row[0], row[1], row[2]
+            m = _loaded(pd, i)
+            if m is None:
+                todo.append(row)
+                continue
+            skipped += 1
+            for kk in _ACC_KEYS:
+                acc.setdefault(kk, []).extend(v for v in m.get(kk, []) if v is not None)
+            records.append({"pair": pd, "scenario": i, "metric_cell": mc,
+                            "success": m["success"][0], "law_violated": m["law_violated"][0],
+                            "steps": m["n_steps"][0]})
+        print(f"[sim-oracle] RESUME: {skipped} scenario(s) already complete under {args.out} "
+              f"(folded into the summary), {len(todo)} left to run", flush=True)
+        flat = todo
+
     print(f"[sim-oracle] {args.mode} | {len(flat)} scenarios ({len(pair_dirs)} pairs) | "
           f"K={K} x B={B} = {K * B} envs | max_samples={args.max_samples}", flush=True)
 
-    def _record(pd, i, mc, goal_s, e_states, constraint, alen):
-        """Full per-eval eval_metrics.json (eval_sweep layout) + accumulate acc/records. Returns m."""
+    def _record(pd, i, mc, goal_s, e_states, constraint, alen, eval_index=0):
+        """Full per-eval eval_metrics.json (eval_sweep layout) + accumulate acc/records. Returns m.
+        On a sign-dependent lawset also writes normative_ledger.json in the eval_sweep layout, without
+        which none of the Q4 scorers (plot_sign_lawset / plot_sign_overlap / plot_sign_prepost) can read
+        this arm -- every one of their metrics gates on the per-step sign held in the ledger."""
         gc = int(np.atleast_1d(gm.which_cell(goal_s[None, _CUBE_XY]))[0])
         m = build_eval_metrics(
             e_states=e_states[None], action_len=np.array([alen], dtype=float),
@@ -150,6 +256,11 @@ def main():
             scene_offset=0, pool_size=1, n_evals=1, seed=0, goal_states=goal_s[None])
         sc_dir = Path(args.out) / pd / f"scenario_{i:03d}"; sc_dir.mkdir(parents=True, exist_ok=True)
         (sc_dir / "eval_metrics.json").write_text(json.dumps(m, indent=2))   # drop-in for the diagnostics
+        if enforcement is not None:                                          # sign-dependent lawset only
+            led = enforcement.ledger(eval_index)
+            (sc_dir / "normative_ledger.json").write_text(json.dumps({"0": {
+                "records": led.records, "signs": led.signs,
+                "intrusions": led.intrusions(mc)}}, indent=2, default=float))
         for kk in ("success", "law_violated", "law_violated_swept", "law_violated_center",
                    "illegal_frame_frac", "n_steps", "path_efficiency", "optimal_path_len", "cube_l2"):
             acc.setdefault(kk, []).extend(v for v in m.get(kk, []) if v is not None)
@@ -176,7 +287,7 @@ def main():
             e_list, constraints, alens, timing = rrt.run_batch(init_states, goal_states, max_iter=args.max_iter)
             for j in range(realK):                                          # skip padded duplicates
                 pd, i, mc, _init, goal_s = chunk[j]
-                _record(pd, i, mc, goal_s, e_list[j], constraints[j], alens[j])
+                _record(pd, i, mc, goal_s, e_list[j], constraints[j], alens[j], eval_index=j)
             acc.setdefault("wall_s", []).append(timing["wall_s"])
             print(f"  batch done: {timing['wall_s']}s / {realK} scenarios "
                   f"({timing['wall_s'] / max(realK, 1):.1f}s each) | {timing['n_extends']} extends "
@@ -202,6 +313,9 @@ def main():
     print("[sim-oracle] SUMMARY:", json.dumps(summary, indent=2))
     if args.out:
         outdir = Path(args.out); outdir.mkdir(parents=True, exist_ok=True)
+        # sort so a --resume run and a from-scratch run emit byte-identical record ORDER (resumed
+        # slots are folded in first, ahead of whatever this process actually ran).
+        records.sort(key=lambda r: (str(r["pair"]), int(r["scenario"])))
         (outdir / "summary.json").write_text(json.dumps({"summary": summary, "records": records}, indent=2))
         provenance.write(outdir, __file__, args=args)
         print(f"[sim-oracle] wrote {outdir}/summary.json + per-scenario eval_metrics.json under {outdir}/")

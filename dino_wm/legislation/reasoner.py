@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import itertools
 import re
+import time
 import sys
 from pathlib import Path
 
@@ -170,6 +171,60 @@ class LegislativeReasoner:
         # across a sweep -> memoize by frozenset(facts) to skip re-running clingo, which otherwise
         # RELOADS the 5 engine .asp files from disk + re-grounds the whole theory on EVERY call.
         self._cache = {}
+        # Mid-run amendment instrumentation (see recompile()). Empty for every run that never amends,
+        # so a standard law_eval / oracle run carries no extra state and reports nothing.
+        self.last_recompile_s = None
+        self.recompile_log = []
+
+    def recompile(self, active_lawsets):
+        """Swap which law CATEGORIES are enforced and rebuild the theory IN PLACE.
+
+        This is the mid-run rule-insertion channel: the injected category is absent from the theory
+        when the episode starts and is added at `rule_injection.frame`, so a rule that did not exist
+        at run start binds the planner on the very next re-ground. Two things must happen together:
+        re-render + re-parse the .dl (the theory text is fixed at __init__ otherwise), and CLEAR the
+        verdict cache -- `assess()` memoizes on frozenset(facts) alone, on the assumption that the
+        theory is immutable, so a stale entry would return the PRE-injection verdict for a fact set
+        that recurs after the amendment. No-op if the active set is unchanged, so callers can invoke
+        it every step without paying the clingo re-parse."""
+        # Hydra hands this through as an OmegaConf ListConfig, which is NOT a list/tuple -- an
+        # isinstance check alone would pass the config object straight into _render_dl and the
+        # equality test below, where it can silently compare unequal forever (re-rendering every
+        # step) or unequal-then-equal (never rendering). Normalise by iterating instead.
+        if active_lawsets is None:
+            new = None
+        elif isinstance(active_lawsets, str):
+            new = [active_lawsets]
+        else:
+            try:
+                new = [str(x) for x in active_lawsets]
+            except TypeError:
+                new = active_lawsets
+        if new == self.active_lawsets:
+            return False
+        # TIMED: this is the COST OF ONLINE LAW UPDATEABILITY -- the number that makes the "no
+        # re-synthesis" claim quantitative instead of rhetorical, and the one directly contrastable
+        # with an LTL shield's automaton re-synthesis. Covers exactly the amendment work (re-render
+        # the .dl from the amended database + re-parse it into ASP + rebuild the theory text); the
+        # cache clear is included because it is part of the amendment's cost -- every post-amendment
+        # verdict pays a cold clingo solve that a stable theory would have served from memo.
+        _t0 = time.perf_counter()
+        self.active_lawsets = new
+        p = ddl_parser.DDLParser()
+        p.parse(_render_dl(self.db, self.active_lawsets))
+        atom_decls = "\n".join(f"atom({a})." for a in (self.db.get("atoms", []) or []))
+        helpers = "\n".join(self.db.get("asp_helpers", []) or [])
+        self.theory_asp = atom_decls + "\n" + p.get_output() + (("\n" + helpers) if helpers else "")
+        _n_cached = len(self._cache)
+        self._cache = {}                       # load-bearing: see docstring
+        self.last_recompile_s = time.perf_counter() - _t0
+        self.recompile_log.append({"active_lawsets": list(new) if isinstance(new, list) else new,
+                                   "seconds": self.last_recompile_s,
+                                   "cache_entries_dropped": _n_cached,
+                                   "theory_chars": len(self.theory_asp)})
+        print(f"[LAW AMEND] active_lawsets -> {new}  recompile {self.last_recompile_s*1e3:.3f} ms  "
+              f"(dropped {_n_cached} memoized verdicts)")
+        return True
 
     def _ground(self, facts):
         """Build + ground a clingo Control over (engine files + theory + the given ground facts).

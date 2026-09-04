@@ -118,6 +118,41 @@ def build_plan_cfg_dicts(
     return cfg_dicts
 
 
+_CAND_COLS = ("step", "eval", "near_age", "target_x", "target_y",
+              "free_x", "free_y", "free_dist", "free_viol",       # winner ignoring legality
+              "pick_x", "pick_y", "pick_dist", "pick_viol",       # winner under the live rule (-1/NaN = all pruned)
+              "n_viol", "n_cands", "near_cum_viol")
+_TREE_COLS = ("step", "eval", "age", "x", "y", "cell", "parent", "cum_viol", "path_len")
+
+
+def _dump_trace_sidecars(planner):
+    """Write the opt-in provenance sidecars (planning/trace_cfg.py) beside the ledger. Analysis
+    only -- a failure here must never take down a finished run, hence the blanket except."""
+    import numpy as _np
+    try:
+        for name, rows, cols in (("rrt_candidates", getattr(planner, "_cand_log", None), _CAND_COLS),
+                                 ("rrt_tree", getattr(planner, "_tree_log", None), _TREE_COLS)):
+            if rows:
+                _np.savez_compressed(f"{name}.npz", rows=_np.asarray(rows, dtype=_np.float32),
+                                     columns=_np.asarray(cols))
+                print(f"Dumped {len(rows)} {name} rows to {os.path.abspath(name + '.npz')}")
+        tr = getattr(planner, "_subframe_traces", None)
+        if tr:
+            # per MPC iter: (S,N,2) xy, (S,N) yaw, (T+1,) stroke bounds. Iters differ in S, so they
+            # stay separate arrays (xy_0, yaw_0, ...) rather than one ragged stack.
+            out = {}
+            for i, t in enumerate(tr):
+                out[f"xy_{i}"] = _np.asarray(t["xy"], dtype=_np.float32)
+                out[f"yaw_{i}"] = _np.asarray(t["yaw"], dtype=_np.float32)
+                out[f"bounds_{i}"] = _np.asarray(t["stroke_bounds"], dtype=_np.int32)
+            out["n_iters"] = _np.int32(len(tr))
+            out["stride"] = _np.int32(tr[0].get("stride", 1))
+            _np.savez_compressed("subframe_trace.npz", **out)
+            print(f"Dumped {len(tr)}-iter sub-frame trace to {os.path.abspath('subframe_trace.npz')}")
+    except Exception as e:                                   # analysis artefact -- never fatal
+        print(f"[trace] sidecar dump failed ({type(e).__name__}: {e}) -- run is unaffected")
+
+
 class PlanWorkspace:
     def __init__(
         self,
@@ -304,7 +339,15 @@ class PlanWorkspace:
             raise ValueError(f"legislation.mode must be social|deviant|off, got {mode!r}")
         target = getattr(self.planner, "sub_planner", self.planner)  # MPC -> sub_planner
         target.mode = mode                                 # how the planner USES the constraint (prune vs rank)
-        self.planner.sign_flip = self.cfg_dict.get("sign_flip")   # exogenous sign-flip schedule (MPC loop reads it)
+        # MID-RUN RULE INSERTION + its sign schedule. The injected law's antecedent is sign(white), so the
+        # sign must actually BE white at the injection step: default revert_frame TO rule_injection.frame
+        # so the amendment and the recolour are one configured number, not two that can drift apart.
+        _ri = self.cfg_dict.get("rule_injection") or {}
+        _sf_cfg = dict(self.cfg_dict.get("sign_flip") or {})
+        if _ri.get("frame") is not None and _sf_cfg.get("revert_frame") is None:
+            _sf_cfg["revert_frame"] = int(_ri["frame"])
+        target.rule_injection = _ri                        # sub-planner reads it per MPC step (rrt.py)
+        self.planner.sign_flip = _sf_cfg or None           # exogenous sign-flip schedule (MPC loop reads it)
         # OBSERVE-ONLY OFF: the SIGN is an EXTERNAL world authority adjudicated on GROUND TRUTH (R7/R7b),
         # so when an exogenous sign exists (sign_flip configured) it must flip for the realistic agent too.
         # Build the LawEvaluator in off as well -- it perceives, flips the sign, and dumps the ledger (so
@@ -350,7 +393,12 @@ class PlanWorkspace:
             _ch = CUBE_HALF + _margin
             # per-step law: perceive -> ground -> reason -> Constraint, re-run each re-plan so the
             # verdict tracks the live state (sign colour, cells already visited, ...).
-            evaluator = LawEvaluator(reasoner, reg, base_facts=base_facts, cube_half=_ch)
+            # STRICT ESCAPE (legislation.strict_escape, default false = the semantics every published run
+            # used). true: the escape grandfather covers only the first segment, so a candidate that leaves
+            # the keep-clear zone and dips back in is pruned. See legislation/constraint.py.
+            _strict = bool(leg.get("strict_escape", False))
+            evaluator = LawEvaluator(reasoner, reg, base_facts=base_facts, cube_half=_ch,
+                                     strict_escape=_strict)
             penalty = float(leg.get("violation_penalty", 1e6))
             target.law_fn = evaluator
             # POSITIVE-OBLIGATION GOAL BANK (opt-in): a path to scripts/gen_goal_cell_bank.py output.
@@ -370,6 +418,13 @@ class PlanWorkspace:
                     if _gc is not None:
                         evaluator.gt_goal_cell = int(_gc)
                         print(f"[law_eval] GT goal_cell = {int(_gc)} (task spec, not perceived)")
+                    # START AS SPECIFICATION, same status as the goal (see LawEvaluator.set_start).
+                    # Only for the rule-insertion experiment: without it start_cell is never grounded
+                    # and the injected law is unsatisfiable, which is what standard runs want.
+                    _sc = (_json.loads(_mdp.read_text()) or {}).get("init_cell")
+                    if _sc is not None and (self.cfg_dict.get("rule_injection") or {}).get("frame") is not None:
+                        evaluator.gt_start_cell = int(_sc)
+                        print(f"[law_eval] GT start_cell = {int(_sc)} (task spec, not perceived)")
             target.violation_penalty = penalty
             # initial/static constraint from base facts only -- the setup verdict, and the fallback
             # for planners that don't re-evaluate per step (e.g. the chained CEM). RRT overwrites
@@ -669,6 +724,9 @@ class PlanWorkspace:
         if _leg is not None:
             _leg.dump("normative_ledger.json")
             print("Dumped normative ledger to", os.path.abspath("normative_ledger.json"))
+        ### HARNESS EDIT ### opt-in provenance sidecars (planning/trace_cfg.py). Binary, not JSON:
+        # these are 10-1000x the ledger's size. Never let the dump crash a run.
+        _dump_trace_sidecars(self.planner)
         ### HARNESS EDIT ### reuse MPC's cached executed frames for the final video/metrics (no full re-roll)
         precomputed_env = None
         if getattr(self.planner, "executed_obses", None) is not None:
@@ -686,6 +744,38 @@ class PlanWorkspace:
         try:
             from planning.planning_metrics import build_eval_metrics
             _tgt = getattr(self.planner, "sub_planner", self.planner)
+            # PERMISSION GATE for the law_violated* geometry (planning_metrics.build_eval_metrics).
+            # ONLY under the FULL lawset -- the sign regime, where green_sign LICENSES cell 4, so a
+            # green pass must not be scored as a trespass. Under the geometric subset (or no law at
+            # all) this stays None and the metrics are computed sign-blind exactly as before.
+            # Rule injection appends to the active set (full_lawset -> full_lawset,injected_laws), so
+            # membership -- not equality -- is the test. Per eval: the GOVERNING (latched/derived)
+            # colour at each recorded step, head-aligned with the executed frames.
+            _sign_steps = _perm_steps = None
+            _rsn = getattr(_leg, "reasoner", None)
+            _sets = getattr(_rsn, "active_lawsets", None) or []
+            if _leg is not None and "full_lawset" in ([_sets] if isinstance(_sets, str) else list(_sets)):
+                _sign_steps, _perm_steps = [], []
+                for _e in range(self.n_evals):
+                    _recs = _leg.ledger(_e).records if _e in _leg.ledgers else []
+                    # per step: the GOVERNING sign colour (clauses b/c), and the set of cells the LAW
+                    # concluded are PERMITTED (clause a). The latter is what gates trespass -- read off
+                    # [P]in_cell(k) in the verdict, so any rule that licenses a cell counts, not just
+                    # the green flip.
+                    _sign_steps.append([(r.get("effective_sign")
+                                         or ((r.get("verdict") or {}).get("signs") or [None])[0])
+                                        for r in _recs])
+                    _ps = []
+                    for r in _recs:
+                        _cells = set()
+                        for _p in ((r.get("verdict") or {}).get("permissions") or []):
+                            if _p.startswith("in_cell(") and _p.endswith(")"):
+                                try:
+                                    _cells.add(int(_p[len("in_cell("):-1]))
+                                except ValueError:
+                                    pass
+                        _ps.append(_cells)
+                    _perm_steps.append(_ps)
             # RUNTIME split (from the RRT's accumulated timers; see planning/rrt.py reset):
             #   RRT search = _t_plan - _t_reason - _t_prune ; LEGISLATION = reason (DDL observe/set_goal)
             #   + prune (constraint.violations). off/rational -> reason=prune=0 (no law attached).
@@ -697,6 +787,18 @@ class PlanWorkspace:
             # FINE split of legislation_reason_s (probe/ground/logic/build), from the LawEvaluator's per-
             # episode accumulators -- lets Q5 show the clingo DDL logic is a negligible slice. off/rational
             # has no law_fn -> the dict is absent and these keys are simply omitted.
+            # PER-(eval, step) timing (planning/rrt.py). The batch totals above cannot yield seconds
+            # per PRODUCTIVE action: they also cover already-successful evals (mpc.py replans every eval
+            # each iteration until all succeed) and [F]moving-frozen steps, which together are about half
+            # the eval-steps in a batch. With this list the exclusion is exact -- drop entries whose
+            # `frozen` is true or whose `step` exceeds that eval's n_steps, then sum what remains.
+            _st = getattr(_tgt, "_step_times", None)
+            if _st:
+                _rb["per_step"] = [{"eval": s["eval"], "step": s["step"], "frozen": s["frozen"],
+                                    "total_s": round(s["total_s"], 4),
+                                    "reason_s": round(s["reason_s"], 4),
+                                    "prune_s": round(s["prune_s"], 4),
+                                    "n_nodes": s["n_nodes"]} for s in _st]
             _tim = getattr(getattr(_tgt, "law_fn", None), "timing", None)
             if _tim:
                 _rb.update({"leg_probe_s": round(_tim.get("probe_s", 0.0), 3),
@@ -721,7 +823,10 @@ class PlanWorkspace:
                 wm_real_xy_steps=getattr(self.planner, "wm_real_xy_steps", None),
                 wm_probe_start_xy_steps=getattr(self.planner, "wm_probe_start_xy_steps", None),
                 wm_latent_err_steps=getattr(self.planner, "wm_latent_err_steps", None),
-                runtime_breakdown=_rb, goal_states=getattr(self, "state_g", None))
+                runtime_breakdown=_rb, goal_states=getattr(self, "state_g", None),
+                sign_steps=_sign_steps, permitted_steps=_perm_steps,
+                # the check-in cells, needed for abidance clause (c) (ended-on-yellow, read on GT)
+                yellow_cells=list((self.cfg_dict.get("legislation") or {}).get("yellow_cells") or []))
             with open("eval_metrics.json", "w") as _f:
                 json.dump(_metrics, _f, indent=2)
             print("Dumped eval metrics to", os.path.abspath("eval_metrics.json"))

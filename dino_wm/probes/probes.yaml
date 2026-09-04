@@ -31,3 +31,13 @@ probes:
   # - name: cube_cells_pred      # per-cell occupancy on predicted latents   [multilabel, predicted]
   #   path: probes/weights/probe_cube_cells_pred.pth   # train: probe_cube_cells.py --source predicted --pred_horizons 1,2,3,4,5
   #   enabled: false
+
+  # - name: cube_yaw           # cube yaw MOD 90deg as (sin 4t, cos 4t)   [yaw_mod90_sincos4, encoded]
+  #   path: probes/weights/probe_cube_yaw.pth
+  #   enabled: false           # DELIBERATELY not enabled here: turning it on would switch EVERY run
+  #                            # from the axis-aligned body model to the true oriented one at once.
+  #                            # Opt in per-run instead:  DINOWM_YAW_PROBE=probes/weights/probe_cube_yaw.pth
+  #                            # Held-out (encoded): 6.12 deg mean / 11.82 p90, footprint half-extent
+  #                            # MAE 1.83 mm vs 12.48 mm for the fixed axis-aligned box.
+  #                            # On PREDICTED latents (clean calib_1k, horizons 1-3, n=45k):
+  #                            # 14.45 deg / 35.07 p90, extent MAE 4.22 mm vs 12.51 mm  -> 66% better.

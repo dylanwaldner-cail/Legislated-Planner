@@ -102,6 +102,15 @@ legislation:
                       # PLANNER-ONLY (metric scores reality with true cube_half), so delta=0 vs delta>0 is an
                       # honest ablation -- ALWAYS report the delta=0 arm too. Safe ceiling ~0.02 for this grid
                       # (cube_half 0.045 vs CELL/2 0.0667); delta above ~0.021 prunes the legal detour. Default 0.
+  strict_escape: false  # ESCAPE GRANDFATHER SCOPE. false (default, and what every published run used):
+                      # once the ROOT is inside the keep-clear zone only the candidate's ENDPOINT is checked,
+                      # so it may leave and re-enter freely -- and a committed stroke may LINGER inside
+                      # (measured: 60.9% of inside-roots in aug15/sign_color, 44.6% in final/base).
+                      # true: the grandfather covers only the frame 0->1 escape, every later segment is
+                      # enforced. Only appropriate where a compensatory duty (R10 exit_cell + goal_bank)
+                      # retargets the planner at the exit; with geometric_laws no exit obligation fires
+                      # (measured: 0 across 1900 steps) and the objective still points across the cell,
+                      # so the step can freeze. See legislation/constraint.py.
   goal_bank: null     # POSITIVE-OBLIGATION enforcement: path to a goal-cell bank (scripts/gen_goal_cell_bank.py
                       # output, e.g. data/goal_cell_bank). When set, a live positive obligation
                       # ([O]in_cell(k) / [O]in_yellow_cell) retargets the planner to that cell's centered
@@ -115,6 +124,26 @@ sign_flip:
   frame: null         # null -> no flip
   color: yellow       # colour to flip TO at `frame`  (white|red|yellow|green)
   base_color: white   # colour before the flip
+  revert_frame: null  # SECOND flip: recolour back to `revert_color` at this MPC step. null -> single
+                      # flip (every pre-existing run is unaffected). Left null while rule_injection.frame
+                      # is set, plan.py defaults it TO that frame, so the sign turns white on the same
+                      # step the new rule is injected -- one number to configure, both events together.
+  revert_color: white # colour of the second flip; white is what grounds the injected law's antecedent
+
+# MID-RUN RULE INSERTION (the online-updateability experiment). At MPC step `frame` the reasoner's
+# active law categories are swapped to `active_lawsets` and the DDL theory is RECOMPILED in place
+# (reasoner.recompile: re-render + re-parse + drop the memoised verdicts). The injected category holds
+# a rule that did NOT EXIST when the episode started, and the planner honours it on the very next
+# re-ground -- with no retraining and no re-synthesis. Off by default (frame: null), so every existing
+# run compiles exactly the theory it always did.
+rule_injection:
+  frame: null                                  # null -> never inject
+  active_lawsets: [full_lawset, injected_laws] # categories AFTER the amendment
+  swap_goal_to_start: true                     # when the injected return duty first fires, retarget the
+                                               # evaluator's goal to the episode's OWN init state, so
+                                               # SUCCESS means "got back home" and the success-hold mask
+                                               # freezes the agent once it does. false -> success keeps
+                                               # scoring the original goal and the return is analysis-only.
 
 # Scene filter: restrict goal selection to episodes with chosen properties so a law test gets
 # relevant scenarios. via_cell = the straight init->goal path must cross this cell (set 4 = center

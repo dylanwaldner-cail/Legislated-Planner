@@ -94,7 +94,7 @@ results/
 diagnostics/
 rollout_forward.py
 
-6a4588d9e94a4aea5ccb83ca/
+full_paper/
 graze_diagnosis/
 todo.md
 
@@ -102,3 +102,4 @@ legacy/
 container_snapshot
 
 research_lessons.md
+Jurix_paper/

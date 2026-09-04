@@ -10,6 +10,24 @@ from .base_planner import BasePlanner
 # the original: sign-colour control (exogenous flip + DDL render-back) and the harness instrumentation
 # (warm-start, executed-frame stitching, WM 1-step error tracking, introspection, per-iter diagnostics).
 from .sign_control import SignController
+from . import trace_cfg
+
+
+def _collect_search(mpc):
+    """Drain the sub-planner's per-iter search record into the MPC (opt-in; see trace_cfg).
+
+    Tree nodes are kept as flat arrays, NOT Node objects: `prefix` is a live CUDA tensor and `law`
+    repeats the same verdict string for every node in a step, so both are dropped here."""
+    sp = mpc.sub_planner
+    if trace_cfg.trace_tree():
+        for e, nodes in enumerate(getattr(sp, "_trees", []) or []):
+            for n in nodes:
+                mpc._tree_log.append((int(mpc.iter), int(e), int(n.age), float(n.pos[0]),
+                                      float(n.pos[1]), int(n.cell), int(n.parent), int(n.viol),
+                                      int(len(n.prefix))))
+    if getattr(sp, "_cand_log", None):
+        mpc._cand_log.extend(sp._cand_log)
+        sp._cand_log = []
 from .mpc_harness import (
     WMErrorTracker, log_stroke_vs_cube, make_introspector, save_reground_diag,
     seed_actions_from_probe, stitch_executed,
@@ -125,12 +143,69 @@ class MPCPlanner(BasePlanner):
         self.executed_states = None
         self.executed_strokes = []                # per-iter DENORMALIZED committed strokes (b,T,4) -> replay/diagnostics
         self._smooth_frames = []                  # per-step (N,H,W,3) frames across iters -> smooth MPC video
+        self._subframe_traces = []                # per-iter sub-frame cube xy+yaw (opt-in; see trace_cfg)
+        self._tree_log = []                       # RRT nodes across iters (opt-in)
+        self._cand_log = []                       # per-extend counterfactual rows across iters (opt-in)
 
         # --- harness instrumentation (opt-in / behaviour-preserving; see mpc_harness.py + sign_control.py) ---
         wm_tracker = WMErrorTracker()                                 # per-step WM 1-step error + imagination
         self._introspector = make_introspector(self)                 # RRT/MPC introspection (off by default)
         sign = SignController(getattr(self, "sign_flip", None),       # exogenous flip schedule + DDL render-back
                               self.evaluator.env, getattr(self.sub_planner, "law_fn", None), n_evals)
+
+        # MID-RUN GOAL RETARGET (rule-insertion experiment): when the injected return duty fires for an
+        # eval, that eval's GOAL becomes the goal-cell bank's CENTERED IMAGE of its start cell -- the same
+        # 9-image bank the obligation waypoint already steers with, so the new goal is a real perceptual
+        # target encoded exactly like the task goal, not a synthetic one. Swaps the eval's row of obs_g
+        # (visual+proprio -> what the planner encodes into z_goal) AND state_g (-> what env.eval_state
+        # scores), so "success" becomes "got back home" and the success-hold mask freezes the agent there.
+        # LAW-DRIVEN, not scheduled: `off` ignores obligations (mode gate in rrt.py) so its goal never
+        # moves -- a free control arm. Latched per eval, applied once.
+        _retargeted = set()
+        # DYNAMIC GOAL PANEL. (frame_index, (N,H,W,3) goal visual) checkpoints, frame_index counted in
+        # _smooth_frames units. Seeded with the ORIGINAL goal so frames before any retarget still have
+        # one: obs_g is MUTATED in place by the retarget, so by render time only the final goal
+        # survives and a video built from it would show "home" from frame 0 -- i.e. it would hide the
+        # very switch the experiment is about.
+        self._goal_log = []
+        if obs_g is not None and getattr(self.evaluator, "video", False):
+            self._goal_log.append((0, np.asarray(obs_g["visual"][:, 0]).copy()))
+
+        def _like(src, dst):
+            """Goal-bank tensor -> the container type of `dst`. On the law_eval path obs_g's visual /
+            proprio arrive as NUMPY arrays, so a bare `src.to(dst.dtype)` is handed a numpy dtype and
+            raises TypeError; elsewhere they are torch. Both sides carry the same dtypes and ranges
+            (visual uint8 0-255, proprio/state float32), so the cast is value-preserving either way."""
+            if isinstance(dst, np.ndarray):
+                return src.detach().cpu().numpy().astype(dst.dtype, copy=False)
+            return src.to(dst.dtype)
+
+        def _retarget_from_duty():
+            duty = getattr(self.sub_planner, "_return_duty", None) or {}
+            bank = getattr(self.sub_planner, "_goal_bank", None)
+            if not duty or bank is None:
+                return
+            for e, cell in duty.items():
+                if e in _retargeted:
+                    continue
+                # MUST write the LOCAL obs_g as well: plan()'s `obs_g` parameter is what gets handed to
+                # sub_planner.plan() (and re-encoded into z_goal each step), and it is NOT guaranteed to
+                # be the same object as self.evaluator.obs_g. Mutating only the evaluator's copy moves
+                # the SUCCESS target and the video's goal panel while the PLANNER keeps aiming at the
+                # original goal -- which looks exactly like "the goal image never changed".
+                for tgt in (obs_g, self.evaluator.obs_g):
+                    if tgt is None:
+                        continue
+                    tgt["visual"][e, 0] = _like(bank.visual[cell], tgt["visual"])
+                    tgt["proprio"][e, 0] = _like(bank.proprio[cell], tgt["proprio"])
+                self.evaluator.state_g[e] = _like(bank.states[cell], self.evaluator.state_g)
+                _retargeted.add(e)
+                # checkpoint the goal panel AT THIS FRAME so the video shows the switch, not the result
+                if self._goal_log and obs_g is not None:
+                    self._goal_log.append((len(self._smooth_frames),
+                                           np.asarray(obs_g["visual"][:, 0]).copy()))
+                print(f"[RETARGET] step {self.iter} e{e}: goal -> goal-bank image of START cell {cell} "
+                      f"(success now means returning home)")
 
         while not np.all(self.is_success) and self.iter < self.max_iter:
             self.sub_planner.logging_prefix = f"plan_{self.iter}"
@@ -153,6 +228,10 @@ class MPCPlanner(BasePlanner):
                 obs_g=obs_g,
                 actions=seed_actions,
             )  # (b, t, act_dim)
+            # The duty is concluded INSIDE plan() (per-eval observe -> DDL verdict), so retarget right
+            # after it returns: this iteration's success evaluation then already scores against home.
+            _retarget_from_duty()
+            _collect_search(self)                 # opt-in: this iter's RRT nodes + per-extend rows
             _t_plan = time.perf_counter() - _t_plan
             taken_actions = actions.detach()[:, : self.n_taken_actions]
             if self.success_hold:   # OFF by default: reads GT cube + causes the per-step WM-err artifact
@@ -171,7 +250,11 @@ class MPCPlanner(BasePlanner):
             log_stroke_vs_cube(cur_state, exec_taken)                # [dbg] is the planned stroke near the cube?
             sign.on_step_pre_roll(self.iter, n_evals)                # recolour BEFORE the roll (exogenous + DDL latch)
             _fs = self._smooth_frames if getattr(ev, "video", False) else None  # per-step frames only when video=true
-            e_obses, e_states = ev.env.rollout(ev.seed, cur_state, exec_taken, frame_sink=_fs)
+            _ts = {} if trace_cfg.trace_subframe() else None   # sub-frame cube xy+yaw (opt-in)
+            e_obses, e_states = ev.env.rollout(ev.seed, cur_state, exec_taken, frame_sink=_fs,
+                                               trace_sink=_ts, trace_stride=trace_cfg.trace_stride())
+            if _ts is not None:
+                self._subframe_traces.append(_ts)             # one per MPC iter (= one committed stroke)
             _t_eval = time.perf_counter() - _t_eval
             stitch_executed(self, e_obses, e_states)                 # accumulate executed frames for the final video
             e_final_obs = slice_trajdict_with_t(e_obses, start_idx=-1)
@@ -234,6 +317,7 @@ class MPCPlanner(BasePlanner):
         # smooth MPC video: every internal sim step captured across iters (decoder-free, [executed | goal]).
         if self._smooth_frames:
             vis = np.stack(self._smooth_frames, axis=1)  # (N, n_steps, H, W, 3)
-            self.evaluator._save_executed_video(vis, self.is_success, "output_mpc_smooth")
+            self.evaluator._save_executed_video(vis, self.is_success, "output_mpc_smooth",
+                                                goal_log=self._goal_log)
 
         return planned_actions, self.action_len

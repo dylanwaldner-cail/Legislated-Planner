@@ -172,6 +172,11 @@ class Grounder:
             return []
         return [f"goal_cell({int(np.argmax(_as_cube_rows(occ)[0]))})"]
 
+    # NB no start_cell() grounder here on purpose. A probe-derived spawn cell was tried and removed:
+    # the cube can spawn straddling a boundary, and start_cell is consumed by a rule whose consequent
+    # names a single cell, so an argmax (or worse, the multilabel in_cell) picks the wrong home. Like
+    # goal_cell's gt path, it is a task SPECIFICATION -- see LawEvaluator.set_start().
+
     def ground(self):
         """Run every grounder method and return the sorted DDL fact list."""
         self.in_cell()

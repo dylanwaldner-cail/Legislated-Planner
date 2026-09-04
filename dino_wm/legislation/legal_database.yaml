@@ -45,6 +45,16 @@ atoms:
   - may_move                       # lifted [P]moving proxy: the robot is PERMITTED to move (moving not
                                    # forbidden). Gates reach_goal so a FROZEN robot ([O]~moving) has its
                                    # goal duty SUSPENDED (ought-implies-can). Derived in asp_helpers.
+  # --- injected_laws (mid-run rule insertion experiment) additions ---
+  - start_cell(0..8)               # the cell the cube STARTED the episode in, from the cube-cell probe on
+                                   # the episode's FIRST latent (grounding.start_cell). Probe-grounded like
+                                   # goal_cell -- the agent's own memory of spawn, not sim ground truth.
+  - return_cell(0..8)              # REPARATIVE act: get back to cell N. Deliberately NOT in_cell(N): an
+                                   # achievement duty discharges on visited(N), and the start cell is in
+                                   # visited from frame 0, so [O]in_cell(start) would fire and discharge in
+                                   # the same step (goal_bank.waypoint: `tset & visited` -> skipped). A
+                                   # return duty is live while the cube is AWAY from N, like exit_cell's
+                                   # complement -- see goal_bank.return_obligations.
 
 # Which law CATEGORY(ies) below are ENFORCED. Exactly one set is active at a time; alternative
 # sets may reuse label names because only the selected category is rendered (they never collide).
@@ -244,6 +254,25 @@ laws:
       antecedent: [cube]
       consequent: ["[O]~in_cell(4)", "[O]exit_cell(4)"]
 
+  # INJECTED LAWS (mid-run rule insertion). NOT in active_lawsets at episode start: this category is
+  # added to the reasoner's active set at MPC step `rule_injection.frame` (see plan.py / mpc.py), which
+  # recompiles the DDL theory and clears the verdict cache. The point is a strictly stronger claim than
+  # flipping a sign-conditioned law that was already compiled in: THE RULE DID NOT EXIST when the run
+  # started, and the planner honours it on the very next re-ground/replan with NO retraining and NO
+  # re-synthesis -- the thing an LTL shield structurally cannot do (it would have to re-synthesise the
+  # automaton from the amended spec).
+  injected_laws:
+    # R11: a WHITE sign obliges returning to the cell the cube started in. Antecedent is the PERCEIVED
+    # sign -- the env is recoloured white at the same step (sign_control revert schedule) and the
+    # sign_color probe reads it, so the whole chain env -> probe -> grounding -> DDL -> goal switch is
+    # exercised rather than scripted. `may_move` gates it for ought-implies-can consistency with R8:
+    # if the sign goes white while R9 has the agent frozen, no contradictory duty is raised.
+    - label: white_sign_return
+      expand: {N: "0..8"}
+      antecedent: ["sign(white)", "start_cell(N)", "may_move"]
+      consequent: ["[O]return_cell(N)"]
+
+
   # POTENTIAL LAWS (STORAGE ONLY -- never in active_lawsets, never compiled). A parking lot for rules
   # pulled out of an active set but worth remembering. NOT runnable on its own (it references atoms /
   # context that live in full_lawset). To revive: move a rule back into its target category and restore
@@ -320,6 +349,7 @@ superiority:
   - ["yellow_to_red_if_tainted", "yellow_to_green_3"]
   - ["yellow_to_red_if_tainted", "yellow_to_green_5"]
   # NOTE: R2 vs R3 is deliberately UNRESOLVED (no pair) -> ambiguity-blocks under sign(red) -> R9.
+
 
 # Raw ASP clauses appended verbatim to the compiled theory (reasoner.py). Used to LIFT a deontic
 # condition into a plain derived atom that a .dl antecedent can reference -- a workaround for the engine
