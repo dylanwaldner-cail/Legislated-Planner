@@ -98,6 +98,15 @@ class ProbeRegistry:
         # there would switch every run in the repo from the axis-aligned body model to the oriented
         # one at once. With this unset the constraint sees no "cube_yaw" probe and behaves exactly as
         # it always has (verified: yaw=0 reproduces the axis-aligned verdicts bit for bit).
+        # Per-run override for the SIGN probe. Unlike cube_position (which plan.py rebinds from
+        # objective.pos_probe_path so legislation and the planner cannot diverge), sign_color has no
+        # CLI knob -- it comes from this manifest. Retraining it for a new dataset therefore needs a
+        # way to select it per run, or every run silently keeps the manifest's probe.
+        _sp = os.environ.get("DINOWM_SIGN_PROBE", "").strip()
+        if _sp:
+            pth = Path(_sp) if Path(_sp).is_absolute() else Path(root) / _sp
+            self.probes["sign_color"] = Probe("sign_color", pth, device=device)
+            print(f"[registry] sign_color OVERRIDDEN from DINOWM_SIGN_PROBE={pth}")
         _yp = os.environ.get("DINOWM_YAW_PROBE", "").strip()
         if _yp:
             pth = Path(_yp) if Path(_yp).is_absolute() else Path(root) / _yp

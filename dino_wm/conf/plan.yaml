@@ -12,8 +12,8 @@ hydra:
 # model to load for planning. Resolves to <cwd>/outputs/<model_name>/ (hydra.yaml
 # + checkpoints/model_<epoch>.pth). 2026-06-17 = the single-robot WM (15 epochs).
 ckpt_base_path: ./ # put absolute path here. Checkpoints will be loaded from ${ckpt_base_path}/outputs
-model_name: wm_5k  # canonical WM: symlink -> outputs/2026-07-26/03-21-16 (trained on data/isaaclab_stroke_5k). Legacy: outputs/legacy/{lg_pred_dino,reg_dino,5k_tight}
-model_epoch: 30  # wm_5k balanced checkpoint (val-rollout knee before late-epoch drift)
+model_name: wm_5k_no_yaw  # locked-yaw WM (2026-09-04). Pre-lock stack: wm_5k. Swap WITH pos_probe_path + data_path.
+model_epoch: 30  # val-rollout knee; same epoch for both WMs
 
 # GPU for the WM + sim/renderer. HARNESS: AppLauncher derives the renderer's
 # active_gpu + physics_gpu from this, so e.g. device=cuda:7 puts rendering on GPU 7.
@@ -27,7 +27,7 @@ max_offset: 50
 # Useful when planning in a container where the repo is mounted at a different
 # prefix than during training (e.g. /workspace/dino_wm vs /newdata2/...).
 # Leave null to use the path stored in the model's hydra.yaml.
-data_path: ${ckpt_base_path}/data/isaaclab_stroke_5k  # canonical; overrides the checkpoint's baked (pre-rename) path
+data_path: ${ckpt_base_path}/data/isaaclab_stroke_5k_no_yaw_merged  # must match model_name's training set
 
 # Optional: attach a standalone-trained decoder so the evaluator renders the IMAGINED
 # rollout (top=executed sim, bottom=decoded WM prediction) into output_final.png + .mp4.
@@ -91,7 +91,7 @@ legislation:
                       # (geometric_laws | full_lawset). null -> the db's own default. Current default =
                       # geometric_laws (center-cell + sign geometry). Set [full_lawset] for the R1-R10 sign runs.
   facts: [cube]
-  yellow_cells: []    # static yellow-cell ids for full_lawset (R5/R7/R7b). e.g. [3, 5] flanking the
+  yellow_cells: [3, 5]  # static yellow-cell ids for full_lawset (R5/R7/R7b): [3, 5] flanking the
                       # center. Expanded to yellow_cell(Y) base facts in plan.py (int list avoids Hydra's
                       # paren-in-override problem). [] -> no yellow cells (geometric_laws runs ignore it).
   violation_penalty: 1.0e6
@@ -100,8 +100,10 @@ legislation:
   constraint_margin: 0.0  # CUSHION delta (m): robust constraint tightening -- inflate the footprint the
                       # PLANNER avoids-with by this much to stay clear despite WM/probe perception error.
                       # PLANNER-ONLY (metric scores reality with true cube_half), so delta=0 vs delta>0 is an
-                      # honest ablation -- ALWAYS report the delta=0 arm too. Safe ceiling ~0.02 for this grid
-                      # (cube_half 0.045 vs CELL/2 0.0667); delta above ~0.021 prunes the legal detour. Default 0.
+                      # honest ablation -- ALWAYS report the delta=0 arm too.
+                      # INDEPENDENT VARIABLE: never default to anything but 0.
+                      # The old "safe ceiling ~0.021" note was WRONG (removed 2026-09-05): measured optimum
+                      # is delta=0.04. Legal band survives to delta~0.088. See findings.md 2026-09-05.
   strict_escape: false  # ESCAPE GRANDFATHER SCOPE. false (default, and what every published run used):
                       # once the ROOT is inside the keep-clear zone only the candidate's ENDPOINT is checked,
                       # so it may leave and re-enter freely -- and a committed stroke may LINGER inside
@@ -190,6 +192,6 @@ objective:
   mode: last
   probe_lambda: 1.0 # legislation P(illegal) penalty (separate probe; inert in GD, used in cem.py)
   use_probe: true # probe gives a SHARP cube-position objective (latent MSE alone barely weights the few cube patches)
-  pos_probe_path: probes/weights/cube_pos_encoded.pth # canonical encoded cube-position probe (wm_5k / isaaclab_stroke_5k). Legacy probes in probes/weights/legacy/
+  pos_probe_path: probes/weights/cube_pos_encoded_no_yaw.pth # pairs with wm_5k_no_yaw; use cube_pos_encoded.pth with wm_5k
   pos_probe_weight: 50.0 # PRIMARY. squared-L2 in m^2 (~0.03 for a 1-cell error); large so cube term dominates latent MSE (O(0.1-1))
   visual_weight: 0.1 # weak manifold regularizer only (limits probe-gaming); demoted so the cube-position probe dominates

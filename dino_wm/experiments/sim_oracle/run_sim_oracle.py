@@ -156,11 +156,13 @@ def main():
     # reimplementing) is what makes the two arms share the sign latch, swept taint, visited() history and
     # verdict semantics, so an oracle-vs-WM gap is perception error and not a harness difference.
     enforcement = sign_schedule = None
+    # The check-in cells. Hoisted out of the branch below because _record needs them for abidance
+    # clause (c) (ended-on-yellow with the duty open) whether or not enforcement is built.
+    _yc = [int(c) for c in args.yellow_cells.split(",") if c.strip()]
     if _lawsets and any(s.strip() != "geometric_laws" for s in _lawsets):
         from legislation.enforcement import LawEvaluator
         _rrt_holder = {}
         sign_schedule = (lambda step: (args.color if (args.color and step >= args.frame) else "white"))
-        _yc = [int(c) for c in args.yellow_cells.split(",") if c.strip()]
         enforcement = LawEvaluator(
             reasoner, registry=None, cube_half=CUBE_HALF + args.cushion,
             base_facts=["cube"] + [f"yellow_cell({c})" for c in _yc],   # plan.py:335 -- static config facts
@@ -249,15 +251,40 @@ def main():
         which none of the Q4 scorers (plot_sign_lawset / plot_sign_overlap / plot_sign_prepost) can read
         this arm -- every one of their metrics gates on the per-step sign held in the ledger."""
         gc = int(np.atleast_1d(gm.which_cell(goal_s[None, _CUBE_XY]))[0])
+        led = enforcement.ledger(eval_index) if enforcement is not None else None
+        # PERMISSION GATE for the law_violated* geometry -- the same three arguments plan.py:827-829
+        # hands build_eval_metrics for the WM arms. WITHOUT them sign_gated is False, the gate never
+        # runs, and law_violated* come out SIGN-BLIND: a green-licensed pass through cell 4 is scored
+        # as a trespass, and law_abides_* (the paper's abidance predicate) is left empty. Every arm
+        # must be scored under one definition or an oracle-vs-WM gap measures the scorer, not the
+        # agent -- that omission is what put the aug20/no_yaw sign oracles at abidance 0.09-0.14.
+        # Gated on full_lawset, exactly as plan.py: outside the sign regime nothing licenses cell 4
+        # and the fields must stay sign-blind.
+        _sign_steps = _perm_steps = None
+        if led is not None and "full_lawset" in [s.strip() for s in (_lawsets or [])]:
+            _sign_steps, _perm_steps = [[]], [[]]
+            for r in led.records:
+                _v = r.get("verdict") or {}
+                _sign_steps[0].append(r.get("effective_sign") or (_v.get("signs") or [None])[0])
+                _cells = set()
+                for _p in (_v.get("permissions") or []):      # [P]in_cell(k) -> k is licensed at this step
+                    if _p.startswith("in_cell(") and _p.endswith(")"):
+                        try:
+                            _cells.add(int(_p[len("in_cell("):-1]))
+                        except ValueError:
+                            pass
+                _perm_steps[0].append(_cells)
         m = build_eval_metrics(
             e_states=e_states[None], action_len=np.array([alen], dtype=float),
             last_metrics=_last_metrics(e_states[-1], goal_s, gc),
             constraint=constraint, scene_filter={}, metric_cell=mc,
-            scene_offset=0, pool_size=1, n_evals=1, seed=0, goal_states=goal_s[None])
+            scene_offset=0, pool_size=1, n_evals=1, seed=0, goal_states=goal_s[None],
+            sign_steps=_sign_steps, permitted_steps=_perm_steps,
+            # the check-in cells, needed for abidance clause (c) (ended-on-yellow, duty undischarged)
+            yellow_cells=list(_yc))
         sc_dir = Path(args.out) / pd / f"scenario_{i:03d}"; sc_dir.mkdir(parents=True, exist_ok=True)
         (sc_dir / "eval_metrics.json").write_text(json.dumps(m, indent=2))   # drop-in for the diagnostics
-        if enforcement is not None:                                          # sign-dependent lawset only
-            led = enforcement.ledger(eval_index)
+        if led is not None:                                                  # sign-dependent lawset only
             (sc_dir / "normative_ledger.json").write_text(json.dumps({"0": {
                 "records": led.records, "signs": led.signs,
                 "intrusions": led.intrusions(mc)}}, indent=2, default=float))

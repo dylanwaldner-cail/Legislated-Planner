@@ -11,6 +11,7 @@ camera in the container (see the smoke test in the module docstring of run_sim_o
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -37,7 +38,7 @@ class PhysGridEnv(GridWrapperSingle):
 
     def __init__(self, num_envs, device="cuda:0",
                  task_id="Isaac-DinoWMGrid-Single-v0", stroke_max_steps=320,
-                 grid_away_shift=None):
+                 grid_away_shift=None, lock_cube_yaw=None):
         # grid_away_shift: override the robot-base away-from-grid shift (m) for THIS env only, WITHOUT
         # editing the shared cfg (dinowm_grid_env_cfg._GRID_AWAY_SHIFT). None = use the cfg default
         # (currently 0.025 -> base x=-0.475). 0.0 = the pre-shift -0.45 geometry. Lets the oracle
@@ -62,6 +63,12 @@ class PhysGridEnv(GridWrapperSingle):
         self._executor = None
         self._home_ee = None
         self._home_jp = None
+        # YAW LOCK. Resolved exactly as GridWrapperSingle does (explicit arg, else env var, else off).
+        # REQUIRED even when off: this __init__ bypasses GridWrapperSingle.__init__, but the inherited
+        # execute_stroke() and set_init_state() both read self.lock_cube_yaw, so leaving it unset makes
+        # the oracle raise AttributeError on its first stroke.
+        self.lock_cube_yaw = (bool(int(os.environ.get("DINOWM_LOCK_CUBE_YAW", "0")))
+                              if lock_cube_yaw is None else bool(lock_cube_yaw))
 
         env_cfg = parse_env_cfg(task_id, device=device, num_envs=num_envs)
         # Drop the camera sensor: physics-only. With enable_cameras=False the sensor is not rendered;
@@ -69,6 +76,16 @@ class PhysGridEnv(GridWrapperSingle):
         # (so the inherited _setup_camera no-ops via its KeyError guard).
         if getattr(env_cfg.scene, "camera", None) is not None:
             env_cfg.scene.camera = None
+
+        if self.lock_cube_yaw:
+            rp = getattr(getattr(getattr(env_cfg.scene, "cube", None), "spawn", None),
+                         "rigid_props", None)
+            if rp is None:
+                raise RuntimeError(f"lock_cube_yaw=True but {task_id} has no scene.cube.spawn."
+                                   "rigid_props to clamp -- refusing to run half-locked.")
+            rp.max_angular_velocity = 0.0
+            rp.angular_damping = 1000.0
+            print("[PhysGridEnv] cube rotation LOCKED (solver clamp + per-step re-pin)", flush=True)
 
         # ---- optional geometry intervention: move the robot base (reachability A/B) ----
         # The base x is a class-def-time default baked from dinowm_grid_env_cfg._ROBOT_BASE_X
@@ -120,8 +137,33 @@ class PhysGridEnv(GridWrapperSingle):
         strokes: (N,4) per-env aimed strokes [x_start,y_start,dx,dy] (N == num_envs; for a single
                  executed stroke, pass it broadcast and read row 0). GT physics, no render, no probe.
         The arm is snapped back to the episode's home joints after the push (inherited execute_stroke),
-        so returned states carry the parked arm + true pushed cube -- matching the training frames."""
-        self._write_state(np.asarray(state, dtype=np.float32))
+        so returned states carry the parked arm + true pushed cube -- matching the training frames.
+
+        RESIDUE CLEAR (the reset + double write below). A single write+materialize does NOT land PhysX
+        in a state consistent with the written values: contact/solver state from the PREVIOUS roll
+        survives and moves THIS roll's outcome by up to 67mm, so the same (state, stroke) rolled twice
+        gave different answers depending on where it sat in the call sequence. That is what made the
+        sim-oracle prune on one endpoint and execute another (58/58 committed strokes of
+        results/no_yaw/sign_change/oracle entered a cell its own verdict forbade).
+
+        Measured with experiments/sim_oracle/probe_batch_determinism.py --variants, B=64, same args
+        rolled twice:
+            nothing (the old body)              67.095 mm   23/64 exact
+            _env.reset() only                   67.095 mm   25/64      <- reset ALONE does nothing
+            2x _materialize_state               67.095 mm   12/64      <- extra steps ALONE do nothing
+            _write_state + _materialize_state    8.719 mm   61/64
+            reset + write + materialize          1.070 mm   62/64      <- == prepare(), the fix
+        1.07mm is the true GPU-solver floor. Cost is ~0.1%: reset is 4.5ms against a 5543ms roll.
+
+        This is exactly what set_init_state (grid_wrapper_single.py:538-544) does, which is why the WM
+        arm was never affected -- mpc.py rolls each committed stroke through env.rollout(), which opens
+        with prepare(). Only the oracle's tree build teleports repeatedly through THIS path.
+        _home_ee/_home_jp are deliberately NOT recaptured: the park pose belongs to the episode."""
+        st = np.asarray(state, dtype=np.float32)
+        self._env.reset()
+        self._write_state(st)
+        self._materialize_state()
+        self._write_state(st)
         self._materialize_state()
         _, state_out = self.execute_stroke(np.asarray(strokes, dtype=np.float32), pos_sink=pos_sink)
         return state_out
