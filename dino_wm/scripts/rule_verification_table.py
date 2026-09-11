@@ -129,8 +129,31 @@ def _requirement(key, rec, nxt, yellow, thresh, ep_reached_yellow=False):
     raise KeyError(key)
 
 
-def tally(run, mode, yellow, thresh):
+def _n_active(ledger_path, ep_key, recs, population):
+    """How many of this episode's records are ACTIVE steps.
+
+    `all`    -- every record the ledger holds (runs to the horizon, so it includes the
+                post-success hold frames: 260/400 social episodes carry them).
+    `active` -- only steps before the episode terminated, `t < n_steps` from the batch's
+                eval_metrics.json. NOT the stricter "executed action" rule used for the WM-error
+                and runtime tables: that one also drops steps where no stroke was committed, which
+                would delete exactly the frozen steps R9 exists to measure.
+    """
+    if population == "all":
+        return len(recs)
+    em = json.load(open(Path(ledger_path).parent / "eval_metrics.json"))
+    return min(int(em["n_steps"][int(ep_key)]), len(recs))
+
+
+def tally(run, mode, yellow, thresh, population="all"):
     rows = {lab: {"engaged": 0, "enforced": 0, "dropped": 0} for lab, *_ in SPECS}
+    # UPTAKE: how often the cube enters cell 4 when entering is FORBIDDEN (R2's [F]in_cell(4) in
+    # force) against when it is PERMITTED (R4's [P]in_cell(4), which is superior to R2). Keyed on
+    # the deontic verdict, NOT the sign: under red the verdict is neither, because R3 obliges
+    # in_cell(4) and R9 resolves the resulting conflict into [F]moving. Those steps are reported
+    # separately and belong in neither column. Entry = GT occupies(4) at t+1 but not t, booked
+    # against the decision at t; an entry after the final record is unobservable.
+    r4_dec = {"steps": {}, "entries": {}}
     # R10 is not an enforcement rate but a DETECTOR: the probe claims in_cell(4), the CTD fires
     # [O]exit_cell(4), and GT says whether the claim was real. tp/fp/fn make that explicit --
     # "requirement true at the firing step" would report fp (probe misfires) as compliance.
@@ -140,12 +163,32 @@ def tally(run, mode, yellow, thresh):
     n_steps = n_eps = 0
     files = sorted(glob.glob(f"{run}/{mode}/*/batch_*/normative_ledger.json"))
     for f in files:
-        for ep in json.load(open(f)).values():
+        for ep_key, ep in json.load(open(f)).items():
             n_eps += 1
             recs = ep["records"]
-            # episode-level GT: did the cube ever reach a yellow cell in this trajectory (R5)
-            ep_reached_yellow = any(_occupies(r) & yellow for r in recs)
-            for i, rec in enumerate(recs):
+            n_act = _n_active(f, ep_key, recs, population)
+            # episode-level GT: did the cube ever reach a yellow cell in this trajectory (R5).
+            # Read over the SCORED steps only, so the truth value cannot be set by a hold frame
+            # that the rest of the table is excluding.
+            ep_reached_yellow = any(_occupies(r) & yellow for r in recs[:n_act])
+            for i in range(n_act):
+                v = recs[i].get("verdict") or {}
+                if "in_cell(4)" in (v.get("prohibitions") or []):
+                    st = "R2"
+                elif "in_cell(4)" in (v.get("permissions") or []):
+                    st = "R4"
+                else:
+                    st = "neither"
+                # AT RISK ONLY: a decision taken with the cube already in cell 4 cannot produce an
+                # entry, and those steps are 40% of R4 against 9% of R2 (the cube is often already
+                # inside once the checkpoint turns the sign green), so counting them would dilute
+                # the permitted row four times harder than the forbidden one.
+                if 4 in _occupies(recs[i]):
+                    continue
+                r4_dec["steps"][st] = r4_dec["steps"].get(st, 0) + 1
+                if i + 1 < len(recs) and 4 in _occupies(recs[i + 1]) and 4 not in _occupies(recs[i]):
+                    r4_dec["entries"][st] = r4_dec["entries"].get(st, 0) + 1
+            for i, rec in enumerate(recs[:n_act]):
                 n_steps += 1
                 v = rec.get("verdict") or {}
                 nxt = recs[i + 1] if i + 1 < len(recs) else None
@@ -178,7 +221,7 @@ def tally(run, mode, yellow, thresh):
                     r10["fp"] += 1
                 elif gt_in_4 and prohibited:
                     r10["fn"] += 1
-    return rows, r10, n_steps, n_eps, len(files)
+    return rows, r10, n_steps, n_eps, len(files), r4_dec
 
 
 def main():
@@ -191,17 +234,22 @@ def main():
                          "[O]~moving. Default 0.02 = 2cm, well under the ~5cm minimum commanded "
                          "push (stroke_sampler aim_push_range=(0.05,0.09)), so it separates "
                          "'frozen but jittering' from a real stroke.")
+    ap.add_argument("--population", choices=["all", "active"], default="all",
+                    help="all = every ledger record (includes post-success hold frames, what the "
+                         "published table used); active = only steps t < n_steps.")
     ap.add_argument("--out")
     args = ap.parse_args()
 
     yellow = {int(c) for c in args.yellow_cells.split(",") if c.strip()}
     res = {}
     for m in args.modes:
-        rows, r10, n_steps, n_eps, n_files = tally(args.run, m, yellow, args.motion_thresh)
+        rows, r10, n_steps, n_eps, n_files, r4 = tally(args.run, m, yellow, args.motion_thresh,
+                                                       args.population)
         res[m] = {"rows": rows, "r10_detector": r10, "steps": n_steps,
-                  "episodes": n_eps, "ledgers": n_files}
+                  "episodes": n_eps, "ledgers": n_files, "r4_decision": r4}
         print(f"{m:8s}: {n_eps} episodes, {n_steps} decision steps, {n_files} ledgers")
-    print(f"yellow cells={sorted(yellow)}  motion threshold={args.motion_thresh} m\n")
+    print(f"population={args.population}  yellow cells={sorted(yellow)}  "
+          f"motion threshold={args.motion_thresh} m\n")
 
     w = max(len(m) for m in args.modes)
     hdr = f"{'rule':28s}" + "".join(f"  {m:>{max(22, w)}s}" for m in args.modes)
@@ -232,6 +280,18 @@ def main():
         if any(u.values()):
             print(f"  {lab}: " + ", ".join(f"{m}={v}" for m, v in u.items()))
 
+    print("\nUPTAKE (decision-time): center entries per decision, by deontic verdict")
+    print(f"  {'verdict':10s}" + "".join(f"  {m:>24s}" for m in args.modes))
+    for sg in ("R2", "R4", "neither"):
+        cells = []
+        for m in args.modes:
+            r4 = res[m]["r4_decision"]
+            d_ = r4["steps"].get(sg, 0)
+            n_ = r4["entries"].get(sg, 0)
+            pct = f"{100.0 * n_ / d_:5.1f}%" if d_ else "  n/a"
+            cells.append(f"{n_:5d} / {d_:5d} ({pct})")
+        print(f"  {sg:10s}" + "".join(f"  {c:>24s}" for c in cells))
+
     print("\nLaTeX rows:")
     for lab, rule, _b, lit, req in SPECS:
         parts = []
@@ -243,6 +303,15 @@ def main():
                 pct = 100.0 * r["enforced"] / r["engaged"] if r["engaged"] else float("nan")
                 parts.append(f"{r['engaged']} & {r['enforced']} ({pct:.1f}\\%)")
         print(f"{lab} \\texttt{{{rule}}} & " + " & ".join(parts) + r" \\")
+    for sg, gloss in (("R2", r"R2 \texttt{no\_center\_cell}"),
+                      ("R4", r"R4 \texttt{green\_sign}")):
+        parts = []
+        for m in args.modes:
+            r4 = res[m]["r4_decision"]
+            d_ = r4["steps"].get(sg, 0)
+            n_ = r4["entries"].get(sg, 0)
+            parts.append(f"{d_} & {n_} ({100.0 * n_ / d_:.1f}\\%)" if d_ else f"{d_} & ---")
+        print(r"\quad " + gloss + " & " + " & ".join(parts) + r" \\")
 
     if args.out:
         Path(args.out).write_text(json.dumps(

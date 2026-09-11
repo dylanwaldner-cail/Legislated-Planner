@@ -98,6 +98,20 @@ class RRTIntrospector:
             print(f"[introspect] strip {path} skipped: {e}")
 
     def _plot_tree(self, nodes, goal_xy, forbidden, top_idx, committed_idx, path):
+        pos = np.stack([n.pos for n in nodes])
+        # Dump the tree itself, not just the debug picture. summary.json keeps only the top-k
+        # BRANCHES, so without this the full node set exists nowhere on disk and any re-draw of the
+        # tree (e.g. a figure-grade version for the paper) would need the whole episode re-run.
+        try:
+            np.savez(path.replace(".png", ".npz"),
+                     pos=pos.astype(np.float32),
+                     parent=np.asarray([n.parent for n in nodes], dtype=np.int32),
+                     goal_xy=np.asarray(goal_xy, dtype=np.float32),
+                     forbidden=np.asarray(sorted(forbidden), dtype=np.int32),
+                     committed_idx=np.int32(committed_idx),
+                     top_idx=np.asarray(list(top_idx), dtype=np.int32))
+        except Exception as e:  # noqa: BLE001
+            print(f"[introspect] tree dump skipped: {e}")
         try:
             import matplotlib
             matplotlib.use("Agg")
@@ -105,7 +119,6 @@ class RRTIntrospector:
         except Exception as e:  # noqa: BLE001
             print(f"[introspect] plot skipped (no matplotlib): {e}")
             return
-        pos = np.stack([n.pos for n in nodes])
         gd = np.linalg.norm(pos - goal_xy, axis=1)
         fig, ax = plt.subplots(figsize=(5, 5))
         half = gm.GRID_HALF
