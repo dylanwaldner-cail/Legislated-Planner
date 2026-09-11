@@ -17,7 +17,7 @@ not the raw rendered colour. At step 4 those differ: raw is still yellow, effect
 R7b derives the flip. The figure is about the normative state, so effective is the honest choice --
 but it is a CHOICE, and `--sign_source raw` renders the other one.
 
-Run INSIDE the container, from /workspace/dino_wm:
+Run INSIDE the container, from /workspace/src:
     ./IsaacLab/isaaclab.sh -p scripts/render_trace_filmstrip.py --spp 256 --width 640 --height 640
 """
 from __future__ import annotations

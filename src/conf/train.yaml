@@ -8,11 +8,11 @@ defaults:
   - predictor: vit
 
 # base path to save model outputs. Checkpoints will be saved to ${ckpt_base_path}/outputs.
-# Use the CONTAINER's bind-mounted repo path (/workspace/dino_wm), NOT the host path
+# Use the CONTAINER's bind-mounted repo path (/workspace/src), NOT the host path
 # (/newdata2/...): training runs in the container, where /newdata2 is the ephemeral
-# overlay (host-invisible, lost on recreate) and /workspace/dino_wm is the bind mount
+# overlay (host-invisible, lost on recreate) and /workspace/src is the bind mount
 # (== host /newdata2/.../dino_wm). Override if you ever train outside the container.
-ckpt_base_path: /workspace/dino_wm/
+ckpt_base_path: /workspace/src/
 
 hydra:
   run:

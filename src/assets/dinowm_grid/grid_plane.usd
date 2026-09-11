@@ -23,7 +23,7 @@ def Xform "GridPlane"
             def Shader "Texture"
             {
                 uniform token info:id = "UsdUVTexture"
-                asset inputs:file = @/workspace/dino_wm/assets/dinowm_grid/grid_texture.png@
+                asset inputs:file = @/workspace/src/assets/dinowm_grid/grid_texture.png@
                 float2 inputs:st.connect = </GridPlane/Looks/GridMaterial/Reader.outputs:result>
                 float3 outputs:rgb
             }

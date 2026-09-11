@@ -36,7 +36,7 @@ Canonical config for the law-eval / sign / cushion runs. Values marked **default
 
 ## Must be passed explicitly
 
-- **`legislation.goal_bank`** — must be an **absolute** path (`/workspace/dino_wm/data/goal_cell_bank_no_yaw`).
+- **`legislation.goal_bank`** — must be an **absolute** path (`/workspace/src/data/goal_cell_bank_no_yaw`).
   Hydra chdirs into the run dir, so a relative path raises `FileNotFoundError`. `null` silently disables
   obligation enforcement rather than erroring.
 - **`CUDA_VISIBLE_DEVICES=<n>` with `device=cuda:0`** — not `device=cuda:<n>`.
@@ -45,7 +45,7 @@ Canonical config for the law-eval / sign / cushion runs. Values marked **default
 ## Canonical call
 
 ```
-CUDA_VISIBLE_DEVICES=3 ./IsaacLab/isaaclab.sh -p scripts/eval_sweep.py --law_eval /workspace/dino_wm/data/law_eval_center_no_yaw_400 --modes social --batch 10 --seed 99 --out results/no_yaw/cushion/delta_0.04 --frame 1 --color yellow -- planner=mpc_rrt metric_cell=4 legislation.constraint_margin=0.04 legislation.active_lawsets=[full_lawset] legislation.goal_bank=/workspace/dino_wm/data/goal_cell_bank_no_yaw device=cuda:0
+CUDA_VISIBLE_DEVICES=3 ./IsaacLab/isaaclab.sh -p scripts/eval_sweep.py --law_eval /workspace/src/data/law_eval_center_no_yaw_400 --modes social --batch 10 --seed 99 --out results/no_yaw/cushion/delta_0.04 --frame 1 --color yellow -- planner=mpc_rrt metric_cell=4 legislation.constraint_margin=0.04 legislation.active_lawsets=[full_lawset] legislation.goal_bank=/workspace/src/data/goal_cell_bank_no_yaw device=cuda:0
 ```
 
 ## Sizes / runtime

@@ -8,7 +8,7 @@ For each recorded cube rest position we teleport the cube there, park the arm at
 full-spp frame (same non-touch path as scripts/render_env_figure.py -> the env.png look). Frames land in
 --out_dir as film_{row}_{k}.png; scripts/compose_filmstrip.py stitches them on the host.
 
-Run INSIDE the container (RTX renderer), from /workspace/dino_wm:
+Run INSIDE the container (RTX renderer), from /workspace/src:
     ./IsaacLab/isaaclab.sh -p scripts/render_filmstrip.py --spp 128 --width 640 --height 640 --device cuda:1
 """
 from __future__ import annotations

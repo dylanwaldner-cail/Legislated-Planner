@@ -25,7 +25,7 @@ max_offset: 50
 
 # Optional: override the dataset data_path baked into the training config.
 # Useful when planning in a container where the repo is mounted at a different
-# prefix than during training (e.g. /workspace/dino_wm vs /newdata2/...).
+# prefix than during training (e.g. /workspace/src vs /newdata2/...).
 # Leave null to use the path stored in the model's hydra.yaml.
 data_path: ${ckpt_base_path}/data/isaaclab_stroke_5k_no_yaw_merged  # must match model_name's training set
 

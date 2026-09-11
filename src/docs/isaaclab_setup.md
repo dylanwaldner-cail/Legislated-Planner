@@ -9,7 +9,7 @@ Opt-in via `ISAACLAB_AVAILABLE=1`. Run inside the Isaac Sim docker.
 ## Container launch (sketch)
 ```
 docker run --gpus all \
-  -v /newdata2/dylantw/Legislated-Planner/src:/workspace/dino_wm \
+  -v /newdata2/dylantw/Legislated-Planner/src:/workspace/src \
   -v $DATASET_DIR:$DATASET_DIR \
   -e DATASET_DIR -e ISAACLAB_AVAILABLE=1 \
   <isaac_sim_image>
