@@ -70,11 +70,6 @@ sweep*
 # keep the harness requirements tracked (overrides the *.txt rule above)
 !dino_wm/requirements-harness.txt
 
-# data-generation scripts (kept local; the datasets they produce live under data/, already ignored)
-dino_wm/scripts/collect_isaaclab_grid_data.py
-dino_wm/scripts/gen_law_eval_set.py
-dino_wm/scripts/gen_crossing_set.py
-
 *eval*
 *.pth
 methods.md
@@ -104,3 +99,18 @@ container_snapshot
 research_lessons.md
 Jurix_paper/
 CLAUDE.md
+/metrics.md
+
+.figwork/
+*.bak
+
+dino_wm/scripts/conformal/
+dino_wm/scripts/merge_collections.py
+dino_wm/scripts/replay_orientation.py
+dino_wm/scripts/scene_index.py
+dino_wm/scripts/wm_cube_pred_check.py
+
+!dino_wm/scripts/gen_law_eval_set.py
+!dino_wm/scripts/gen_crossing_set.py
+!dino_wm/scripts/eval_sweep.py
+!dino_wm/scripts/precompute_dino_latents.py
