@@ -68,7 +68,7 @@ inspect_single.py
 sweep*
 
 # keep the harness requirements tracked (overrides the *.txt rule above)
-!src/requirements-harness.txt
+!src/requirements.txt
 
 *eval*
 *.pth
@@ -114,3 +114,5 @@ src/scripts/wm_cube_pred_check.py
 !src/scripts/gen_crossing_set.py
 !src/scripts/eval_sweep.py
 !src/scripts/precompute_dino_latents.py
+
+src/Defeasible-Deontic-Logic/

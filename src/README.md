@@ -27,10 +27,10 @@ that task package in, and provide `assets/dinowm_grid/`. (`scripts/export_stage.
 the composed scene to one portable `.usd`.)
 
 **Python packages.** Runtime = Isaac Sim's bundled Python + the DINO-WM base (`environment.yaml`); on
-top we install `requirements-harness.txt` into `/isaac-sim/python.sh`:
+top we install `requirements.txt` into `/isaac-sim/python.sh`:
 
 ```bash
-/isaac-sim/python.sh -m pip install -r requirements-harness.txt
+/isaac-sim/python.sh -m pip install -r requirements.txt
 ```
 
 Key pins (versions from the working container): `torch==2.7.0+cu118` / `torchvision==0.22.0+cu118`

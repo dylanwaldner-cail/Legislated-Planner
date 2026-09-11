@@ -28,9 +28,36 @@ Everything lives under [`src/`](src/):
 
 ## Requirements
 
-IsaacLab / Isaac Sim (a hard dependency, installed separately — it is not vendored here) and
-`clingo` for the deontic reasoning. Full instructions, version pins and known traps are in
-[`src/README.md`](src/README.md).
+Two dependencies are **not** vendored here and must be obtained separately.
+
+**1. The DDL engine.** The defeasible deontic logic solver (ASP/clingo) is a separate upstream
+project by Guido Governatori. Clone it and point the reasoner at it:
+
+```bash
+git clone https://github.com/gvdgdo/Defeasible-Deontic-Logic.git
+export DDL_ROOT=$PWD/Defeasible-Deontic-Logic
+```
+
+Without `DDL_ROOT`, `src/legislation/reasoner.py` falls back to `src/Defeasible-Deontic-Logic/`.
+This work was built against commit `679c638`; the engine's inference semantics determine every
+deontic verdict, so check that commit out if you are reproducing published results.
+
+**2. IsaacLab / Isaac Sim**, a hard dependency for every rollout.
+
+Python packages (`clingo` included) are pinned in
+[`src/requirements.txt`](src/requirements.txt). Full instructions, version pins and
+known traps are in [`src/README.md`](src/README.md).
+
+## Third-party code
+
+The Academic Public License in [LICENSE](LICENSE) covers the original work in this repository. The
+following vendored directories are third-party and remain under their own terms:
+
+| path | origin | license |
+|---|---|---|
+| `src/env/deformable_env/`, `pointmaze/`, `pusht/`, `wall/` | DINO-WM | MIT — see [`src/LICENSE`](src/LICENSE) |
+| `src/models/encoder/r3m/` | R3M (Meta) | MIT |
+| `src/metrics/lpipsPyTorch/` | LPIPS PyTorch | MIT |
 
 ## Paper
 

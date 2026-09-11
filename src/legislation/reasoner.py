@@ -22,6 +22,7 @@ Runs in the container (needs `clingo` + the DDL .asp engine files).
 from __future__ import annotations
 
 import itertools
+import os
 import re
 import time
 import sys
@@ -31,7 +32,16 @@ import yaml
 import clingo
 
 _HERE = Path(__file__).resolve().parent
-_DDL_ROOT = _HERE.parent / "Defeasible-Deontic-Logic"
+# The DDL engine (Governatori's Defeasible-Deontic-Logic, ASP/clingo) is a separate upstream
+# project and is NOT vendored here. Clone it, then either set DDL_ROOT or drop the clone beside
+# this package as ../Defeasible-Deontic-Logic. See the repo README.
+_DDL_ROOT = Path(os.environ.get("DDL_ROOT") or (_HERE.parent / "Defeasible-Deontic-Logic")).resolve()
+if not (_DDL_ROOT / "Python" / "parser.py").is_file():
+    raise FileNotFoundError(
+        f"DDL engine not found at {_DDL_ROOT}. Clone the Defeasible-Deontic-Logic repository and "
+        f"either set DDL_ROOT=/path/to/Defeasible-Deontic-Logic or place it at "
+        f"{_HERE.parent / 'Defeasible-Deontic-Logic'}. See the README."
+    )
 sys.path.insert(0, str(_DDL_ROOT / "Python"))   # so `import parser` resolves to the DDL parser
 import parser as ddl_parser  # noqa: E402
 
