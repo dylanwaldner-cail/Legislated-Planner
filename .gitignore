@@ -68,7 +68,7 @@ inspect_single.py
 sweep*
 
 # keep the harness requirements tracked (overrides the *.txt rule above)
-!dino_wm/requirements-harness.txt
+!src/requirements-harness.txt
 
 *eval*
 *.pth
@@ -104,13 +104,13 @@ CLAUDE.md
 .figwork/
 *.bak
 
-dino_wm/scripts/conformal/
-dino_wm/scripts/merge_collections.py
-dino_wm/scripts/replay_orientation.py
-dino_wm/scripts/scene_index.py
-dino_wm/scripts/wm_cube_pred_check.py
+src/scripts/conformal/
+src/scripts/merge_collections.py
+src/scripts/replay_orientation.py
+src/scripts/scene_index.py
+src/scripts/wm_cube_pred_check.py
 
-!dino_wm/scripts/gen_law_eval_set.py
-!dino_wm/scripts/gen_crossing_set.py
-!dino_wm/scripts/eval_sweep.py
-!dino_wm/scripts/precompute_dino_latents.py
+!src/scripts/gen_law_eval_set.py
+!src/scripts/gen_crossing_set.py
+!src/scripts/eval_sweep.py
+!src/scripts/precompute_dino_latents.py

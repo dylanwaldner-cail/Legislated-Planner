@@ -32,8 +32,8 @@ import numpy as np
 import torch
 from matplotlib.patches import Rectangle
 
-BANK = "/newdata2/dylantw/Legislative-Harness/dino_wm/data/goal_cell_bank/obses"
-DEF_BATCH = ("/newdata2/dylantw/Legislative-Harness/dino_wm/results/aug28/"
+BANK = "/newdata2/dylantw/Legislated-Planner/src/data/goal_cell_bank/obses"
+DEF_BATCH = ("/newdata2/dylantw/Legislated-Planner/src/results/aug28/"
              "rule_insert/social/2_6/batch_000")
 SIGN_RGB = {"white": "#E8E8E8", "yellow": "#F2C200", "green": "#2E9E4F", "red": "#D0342C"}
 DARK = 0.3            # evaluator._plot_rollout_compare `correction`

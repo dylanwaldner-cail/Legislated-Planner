@@ -81,7 +81,7 @@ def wm_table(out):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out-dir", default="/newdata2/dylantw/Legislative-Harness/full_paper/Images")
+    ap.add_argument("--out-dir", default="/newdata2/dylantw/Legislated-Planner/full_paper/Images")
     a = ap.parse_args()
     price_table(f"{a.out_dir}/tab_price_of_legality.tex")
     wm_table(f"{a.out_dir}/tab_wm_error.tex")

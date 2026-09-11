@@ -52,7 +52,7 @@ training:
   alpha: 1
   base: 1
   objective_mode: 'last'
-  db_path: /newdata2/dylantw/Legislative-Harness/dino_wm/wm_traj.h5
+  db_path: /newdata2/dylantw/Legislated-Planner/src/wm_traj.h5
   num_iterations: 10
 
 data:

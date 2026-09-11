@@ -14,23 +14,23 @@ The task is single-arm cube-pushing across a 3×3 grid in IsaacLab.
 
 ## Layout
 
-Everything lives under [`dino_wm/`](dino_wm/):
+Everything lives under [`src/`](src/):
 
 | path | what |
 |---|---|
-| [`dino_wm/README.md`](dino_wm/README.md) | **start here** — setup, dependencies, pipeline, full file map |
-| `dino_wm/legislation/` | the DDL layer: `legal_database.yaml` (the only place laws are defined), reasoner, grounding, constraint |
-| `dino_wm/planning/` | planners (RRT, CEM, MPC) and the objectives they optimize |
-| `dino_wm/probes/` | learned readouts from world-model latents (cube position, cell occupancy, sign color) |
-| `dino_wm/env/` | the IsaacLab cube-pushing environment and grid metadata |
-| `dino_wm/Defeasible-Deontic-Logic/` | the DDL-in-ASP solver the reasoner calls |
-| `dino_wm/DINOREADME.md` | upstream DINO-WM world-model training and dataset docs |
+| [`src/README.md`](src/README.md) | **start here** — setup, dependencies, pipeline, full file map |
+| `src/legislation/` | the DDL layer: `legal_database.yaml` (the only place laws are defined), reasoner, grounding, constraint |
+| `src/planning/` | planners (RRT, CEM, MPC) and the objectives they optimize |
+| `src/probes/` | learned readouts from world-model latents (cube position, cell occupancy, sign color) |
+| `src/env/` | the IsaacLab cube-pushing environment and grid metadata |
+| `src/Defeasible-Deontic-Logic/` | the DDL-in-ASP solver the reasoner calls |
+| `src/DINOREADME.md` | upstream DINO-WM world-model training and dataset docs |
 
 ## Requirements
 
 IsaacLab / Isaac Sim (a hard dependency, installed separately — it is not vendored here) and
 `clingo` for the deontic reasoning. Full instructions, version pins and known traps are in
-[`dino_wm/README.md`](dino_wm/README.md).
+[`src/README.md`](src/README.md).
 
 ## Paper
 

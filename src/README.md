@@ -1,4 +1,4 @@
-# Legislative-Harness
+# Legislated Planner
 
 A neurosymbolic planner: **Defeasible Deontic Logic (DDL) norms shape a world-model planner.**
 Learned probes read facts from a frozen-DINO world model, a DDL reasoner turns human-authored laws

@@ -31,7 +31,7 @@ from PIL import Image, ImageDraw, ImageFont
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = os.path.join(HERE, "env_hi_touch.png")
 OUT_LOCAL = os.path.join(HERE, "env_hi_touch_annotated.png")
-OUT_PAPER = "/newdata2/dylantw/Legislative-Harness/Jurix_paper/Images/env.png"
+OUT_PAPER = "/newdata2/dylantw/Legislated-Planner/Jurix_paper/Images/env.png"
 
 # MATCH THE DIAGRAM, NOT THE PROSE. This render is now a panel inside Fig. 1, so its callouts are
 # read against the diagram's cards, not against body text -- and the diagram sets its nodes in

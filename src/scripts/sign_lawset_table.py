@@ -24,7 +24,7 @@ import argparse, glob, json, os, sys
 
 import numpy as np
 
-sys.path.insert(0, "/newdata2/dylantw/Legislative-Harness/dino_wm")
+sys.path.insert(0, "/newdata2/dylantw/Legislated-Planner/src")
 from probes.probe_cube_cells import CUBE_HALF, swept_cells
 
 CELL = 4                      # the forbidden centre
@@ -35,8 +35,8 @@ TASKS = ["0_8", "1_7", "2_6", "3_5", "5_3", "6_2", "7_1", "8_0"]
 # agents, 50 evals per task per agent, verified 2026-08-27) and it carries the per-step runtime
 # timers aug15 lacks. aug15/sign_color is the superseded predecessor and disagrees materially
 # (social 0.70/0.69 and deviant abidance 0.46 there vs 0.76/0.76 and 0.63 here); do NOT mix them.
-WM_RUN = "/newdata2/dylantw/Legislative-Harness/dino_wm/results/aug20/sign_change"
-ORACLE_RUN = "/newdata2/dylantw/Legislative-Harness/dino_wm/results/aug20/sign_change/oracle"
+WM_RUN = "/newdata2/dylantw/Legislated-Planner/src/results/aug20/sign_change"
+ORACLE_RUN = "/newdata2/dylantw/Legislated-Planner/src/results/aug20/sign_change/oracle"
 
 WM_AGENTS = [("off", "realistic"), ("social", "social"), ("deviant", "deviant")]
 

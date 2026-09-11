@@ -33,13 +33,13 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, "/newdata2/dylantw/Legislative-Harness/dino_wm")
+sys.path.insert(0, "/newdata2/dylantw/Legislated-Planner/src")
 from probes.probe_cube_cells import CUBE_HALF, swept_cells  # noqa: E402
 from scripts.sign_lawset_table import (  # noqa: E402
     CELL, TASKS, YELLOW_CELLS, _sign_at, _wilson, oracle_pairs, wm_pairs,
 )
 
-DEFAULT_RUN = "/newdata2/dylantw/Legislative-Harness/dino_wm/results/aug20/sign_change"
+DEFAULT_RUN = "/newdata2/dylantw/Legislated-Planner/src/results/aug20/sign_change"
 AGENTS = [("off", "realistic"), ("social", "social"),
           ("deviant", "deviant"), ("oracle", "oracle")]
 

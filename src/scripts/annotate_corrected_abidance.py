@@ -45,12 +45,12 @@ import json
 import os
 import sys
 
-sys.path.insert(0, "/newdata2/dylantw/Legislative-Harness/dino_wm")
+sys.path.insert(0, "/newdata2/dylantw/Legislated-Planner/src")
 from scripts.sign_lawset_table import (  # noqa: E402
     TASKS, _tally, _wilson, oracle_pairs, wm_pairs,
 )
 
-DEFAULT_RUN = "/newdata2/dylantw/Legislative-Harness/dino_wm/results/aug20/sign_change"
+DEFAULT_RUN = "/newdata2/dylantw/Legislated-Planner/src/results/aug20/sign_change"
 WM_MODES = ["off", "social", "deviant"]
 
 PREDICATE = "scripts/sign_lawset_table._abides"
