@@ -22,7 +22,7 @@ wrong. We therefore rebuild a NormativeMemory per episode and append records in 
 exactly the facts step t saw when the run happened.
 
     /newdata2/dylantw/envs/dino_wm/bin/python scripts/rule_engagement.py \
-        --root results/aug20/sign_change/social --lawset full_lawset
+        --root results/no_yaw/sign_change/social --lawset full_lawset
 """
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def _base_rule(label):
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--root", default="results/aug20/sign_change/social")
+    ap.add_argument("--root", default="results/no_yaw/sign_change/social")
     ap.add_argument("--lawset", default="full_lawset")
     ap.add_argument("--yellow_cells", default="3,5",
                     help="must match legislation.yellow_cells for the run being replayed")

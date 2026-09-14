@@ -89,7 +89,7 @@ def _boot(per_batch_ms, n=10000, seed=0):
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--root", default="results/aug20/sign_change/social",
+    ap.add_argument("--root", default="results/no_yaw/sign_change/social",
                     help="the social full-lawset run the table describes")
     ap.add_argument("--lawset", default="full_lawset")
     ap.add_argument("--yellow_cells", default="3,5")

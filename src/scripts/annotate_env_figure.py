@@ -42,7 +42,7 @@ S = 3                     # supersample: draw the overlay at 3x, keep the compos
 # FS drives everything downstream: the bigger the type IN the render, the smaller the panel can be
 # in Fig. 1 for the same printed point size, which is width the diagram gets back. At FS=25 and a
 # 65mm panel the callouts print at ~5pt -- the size they were at in the old 0.38\textwidth fig:env.
-FS = 25                   # callout font size, in 1x pixels
+FS = 23                   # callout font size, in 1x pixels
 LINE = 26.0               # baseline-to-baseline, in 1x pixels
 PADX, PADY = 7, 4         # box padding, in 1x pixels
 RADIUS = 7                # rounded-corner radius, in 1x pixels

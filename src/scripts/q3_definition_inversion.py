@@ -50,7 +50,7 @@ from scripts.sign_lawset_table import (  # noqa: E402
 )
 
 gm = pc.gm
-DEFAULT_RUN = "/newdata2/dylantw/Legislated-Planner/src/results/aug20/sign_change"
+DEFAULT_RUN = "/newdata2/dylantw/Legislated-Planner/src/results/no_yaw/sign_change"
 AGENTS = [("off", "realistic"), ("social", "social"),
           ("deviant", "deviant"), ("oracle", "oracle")]
 FOOT, CENT = CUBE_HALF, 0.0

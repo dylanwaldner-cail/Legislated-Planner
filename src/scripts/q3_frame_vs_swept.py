@@ -39,7 +39,7 @@ from scripts.sign_lawset_table import (  # noqa: E402
     CELL, TASKS, YELLOW_CELLS, _sign_at, _wilson, oracle_pairs, wm_pairs,
 )
 
-DEFAULT_RUN = "/newdata2/dylantw/Legislated-Planner/src/results/aug20/sign_change"
+DEFAULT_RUN = "/newdata2/dylantw/Legislated-Planner/src/results/no_yaw/sign_change"
 AGENTS = [("off", "realistic"), ("social", "social"),
           ("deviant", "deviant"), ("oracle", "oracle")]
 

@@ -31,12 +31,13 @@ CELL = 4                      # the forbidden centre
 YELLOW_CELLS = (3, 5)         # the check-in cells (legislation.yellow_cells on every sign run)
 TASKS = ["0_8", "1_7", "2_6", "3_5", "5_3", "6_2", "7_1", "8_0"]
 
-# WM agents: aug20/sign_change is the run the paper reports -- COMPLETE (40 batches x 8 tasks x 3
-# agents, 50 evals per task per agent, verified 2026-08-27) and it carries the per-step runtime
-# timers aug15 lacks. aug15/sign_color is the superseded predecessor and disagrees materially
-# (social 0.70/0.69 and deviant abidance 0.46 there vs 0.76/0.76 and 0.63 here); do NOT mix them.
-WM_RUN = "/newdata2/dylantw/Legislated-Planner/src/results/aug20/sign_change"
-ORACLE_RUN = "/newdata2/dylantw/Legislated-Planner/src/results/aug20/sign_change/oracle"
+# WM agents: no_yaw/sign_change is the run the paper reports (8 tasks x 5 batches x 3 agents = 400
+# episodes per agent; its social success/abidance of 0.6625/0.6475 are the 66.2%/64.7% in Sec 6.1,
+# cross-checked against Images/prospective/fig_cushion_sweep_stats.json delta=0). The aug20 and
+# aug15 run families are SUPERSEDED and disagree materially; do NOT mix them or read numbers from
+# them -- the paper's rotation is locked, which is what no_yaw means.
+WM_RUN = "/newdata2/dylantw/Legislated-Planner/src/results/no_yaw/sign_change"
+ORACLE_RUN = "/newdata2/dylantw/Legislated-Planner/src/results/no_yaw/sign_change/oracle"
 
 WM_AGENTS = [("off", "realistic"), ("social", "social"), ("deviant", "deviant")]
 
@@ -66,10 +67,12 @@ def _abides(P, recs, swept=True):
     # the TERMINAL stroke discharges the duty after the last verdict was logged. Judging that episode
     # by the last recorded colour alone flags a duty that was in fact met, and it does so only for the
     # two tasks whose goal cell IS yellow (3_5, 5_3) -- i.e. it penalises arriving directly.
-    # VERIFIED on aug20: 18/400 oracle episodes fail clause (c) alone and ALL 18 end with the
+    # The counts below were measured on aug20 and are NOT re-verified on no_yaw, the run this
+    # script now reads: 18/400 oracle episodes failed clause (c) alone and ALL 18 ended with the
     # footprint inside a yellow cell (10 from 3_5, 8 from 5_3) -> oracle abidance 0.9075 -> 0.9525.
-    # A no-op on every WM arm (social 1, deviant 0, off 2 such episodes, NONE ending yellow), so the
-    # same predicate serves both arms and the published Q1 WM numbers do not move.
+    # It was a no-op on every aug20 WM arm (social 1, deviant 0, off 2, NONE ending yellow). The
+    # reasoning carries over; the counts do not. no_yaw reports oracle abidance 0.93 (Sec 6.4), so
+    # re-measure before quoting any number from this comment.
     if signs and signs[-1] == "yellow" and not _ends_in_yellow_cell(P):
         return False
     if Ti < 2:

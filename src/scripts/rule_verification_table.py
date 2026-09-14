@@ -42,7 +42,7 @@ R10 is the compensation/fallback clause only. `contrary_to_duty` has two consequ
 identical to R2). The reparative `exit_cell(4)` is the interesting one and is what the paper reports.
 
 Usage:
-  python3 scripts/rule_verification_table.py --run results/aug20/sign_change --modes social deviant
+  python3 scripts/rule_verification_table.py --run results/no_yaw/sign_change --modes social deviant
 """
 from __future__ import annotations
 
@@ -226,7 +226,7 @@ def tally(run, mode, yellow, thresh, population="all"):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run", default="results/aug20/sign_change")
+    ap.add_argument("--run", default="results/no_yaw/sign_change")
     ap.add_argument("--modes", nargs="+", default=["social", "deviant"])
     ap.add_argument("--yellow-cells", default="3,5")
     ap.add_argument("--motion-thresh", type=float, default=0.02,
@@ -234,9 +234,12 @@ def main():
                          "[O]~moving. Default 0.02 = 2cm, well under the ~5cm minimum commanded "
                          "push (stroke_sampler aim_push_range=(0.05,0.09)), so it separates "
                          "'frozen but jittering' from a real stroke.")
-    ap.add_argument("--population", choices=["all", "active"], default="all",
-                    help="all = every ledger record (includes post-success hold frames, what the "
-                         "published table used); active = only steps t < n_steps.")
+    ap.add_argument("--population", choices=["all", "active"], default="active",
+                    help="all = every ledger record (includes post-success hold frames); active = "
+                         "only steps t < n_steps. ACTIVE is what the published table used: on "
+                         "no_yaw it reproduces Table 6 exactly (R2 841/766, R9 1311, R4 uptake "
+                         "417/223 = 53.5%), whereas 'all' inflates the R4 denominator to 1994 and "
+                         "collapses the reported 7.2x uptake ratio to 1.5x. Verified 2026-09-11.")
     ap.add_argument("--out")
     args = ap.parse_args()
 

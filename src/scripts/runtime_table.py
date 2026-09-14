@@ -52,7 +52,7 @@ COLUMNS = {
         "results/final/social_cushion/*/social/*/batch_*/eval_metrics.json",
     ],
     "Q3 full lawset": [
-        "results/aug20/sign_change/social/*/batch_*/eval_metrics.json",
+        "results/no_yaw/sign_change/social/*/batch_*/eval_metrics.json",
     ],
 }
 COMPONENTS = ["plan_total_s", "rrt_s", "legislation_s", "legislation_reason_s", "legislation_prune_s"]
