@@ -71,6 +71,12 @@ def main():
                     help="cut the motionless tail after the goal is reached")
     ap.add_argument("--no-trim", dest="trim", action="store_false")
     ap.add_argument("--motion-eps", type=float, default=0.35)
+    # Default ON: the goal panel is a STATIC shot of the cube already at the goal, shown from frame
+    # zero. Watched as a loop it reads as "it finished ages ago" and competes with the real action.
+    ap.add_argument("--executed-only", action="store_true", default=True,
+                    help="keep only the LEFT (executed) panel; drop the static goal panel (default)")
+    ap.add_argument("--with-goal", dest="executed_only", action="store_false",
+                    help="keep the [executed | goal] side-by-side layout")
     ap.add_argument("--metrics", default=None,
                     help="eval_metrics.json of the run; with --ep, cuts at THIS episode's own goal "
                          "instead of the batch's longest episode")
@@ -107,6 +113,11 @@ def main():
         print(f"[clip] motion ends at frame {last}/{n0-1} "
               f"({last * SIM_DT:.1f}s sim) -> keeping {keep} frames")
         frames = frames[:keep]
+
+    if a.executed_only:
+        w, h = frames[0].size
+        frames = [f.crop((0, 0, w // 2, h)) for f in frames]
+        print(f"[clip] dropped the goal panel -> {frames[0].size[0]}x{frames[0].size[1]}")
 
     frames = frames[::a.stride]
     fps = max(1, int(round(REAL_FPS * a.speed / a.stride)))

@@ -6,10 +6,18 @@ push. `executed_actions.npy` + `eval_metrics.json["init_state"]` are saved per b
 be re-simulated exactly and every internal sim substep captured via `frame_sink` -- the same mechanism
 `diagnostics/replay_actions.py` uses for dataset episodes, pointed at an eval run instead.
 
-DETERMINISM IS CHECKED, NOT ASSUMED. Every run compares the replayed cube (x,y) at stroke boundaries
-against the stored `cube_xy_frames` and prints the max abs deviation. A faithful replay is ~1e-4 m or
-less. Above --tol the script REFUSES to write the video, because a diverged replay is a different
-episode wearing the same label. Use --check_only to test plumbing without paying for a render.
+DETERMINISM IS MEASURED, NOT ASSUMED -- BUT IT IS NOT THE ACCEPTANCE TEST. Every run compares the
+replayed cube (x,y) at stroke boundaries against the stored `cube_xy_frames` and prints the max abs
+deviation. In practice the sim is NOT reproducible below ~1 cm from (init_state, actions): PhysX
+contact solving is not bit-deterministic and the error compounds over a contact-rich push. The
+repo's own scripts/replay_orientation.py measured 0.017 m on a 10-env replay.
+
+So a replay is judged by a SCORECARD, not by matching the archive: the script recomputes the
+episode's own metrics (peak swept overlap, peak frame overlap, whether the centre was entered) on
+the REPLAYED trajectory and prints them beside the recorded ones. For an illustrative clip that is
+the right test -- we need the footage to show the thing we claim, not to be a bit-copy of a
+particular archived run. Pass --require-faithful to restore the hard refusal (needed if the clip is
+meant to stand in for a specific numbered episode). Use --check_only to test plumbing cheaply.
 
 THE SIGN IS A RENDER-TIME CHOICE. Sign colour is a shader property, not physics state
 (grid_venv.py:42), so it is NOT restored by replaying actions -- a naive replay shows a white sign for
@@ -77,7 +85,13 @@ def main():
     ap.add_argument("--sign", choices=["ledger", "none"], default="ledger")
     ap.add_argument("--sign_source", choices=["effective", "raw"], default="effective")
     ap.add_argument("--tol", type=float, default=1e-3,
-                    help="max allowed |dxy| vs the stored trajectory before refusing to write (m)")
+                    help="|dxy| vs the stored trajectory above which the replay is reported as a "
+                         "DIFFERENT trajectory (m). Not fatal unless --require-faithful.")
+    ap.add_argument("--require-faithful", action="store_true",
+                    help="refuse to write when the replay exceeds --tol. Off by default: for an "
+                         "ILLUSTRATIVE clip we do not need the archived trajectory reproduced, we "
+                         "need the replay to independently show the thing we claim -- which is what "
+                         "the scorecard below checks.")
     ap.add_argument("--check_only", action="store_true", help="determinism check, no render, no mp4")
     ap.add_argument("--lock_yaw", choices=["auto", "on", "off"], default="auto",
                     help="cube yaw lock. 'auto' reads the recorded cube_yaw_frames and matches it -- "
@@ -167,11 +181,41 @@ def main():
         print(f"[video] determinism: compared {k} boundary frames, max|dxy| = {dev:.6f} m "
               f"(tol {args.tol})", flush=True)
 
-        if not np.isfinite(dev) or dev > args.tol:
-            print(f"[video] REFUSING to write: replay deviates by {dev:.6f} m > tol {args.tol}. "
-                  f"This is a different trajectory. Try --sign none.", flush=True)
-            sys.exit(2)
-        print("[video] determinism OK", flush=True)
+        faithful = bool(np.isfinite(dev) and dev <= args.tol)
+        if faithful:
+            print("[video] determinism OK -- this IS the archived trajectory", flush=True)
+        else:
+            print(f"[video] NOT a faithful replay ({dev:.4f} m > tol {args.tol}). The clip below is a "
+                  f"re-simulation of the same commanded actions, NOT the archived episode. Judge it "
+                  f"by its own scorecard.", flush=True)
+            if args.require_faithful:
+                sys.exit(2)
+
+        # ---- score the REPLAY on its own terms -------------------------------------------------
+        # Whether this clip is usable does not depend on matching the archive; it depends on whether
+        # the replayed trajectory itself shows the phenomenon. Same predicates as the eval metrics.
+        from planning.planning_metrics import _overlap_fraction, _PEAK_NS
+        from probes.probe_cube_cells import CUBE_HALF, swept_cells
+        P = rep
+        pk_frame = float(max(_overlap_fraction(P, [4], CUBE_HALF)))
+        pk_swept, ctr = 0.0, False
+        for t in range(len(P) - 1):
+            ts = np.linspace(0, 1, _PEAK_NS)[:, None]
+            seg = P[t] * (1 - ts) + P[t + 1] * ts
+            pk_swept = max(pk_swept, float(max(_overlap_fraction(seg, [4], CUBE_HALF))))
+            if bool(swept_cells(P[t], P[t + 1], 0.0)[4]):
+                ctr = True
+        rec_pk = float(np.asarray(d["peak_swept_overlap"])[ep])
+        rec_ctr = bool(np.asarray(d["law_violated_center"])[ep])
+        print(f"[video] SCORECARD          recorded -> replayed", flush=True)
+        print(f"[video]   peak swept overlap  {rec_pk:.3f}  ->  {pk_swept:.3f}", flush=True)
+        print(f"[video]   peak frame overlap  {float(np.asarray(d['peak_frame_overlap'])[ep]):.3f}"
+              f"  ->  {pk_frame:.3f}", flush=True)
+        print(f"[video]   centre entered      {str(rec_ctr):>5}  ->  {str(ctr):>5}", flush=True)
+        verdict = ("GRAZE (footprint breaches, centre does not)" if (pk_swept > 0.05 and not ctr)
+                   else "CENTRE VIOLATION" if ctr
+                   else "CLEAN (no breach)" if pk_swept <= 0.05 else "marginal")
+        print(f"[video]   replay is: {verdict}", flush=True)
 
         if args.check_only:
             print("[video] --check_only: no video written", flush=True)
