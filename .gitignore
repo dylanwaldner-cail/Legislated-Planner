@@ -121,3 +121,6 @@ src/Defeasible-Deontic-Logic/
 # GitHub Pages site under docs/ can actually carry its own figures and videos.
 !docs/assets/img/*.png
 !docs/assets/video/*.mp4
+
+# planning doc, kept with the project but not committed
+docs/intro_video_plan.md

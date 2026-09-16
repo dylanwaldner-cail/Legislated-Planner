@@ -120,6 +120,7 @@
   .vstub span { font-size:.8rem; color:var(--faint); }
   .vstub .vstub-title { font-size:.88rem; color:var(--mute); font-weight:600; }
   .hero-stub { aspect-ratio:16/9; }
+  .wip { font-size:.8rem; color:var(--faint); text-align:center; margin:10px 0 0; }
 
   /* ---------- tables ---------- */
   .tscroll { overflow-x:auto; -webkit-overflow-scrolling:touch; margin-bottom:10px; }
@@ -174,12 +175,13 @@
     .js [data-reveal="rise"]    { transform: translateY(20px) scale(.988); }
     .js [data-reveal].is-in     { opacity:1; transform:none; filter:none; }
 
-    /* "wipe": reveal along the direction the data actually flows. Applied to .frame rather than
+    /* "wipe": the figure unrolls downward with a light front riding the leading edge. Applied to
+       .frame rather than
        the figure element so the caption is not clipped along with the image. */
     .js [data-reveal="wipe"] { opacity:1; }
     .js [data-reveal="wipe"] .frame {
       position:relative;
-      clip-path: inset(0 100% 0 0);
+      clip-path: inset(0 0 100% 0);
       transition: clip-path 620ms cubic-bezier(.22,.61,.36,1) var(--d,0ms);
     }
     .js [data-reveal="wipe"].is-in .frame { clip-path: inset(0 0 0 0); }
@@ -188,18 +190,18 @@
     }
     .js [data-reveal="wipe"].is-in figcaption { opacity:1; }
 
-    /* Luminous front travelling with the wipe edge, in the diagram's own Law blue. */
+    /* Luminous front travelling down with the unroll edge, in the diagram's own Law blue. */
     .js [data-reveal="wipe"] .frame::after {
       content:""; position:absolute; inset:0; pointer-events:none; opacity:0;
-      background: linear-gradient(90deg,
-        rgba(29,111,224,0) 44%, rgba(29,111,224,.22) 50%, rgba(29,111,224,0) 56%);
+      background: linear-gradient(180deg,
+        rgba(29,111,224,0) 40%, rgba(29,111,224,.22) 50%, rgba(29,111,224,0) 60%);
     }
     .js [data-reveal="wipe"].is-in .frame::after {
       animation: rv-sweep 620ms cubic-bezier(.22,.61,.36,1) var(--d,0ms) forwards;
     }
     @keyframes rv-sweep {
-      0%   { transform: translateX(-100%); opacity:1; }
-      100% { transform: translateX(100%);  opacity:0; }
+      0%   { transform: translateY(-100%); opacity:1; }
+      100% { transform: translateY(100%);  opacity:0; }
     }
   }
 </style>
@@ -240,18 +242,14 @@
   </ul>
 </header>
 
-<!-- ============ HERO: narrated pipeline explainer ============ -->
-<!-- TO GO LIVE: drop the encoded file at assets/video/pipeline_explainer.mp4,
-     delete the .vstub div below, and uncomment this block.
-<video controls playsinline poster="assets/img/fig1_pipeline.png"
+<!-- ============ HERO: pipeline explainer ============
+     WORK IN PROGRESS: currently only beat 1 of 13 (the stack assembling). Replace
+     assets/video/intro_preview.mp4 with the finished cut and drop the .wip note below. -->
+<video controls playsinline muted loop poster="assets/img/fig1_pipeline.png"
        style="width:100%;height:auto;border-radius:12px;border:1px solid var(--rule);background:#000;">
-  <source src="assets/video/pipeline_explainer.mp4" type="video/mp4">
+  <source src="assets/video/intro_preview.mp4" type="video/mp4">
 </video>
--->
-<div class="vstub hero-stub">
-  <span class="vstub-title">Pipeline walkthrough &mdash; narrated</span>
-  <span>How a legal source text becomes a planning constraint</span>
-</div>
+<p class="wip">Preview &mdash; beat 1 of 13. The full walkthrough is still rendering.</p>
 
 <!-- ============ ABSTRACT ============ -->
 <section id="abstract">
