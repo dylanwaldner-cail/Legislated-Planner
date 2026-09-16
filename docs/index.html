@@ -172,22 +172,19 @@
                   filter var(--rv-dur) var(--rv-ease) var(--d,0ms);
     }
     .js [data-reveal="rise"]    { transform: translateY(20px) scale(.988); }
-    /* "resolve": the figure sharpens into focus -- the grounding metaphor, a point estimate
-       coming out of a blur. Slightly longer so the focus pull is legible rather than a flicker. */
-    .js [data-reveal="resolve"] { --rv-dur:920ms; transform: scale(1.02); filter: blur(16px) saturate(.3); }
     .js [data-reveal].is-in     { opacity:1; transform:none; filter:none; }
 
     /* "wipe": reveal along the direction the data actually flows. Applied to .frame rather than
-       the <figure data-reveal="resolve"> so the caption is not clipped with the image. */
+       the <figure data-reveal="rise"> so the caption is not clipped with the image. */
     .js [data-reveal="wipe"] { opacity:1; }
     .js [data-reveal="wipe"] .frame {
       position:relative;
       clip-path: inset(0 100% 0 0);
-      transition: clip-path 1150ms cubic-bezier(.22,.61,.36,1) var(--d,0ms);
+      transition: clip-path 620ms cubic-bezier(.22,.61,.36,1) var(--d,0ms);
     }
     .js [data-reveal="wipe"].is-in .frame { clip-path: inset(0 0 0 0); }
     .js [data-reveal="wipe"] figcaption {
-      opacity:0; transition: opacity 620ms ease 520ms;
+      opacity:0; transition: opacity 420ms ease 260ms;
     }
     .js [data-reveal="wipe"].is-in figcaption { opacity:1; }
 
@@ -198,7 +195,7 @@
         rgba(29,111,224,0) 44%, rgba(29,111,224,.22) 50%, rgba(29,111,224,0) 56%);
     }
     .js [data-reveal="wipe"].is-in .frame::after {
-      animation: rv-sweep 1150ms cubic-bezier(.22,.61,.36,1) var(--d,0ms) forwards;
+      animation: rv-sweep 620ms cubic-bezier(.22,.61,.36,1) var(--d,0ms) forwards;
     }
     @keyframes rv-sweep {
       0%   { transform: translateX(-100%); opacity:1; }
@@ -449,7 +446,7 @@
      in the <a href="https://arxiv.org/pdf/2609.15113" target="_blank" rel="noopener">paper</a>.</p>
 
   <h3>The legal layer is what produces compliance</h3>
-  <figure data-reveal="resolve">
+  <figure data-reveal="rise">
     <div class="frame"><img src="assets/img/fig_sign_lawset.png"
       alt="Grouped bar chart of success and law abidance rates by task for the realistic, social and deviant agents, with an oracle reference line."></div>
     <figcaption>Success (solid) and law abidance (light) by task. The social agent abides
@@ -460,13 +457,13 @@
 
   <h3>Perception error grounds the law on the wrong cell</h3>
   <div class="vgrid" data-stagger="90" style="grid-template-columns:1fr 1fr;">
-    <figure data-reveal="resolve">
+    <figure data-reveal="rise">
       <div class="frame"><img src="assets/img/fig_pred_vs_real.png"
         alt="Scatter of predicted versus executed cube rest positions where the two fall in different grid cells."></div>
       <figcaption>Cases where the predicted and executed rest positions fall in <em>different</em>
         cells: the world model grounds a legal atom, but the executed action is illegal.</figcaption>
     </figure>
-    <figure data-reveal="resolve">
+    <figure data-reveal="rise">
       <div class="frame"><img src="assets/img/fig_cushion_sweep.png"
         alt="Law abidance versus cushion delta, with Wilson 95% confidence bands."></div>
       <figcaption>Modeling the uncertainty &mdash; a cushion that dilates the enforced footprint so
@@ -488,7 +485,7 @@
 
   <h3>Runtime amendment, at negligible cost</h3>
   <div class="vgrid" data-stagger="90" style="grid-template-columns:minmax(0,0.9fr) minmax(0,1.1fr);">
-    <figure data-reveal="resolve">
+    <figure data-reveal="rise">
       <div class="frame"><img src="assets/img/fig_rule_insert_narrow.png"
         alt="Stacked bar chart of episodes at risk, repaired, and returned to start after the runtime rule insertion."></div>
       <figcaption><b>R11 inserted at t = 3.</b> An amendment strands the agent in violation, and the
