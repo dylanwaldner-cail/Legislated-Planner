@@ -39,7 +39,8 @@ VERDICT_B = [("prohibitions", ["off_grid"], c.PLAN),
              ("violations",   [],           c.LAW)]
 
 COL_F, COL_R, COL_V = 90, 620, 1420
-TOP = 250
+TOP = 240
+PANEL_H = 520          # tall enough for 4 rules PLUS the superiority line beneath them
 PHASES = [(0, 30), (1, 45), (2, 55), (3, 40), (4, 50), (5, 90)]   # (phase, n_frames)
 
 
@@ -58,14 +59,14 @@ def frame(phase: int):
 
     # ---- facts
     facts = FACTS_B if phase >= 3 else FACTS_A
-    _panel(d, COL_F, TOP, 440, 300, "FACTS")
+    _panel(d, COL_F, TOP, 440, 340, "FACTS")
     for i, a in enumerate(facts):
         new = (phase >= 3 and a == "sign(green)")
         c.text(d, (COL_F + 30, TOP + 78 + i * 58), a, kind="mono", size=34,
                fill=(0, 0x88, 0) if new else c.INK)
 
     # ---- rules
-    _panel(d, COL_R, TOP, 740, 420, "RULES APPLICABLE")
+    _panel(d, COL_R, TOP, 740, PANEL_H, "RULES APPLICABLE")
     yy = TOP + 78
     for label, body, appears in RULES:
         if phase < 1 or phase < appears:
@@ -80,13 +81,13 @@ def frame(phase: int):
             d.line([COL_R + 24, yy + 50, COL_R + 40 + w, yy + 50], fill=c.GAP_ONTO, width=4)
         yy += 92
     if phase >= 4:
-        c.text(d, (COL_R + 28, TOP + 360),
+        c.text(d, (COL_R + 28, TOP + 448),
                "green_sign_permits_center  >  no_center_cell",
-               kind="mono_b", size=27, fill=c.GAP_ONTO)
+               kind="mono_b", size=23, fill=c.GAP_ONTO)
 
     # ---- verdict
     verdict = VERDICT_B if phase >= 5 else (VERDICT_A if phase >= 2 else None)
-    _panel(d, COL_V, TOP, 410, 420, "VERDICT")
+    _panel(d, COL_V, TOP, 410, PANEL_H, "VERDICT")
     if verdict:
         yy = TOP + 78
         for name, items, colour in verdict:
@@ -100,10 +101,10 @@ def frame(phase: int):
                 c.text(d, (COL_V + 26, yy), "—", kind="mono", size=28, fill=c.FAINT)
             yy += 64
     if phase == 2:
-        c.text(d, (COL_V + 205, TOP + 460), "in violation", kind="roman_b", size=32,
+        c.text(d, (COL_V + 205, TOP + 560), "in violation", kind="roman_b", size=32,
                fill=c.PLAN, anchor="ma")
     if phase == 5:
-        c.text(d, (COL_V + 205, TOP + 460), "no violation", kind="roman_b", size=32,
+        c.text(d, (COL_V + 205, TOP + 560), "no violation", kind="roman_b", size=32,
                fill=(0, 0x88, 0), anchor="ma")
     return f
 
