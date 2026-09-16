@@ -19,7 +19,7 @@ ImageMagick cannot be used to rasterize (the Ubuntu policy blocks PDF); ghostscr
 from __future__ import annotations
 
 import argparse
-import re
+import functools
 import shutil
 import subprocess
 import sys
@@ -28,7 +28,12 @@ from pathlib import Path
 PAPER = Path("/newdata2/dylantw/Legislated-Planner/Jurix_paper")
 BODY_FIRST, BODY_LAST = 129, 202          # the tikzpicture inside main.tex
 OPTS_END = 24                              # line of the `]` closing the options block (1-based, in body)
-BBOX = r"\path (-1.6,-5.6) rectangle (28.4,5.6);   % pinned bbox: keeps every stage the same size"
+BBOX = r"\path (-3.4,-5.6) rectangle (28.4,5.6);   % pinned bbox: keeps every stage the same size"
+
+# VIDEO-ONLY TWEAK (the paper figure is untouched): slide the environment panel further left so the
+# gap between it and the legal stack opens up and the connecting arrows read clearly on screen.
+# At paper scale the panel nearly abuts the bands, which is fine in print and muddy in motion.
+ENV_SHIFT = [(r"(world) at (5.1,0)", r"(world) at (3.2,0)")]
 
 # (name, last body line included). Cumulative: each stage contains everything above it.
 STAGES = [
@@ -70,6 +75,7 @@ def main():
     assert body[OPTS_END - 1].strip() == "]", f"line {OPTS_END} is not the options terminator: {body[OPTS_END-1]!r}"
     assert body[-1].strip() == r"\end{tikzpicture}", body[-1]
 
+    body = [functools.reduce(lambda a, kv: a.replace(*kv), ENV_SHIFT, ln) for ln in body]
     head = body[:OPTS_END] + [BBOX]
     sizes = {}
     for name, last in STAGES:

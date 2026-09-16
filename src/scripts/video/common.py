@@ -46,16 +46,21 @@ _ROMAN, _ROMAN_B, _ROMAN_I = "NimbusRoman-Regular.otf", "NimbusRoman-Bold.otf", 
 _SANS, _SANS_B = "NimbusSans-Regular.otf", "NimbusSans-Bold.otf"
 _MONO = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"          # for atoms / rule text
 _MONO_B = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"
+# Lato for display captions -- the same face dino-wm.github.io uses, and a cleaner, more modern
+# voice than the paper's Times for on-screen titling.
+_LATO = "/usr/share/fonts/truetype/lato/Lato-Black.ttf"
+_LATO_B = "/usr/share/fonts/truetype/lato/Lato-Bold.ttf"
 
 _cache: dict = {}
 
 
 def font(kind: str, size: int) -> ImageFont.FreeTypeFont:
-    """kind in {roman, roman_b, roman_i, sans, sans_b, mono, mono_b}."""
+    """kind in {roman, roman_b, roman_i, sans, sans_b, display, display_b, mono, mono_b}."""
     key = (kind, size)
     if key not in _cache:
         path = {"roman": _FD / _ROMAN, "roman_b": _FD / _ROMAN_B, "roman_i": _FD / _ROMAN_I,
                 "sans": _FD / _SANS, "sans_b": _FD / _SANS_B,
+                "display": Path(_LATO), "display_b": Path(_LATO_B),
                 "mono": Path(_MONO), "mono_b": Path(_MONO_B)}[kind]
         _cache[key] = ImageFont.truetype(str(path), size)
     return _cache[key]
@@ -69,6 +74,23 @@ def text(draw: ImageDraw.ImageDraw, xy, s, *, kind="roman", size=40, fill=INK,
          anchor="la", spacing=10, align="left"):
     draw.multiline_text(xy, s, font=font(kind, size), fill=fill, anchor=anchor,
                         spacing=spacing, align=align)
+
+
+def text_tracked(draw, xy, s, *, kind="display", size=80, fill=INK, track=2, anchor_mid=True):
+    """Draw `s` with letter-spacing `track` px, centred on xy[0]; xy[1] is the BASELINE.
+
+    Glyphs are drawn one at a time, so they must be anchored on the baseline ("ls"). Anchor "lt"
+    aligns each glyph's INK TOP instead, which drops the tall letters and raises the x-height ones
+    -- the text visibly jitters along its own baseline.
+    """
+    f = font(kind, size)
+    widths = [f.getlength(ch) for ch in s]
+    total = sum(widths) + track * (len(s) - 1)
+    x = xy[0] - total / 2 if anchor_mid else xy[0]
+    for ch, w in zip(s, widths):
+        draw.text((x, xy[1]), ch, font=f, fill=fill, anchor="ls")
+        x += w + track
+    return total
 
 
 def measure(s, kind="roman", size=40):
