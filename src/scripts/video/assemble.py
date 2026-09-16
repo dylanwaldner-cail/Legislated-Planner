@@ -16,6 +16,8 @@ ORDER = [
     ("beat06_ddl",      "the reasoner"),
     ("beat08_prune",    "pruning the search"),
     ("beat11_ontology", "the ontological gap"),
+    ("beat12_contrast",  "what the law buys"),
+    ("beat13_closing",   "closing"),
 ]
 XFADE = 14          # frames of crossfade between beats
 

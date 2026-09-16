@@ -77,7 +77,7 @@ def text(draw: ImageDraw.ImageDraw, xy, s, *, kind="roman", size=40, fill=INK,
 
 
 def text_tracked(draw, xy, s, *, kind="display", size=80, fill=INK, track=2, anchor_mid=True):
-    """Draw `s` with letter-spacing `track` px, centred on xy[0]; xy[1] is the BASELINE.
+    """Draw `s` with letter-spacing `track` px, centered on xy[0]; xy[1] is the BASELINE.
 
     Glyphs are drawn one at a time, so they must be anchored on the baseline ("ls"). Anchor "lt"
     aligns each glyph's INK TOP instead, which drops the tall letters and raises the x-height ones

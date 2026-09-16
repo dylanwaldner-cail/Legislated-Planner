@@ -13,7 +13,7 @@ contact solving is not bit-deterministic and the error compounds over a contact-
 repo's own scripts/replay_orientation.py measured 0.017 m on a 10-env replay.
 
 So a replay is judged by a SCORECARD, not by matching the archive: the script recomputes the
-episode's own metrics (peak swept overlap, peak frame overlap, whether the centre was entered) on
+episode's own metrics (peak swept overlap, peak frame overlap, whether the center was entered) on
 the REPLAYED trajectory and prints them beside the recorded ones. For an illustrative clip that is
 the right test -- we need the footage to show the thing we claim, not to be a bit-copy of a
 particular archived run. Pass --require-faithful to restore the hard refusal (needed if the clip is
@@ -211,9 +211,9 @@ def main():
         print(f"[video]   peak swept overlap  {rec_pk:.3f}  ->  {pk_swept:.3f}", flush=True)
         print(f"[video]   peak frame overlap  {float(np.asarray(d['peak_frame_overlap'])[ep]):.3f}"
               f"  ->  {pk_frame:.3f}", flush=True)
-        print(f"[video]   centre entered      {str(rec_ctr):>5}  ->  {str(ctr):>5}", flush=True)
-        verdict = ("GRAZE (footprint breaches, centre does not)" if (pk_swept > 0.05 and not ctr)
-                   else "CENTRE VIOLATION" if ctr
+        print(f"[video]   center entered      {str(rec_ctr):>5}  ->  {str(ctr):>5}", flush=True)
+        verdict = ("GRAZE (footprint breaches, center does not)" if (pk_swept > 0.05 and not ctr)
+                   else "CENTER VIOLATION" if ctr
                    else "CLEAN (no breach)" if pk_swept <= 0.05 else "marginal")
         print(f"[video]   replay is: {verdict}", flush=True)
 

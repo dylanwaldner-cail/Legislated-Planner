@@ -10,16 +10,16 @@ not typed in. If the geometry stopped doing what the caption says, the badge wou
 build would disagree with itself -- see the assertions in build().
 
 HOW THE READINGS ARE DRAWN, per Dylan's spec:
-  centre    -> ONE line tracing the cube's centre
+  center    -> ONE line tracing the cube's center
   footprint -> TWO lines a full cube-width apart (the swept band the law is really enforced against)
   full path -> the continuous trace between rest poses
   at rest   -> only the poses the planner actually perceives
 
 Overhead, no arm: the robot is irrelevant to the question and only adds occlusion.
 
-SCENE A  straight through the centre, starting and ending clear of it.
+SCENE A  straight through the center, starting and ending clear of it.
          Both AT-REST readings acquit a cube that was driven straight through the forbidden cell.
-SCENE B  a corner clip. The footprint crosses; the centre never does.
+SCENE B  a corner clip. The footprint crosses; the center never does.
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from probes.probe_cube_position import gm  # noqa: E402
 from scripts.video import common as c, grid  # noqa: E402
 
 FOOT, CENT = CUBE_HALF, 0.0
-READINGS = [("centre", CENT, "full path", True), ("centre", CENT, "at rest", False),
+READINGS = [("center", CENT, "full path", True), ("center", CENT, "at rest", False),
             ("footprint", FOOT, "full path", True), ("footprint", FOOT, "at rest", False)]
 
 # Three constructed pushes, all clear of the grid edge, all verified in build().
@@ -46,7 +46,7 @@ READINGS = [("centre", CENT, "full path", True), ("centre", CENT, "at rest", Fal
 SCENES = [
     dict(path=[(0.152, 0.03), (0.03, 0.152)],
          title="Clipping the corner",
-         sub="one stroke \u00b7 the centre never enters",
+         sub="one stroke \u00b7 the center never enters",
          note="only the swept footprint sees it"),
     dict(path=[(0.152, 0.03), (0.09, 0.09), (0.03, 0.152)],
          title="The same corner, two strokes",
@@ -107,7 +107,7 @@ def panel(d, g, scene, half, swept, progress: float, show_verdict: bool):
         if half > 0:                                        # footprint -> two rails, a cube apart
             for a, b in _band_edges(pts, half):
                 g.draw_edge(d, a, b, col, width=5)
-        else:                                               # centre -> one line
+        else:                                               # center -> one line
             for t in range(len(pts) - 1):
                 g.draw_edge(d, pts[t], pts[t + 1], col, width=6)
     else:
@@ -133,7 +133,7 @@ def frame(si: int, progress: float, show_verdict: bool):
 
     for cx, lab in zip(PX, ("FULL PATH", "AT REST")):
         c.text(d, (cx, 235), lab, kind="sans_b", size=28, fill=c.FAINT, anchor="ma")
-    for cy, lab in zip(PY, ("CENTRE", "FOOTPRINT")):
+    for cy, lab in zip(PY, ("CENTER", "FOOTPRINT")):
         c.text(d, (LBL_X, cy), lab, kind="sans_b", size=28, fill=c.FAINT, anchor="rm")
 
     for k, (body, half, when, swept) in enumerate(READINGS):

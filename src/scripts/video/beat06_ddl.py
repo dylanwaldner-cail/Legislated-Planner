@@ -5,7 +5,7 @@ EVERY STRING HERE IS REAL ENGINE OUTPUT. Reproduce with:
     python -m legislation.engine_trace --lawset geometric_laws --state "in_cell(4) sign(green)"
 
 The beat holds the cube's PHYSICAL STATE FIXED (in_cell(4)) and adds one fact, sign(green). The
-verdict inverts: the prohibition on the centre cell and the contrary-to-duty repair duty both
+verdict inverts: the prohibition on the center cell and the contrary-to-duty repair duty both
 vanish, because `green_sign_permits_center > no_center_cell` outranks the prohibition. That is
 defeasibility, superiority and CTD compensation in a single side-by-side, with nothing staged --
 the rule `no_center_cell` is APPLICABLE in both columns; it simply loses in the second.

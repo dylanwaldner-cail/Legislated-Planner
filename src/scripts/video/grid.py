@@ -1,7 +1,7 @@
 """Draw the 3x3 legal grid in world coordinates, for every beat that happens on the table.
 
 Geometry comes from env/isaaclab/grid_metadata.py via the repo's own accessor, so the cells, the
-forbidden centre and the cube footprint are placed exactly where the planner and the metrics think
+forbidden center and the cube footprint are placed exactly where the planner and the metrics think
 they are -- nothing here re-derives the layout. Styling follows scripts/plot_rrt_tree_schematic.py
 so the video and the paper's RRT figures read as the same picture.
 """
