@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Set before first paint: the reveal CSS is scoped to .js, so if scripting is off or this
+     never runs, every figure renders visible instead of staying at opacity:0. -->
+<script>document.documentElement.className+=" js";</script>
 <title>Legislating World-Model-Based Planning with Legal Reasoning</title>
 <meta name="description" content="A legal planning stack that uses Defeasible Deontic Logic to constrain a world-model-based motion planner, enabling ex ante governance of robot behavior.">
 
@@ -154,6 +157,54 @@
     font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; margin:0;
   }
   footer { margin-top:72px; padding-top:22px; border-top:1px solid var(--rule); color:var(--mute); font-size:.84rem; }
+
+  /* ---------- scroll reveals ----------
+     Gated three ways so content is never trapped invisible: the whole block needs
+     (a) prefers-reduced-motion to be unset, and (b) the .js class, which only exists if the
+     inline head script ran. Without either, every element renders plainly. */
+  @media (prefers-reduced-motion: no-preference) {
+    .js [data-reveal] {
+      --rv-dur: 760ms;
+      --rv-ease: cubic-bezier(.22,.61,.36,1);
+      opacity:0;
+      transition: opacity var(--rv-dur) var(--rv-ease) var(--d,0ms),
+                  transform var(--rv-dur) var(--rv-ease) var(--d,0ms),
+                  filter var(--rv-dur) var(--rv-ease) var(--d,0ms);
+    }
+    .js [data-reveal="rise"]    { transform: translateY(20px) scale(.988); }
+    /* "resolve": the figure sharpens into focus -- the grounding metaphor, a point estimate
+       coming out of a blur. Slightly longer so the focus pull is legible rather than a flicker. */
+    .js [data-reveal="resolve"] { --rv-dur:920ms; transform: scale(1.02); filter: blur(16px) saturate(.3); }
+    .js [data-reveal].is-in     { opacity:1; transform:none; filter:none; }
+
+    /* "wipe": reveal along the direction the data actually flows. Applied to .frame rather than
+       the <figure data-reveal="resolve"> so the caption is not clipped with the image. */
+    .js [data-reveal="wipe"] { opacity:1; }
+    .js [data-reveal="wipe"] .frame {
+      position:relative;
+      clip-path: inset(0 100% 0 0);
+      transition: clip-path 1150ms cubic-bezier(.22,.61,.36,1) var(--d,0ms);
+    }
+    .js [data-reveal="wipe"].is-in .frame { clip-path: inset(0 0 0 0); }
+    .js [data-reveal="wipe"] figcaption {
+      opacity:0; transition: opacity 620ms ease 520ms;
+    }
+    .js [data-reveal="wipe"].is-in figcaption { opacity:1; }
+
+    /* Luminous front travelling with the wipe edge, in the diagram's own Law blue. */
+    .js [data-reveal="wipe"] .frame::after {
+      content:""; position:absolute; inset:0; pointer-events:none; opacity:0;
+      background: linear-gradient(90deg,
+        rgba(29,111,224,0) 44%, rgba(29,111,224,.22) 50%, rgba(29,111,224,0) 56%);
+    }
+    .js [data-reveal="wipe"].is-in .frame::after {
+      animation: rv-sweep 1150ms cubic-bezier(.22,.61,.36,1) var(--d,0ms) forwards;
+    }
+    @keyframes rv-sweep {
+      0%   { transform: translateX(-100%); opacity:1; }
+      100% { transform: translateX(100%);  opacity:0; }
+    }
+  }
 </style>
 </head>
 <body>
@@ -235,7 +286,7 @@
      facts, and its verdict constrains the RRT planner &mdash; closing the loop before an illegal
      action is executed. The two dashed arrows are where isomorphism breaks down.</p>
 
-  <figure class="bleed">
+  <figure class="bleed" data-reveal="wipe">
     <div class="frame"><img src="assets/img/fig1_pipeline.png"
       alt="The legislation planning stack: an Isaac Lab Franka arm pushing a cube on a 3x3 grid, beside a three-layer diagram showing the law, perception and planning rows."></div>
     <figcaption><b>The Legislation Planning Stack.</b> <b>(a)</b> the Isaac Lab environment: a Franka
@@ -262,7 +313,7 @@
      violation flag on a candidate action &mdash; same planner, same world model, same laws.
      A fourth <b>oracle</b> agent runs the social policy on simulation ground truth instead of probe
      readings, isolating how much of the failure is perception rather than reasoning.</p>
-  <div class="tscroll">
+  <div class="tscroll" data-reveal="rise">
     <table>
       <thead><tr><th>Agent</th><th>Treats a deontic conclusion as&hellip;</th></tr></thead>
       <tbody>
@@ -290,7 +341,7 @@
      legality check-in &mdash; the cube must present itself for authorization before the restricted
      area opens, like scanning a key card at a checkpoint.</p>
 
-  <div class="tscroll">
+  <div class="tscroll" data-reveal="rise">
     <table>
       <thead><tr><th style="width:3.5em">R</th><th>Rule</th></tr></thead>
       <tbody>
@@ -325,22 +376,22 @@
      full render quality so the whole continuous push is visible rather than the planner's
      stroke-boundary snapshots.</p>
 
-  <div class="vgrid">
-    <div class="vcard">
+  <div class="vgrid" data-stagger="90">
+    <div class="vcard" data-reveal="rise">
       <!-- <video muted autoplay loop playsinline controls><source src="assets/video/ep_abiding.mp4" type="video/mp4"></video> -->
       <div class="vstub"><span class="vstub-title">Law-abiding run</span><span>social agent</span></div>
       <p class="vlabel"><span class="dot ok"></span>Abiding</p>
       <p class="vnote">The social agent detours around the forbidden center, checks in at a yellow
          cell, and reaches the goal without ever entering cell&nbsp;4.</p>
     </div>
-    <div class="vcard">
+    <div class="vcard" data-reveal="rise">
       <!-- <video muted autoplay loop playsinline controls><source src="assets/video/ep_blatant.mp4" type="video/mp4"></video> -->
       <div class="vstub"><span class="vstub-title">Blatant violation</span><span>realistic agent</span></div>
       <p class="vlabel"><span class="dot bad"></span>Blatant violation</p>
       <p class="vnote">With no legal layer, the shortest path runs straight through the center cell.
          The cube crosses and dwells in the forbidden region.</p>
     </div>
-    <div class="vcard">
+    <div class="vcard" data-reveal="rise">
       <!-- <video muted autoplay loop playsinline controls><source src="assets/video/ep_graze.mp4" type="video/mp4"></video> -->
       <div class="vstub"><span class="vstub-title">Edge graze</span><span>agent TBD</span></div>
       <p class="vlabel"><span class="dot edge"></span>Edge graze</p>
@@ -360,7 +411,7 @@
      the verdict was actually assessed under, which at the last step differs from the color on the
      sign itself.</p>
 
-  <figure class="bleed">
+  <figure class="bleed" data-reveal="wipe">
     <div class="frame"><img src="assets/img/fig_trace_filmstrip.png"
       alt="Five-panel filmstrip of one episode, showing the cube position and sign color at each decision step."></div>
     <figcaption><b>One episode, five decisions.</b> A world-model error drops the cube into the
@@ -368,22 +419,22 @@
       sign red and freezes the agent on arrival at the check-in.</figcaption>
   </figure>
 
-  <ol class="steps">
-    <li><span class="stepno">Step 0</span><span class="sign white">white</span>
+  <ol class="steps" data-stagger="70">
+    <li data-reveal="rise"><span class="stepno">Step 0</span><span class="sign white">white</span>
         <span>In cell 1. The planner predicts a small nudge that keeps it there &mdash; a legal,
               unremarkable move.</span></li>
-    <li><span class="stepno">Step 1</span><span class="sign yellow">yellow</span>
+    <li data-reveal="rise"><span class="stepno">Step 1</span><span class="sign yellow">yellow</span>
         <span>The push overshoots by nearly <b>8&nbsp;cm</b> and drops the cube in the forbidden
               center. The plan was legal; the execution was not.
               <b>This is the grounding gap.</b></span></li>
-    <li><span class="stepno">Step 2</span><span class="sign yellow">yellow</span>
+    <li data-reveal="rise"><span class="stepno">Step 2</span><span class="sign yellow">yellow</span>
         <span>R10's compensatory duty fires &mdash; <code>[O]exit_cell(4)</code>. The goal bank
               retargets to cell 1 and the exit succeeds. The law absorbs the violation rather than
               rejecting the agent.</span></li>
-    <li><span class="stepno">Step 3</span><span class="sign yellow">yellow</span>
+    <li data-reveal="rise"><span class="stepno">Step 3</span><span class="sign yellow">yellow</span>
         <span>Duty discharged, it resumes toward yellow cell 3 to satisfy
               <code>[O]in_yellow_cell</code>.</span></li>
-    <li><span class="stepno">Step 4</span><span class="sign red">red</span>
+    <li data-reveal="rise"><span class="stepno">Step 4</span><span class="sign red">red</span>
         <span>It reaches the check-in still carrying <code>visited(4)</code>. R7b outranks R7, so the
               sign flips <b>red</b> rather than green, and R9's permission conflict freezes it. The
               earlier violation is what closes the door.</span></li>
@@ -398,7 +449,7 @@
      in the <a href="https://arxiv.org/pdf/2609.15113" target="_blank" rel="noopener">paper</a>.</p>
 
   <h3>The legal layer is what produces compliance</h3>
-  <figure>
+  <figure data-reveal="resolve">
     <div class="frame"><img src="assets/img/fig_sign_lawset.png"
       alt="Grouped bar chart of success and law abidance rates by task for the realistic, social and deviant agents, with an oracle reference line."></div>
     <figcaption>Success (solid) and law abidance (light) by task. The social agent abides
@@ -408,14 +459,14 @@
   </figure>
 
   <h3>Perception error grounds the law on the wrong cell</h3>
-  <div class="vgrid" style="grid-template-columns:1fr 1fr;">
-    <figure>
+  <div class="vgrid" data-stagger="90" style="grid-template-columns:1fr 1fr;">
+    <figure data-reveal="resolve">
       <div class="frame"><img src="assets/img/fig_pred_vs_real.png"
         alt="Scatter of predicted versus executed cube rest positions where the two fall in different grid cells."></div>
       <figcaption>Cases where the predicted and executed rest positions fall in <em>different</em>
         cells: the world model grounds a legal atom, but the executed action is illegal.</figcaption>
     </figure>
-    <figure>
+    <figure data-reveal="resolve">
       <div class="frame"><img src="assets/img/fig_cushion_sweep.png"
         alt="Law abidance versus cushion delta, with Wilson 95% confidence bands."></div>
       <figcaption>Modeling the uncertainty &mdash; a cushion that dilates the enforced footprint so
@@ -436,8 +487,8 @@
      legislator drafting the rule would never see, and it lands on the engineer.</p>
 
   <h3>Runtime amendment, at negligible cost</h3>
-  <div class="vgrid" style="grid-template-columns:minmax(0,0.9fr) minmax(0,1.1fr);">
-    <figure>
+  <div class="vgrid" data-stagger="90" style="grid-template-columns:minmax(0,0.9fr) minmax(0,1.1fr);">
+    <figure data-reveal="resolve">
       <div class="frame"><img src="assets/img/fig_rule_insert_narrow.png"
         alt="Stacked bar chart of episodes at risk, repaired, and returned to start after the runtime rule insertion."></div>
       <figcaption><b>R11 inserted at t = 3.</b> An amendment strands the agent in violation, and the
@@ -475,5 +526,46 @@
 </footer>
 
 </main>
+
+<script>
+(function () {
+  var els = [].slice.call(document.querySelectorAll('[data-reveal]'));
+  if (!els.length) return;
+
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function showAll() { els.forEach(function (e) { e.classList.add('is-in'); }); }
+
+  // No IntersectionObserver, or the visitor asked for less motion -> everything visible at once.
+  if (reduce || !('IntersectionObserver' in window)) { showAll(); return; }
+
+  // Stagger children of any [data-stagger] container by its value in ms (default 90).
+  [].forEach.call(document.querySelectorAll('[data-stagger]'), function (parent) {
+    var step = parseInt(parent.getAttribute('data-stagger'), 10) || 90;
+    [].forEach.call(parent.querySelectorAll('[data-reveal]'), function (child, i) {
+      child.style.setProperty('--d', (i * step) + 'ms');
+    });
+  });
+
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (!entry.isIntersecting) return;
+      entry.target.classList.add('is-in');
+      io.unobserve(entry.target);          // one-shot: no re-animation on scroll-back
+    });
+  }, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' });
+
+  els.forEach(function (e) { io.observe(e); });
+
+  // Safety net: if anything above failed to fire, reveal everything rather than leave the
+  // page blank. Cheap, and it only touches elements still waiting.
+  window.setTimeout(function () {
+    els.forEach(function (e) {
+      if (!e.classList.contains('is-in') && e.getBoundingClientRect().top < window.innerHeight) {
+        e.classList.add('is-in');
+      }
+    });
+  }, 2500);
+})();
+</script>
 </body>
 </html>
