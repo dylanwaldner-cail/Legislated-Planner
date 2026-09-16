@@ -31,9 +31,10 @@ SEQ = [
 
 FIG_W, FIG_TOP = 1800, 135      # figure box; the caption sits under it
 CAP_Y = 890
-# Captions never overlap: the figure crossfades bare, then the caption fades in over the hold and
-# back out before the next transition. Blending two captioned frames ghosts the old words.
-FADE, CAP_IN, HOLD, CAP_OUT, TAIL = 10, 5, 10, 5, 30
+# The caption stays up the whole beat and dissolves straight into the next word -- no fade to
+# nothing. Keeping the dissolve SHORT relative to the hold is what stops the two words ghosting:
+# most of the time exactly one caption is at full opacity.
+FADE, HOLD, TAIL = 8, 26, 28
 
 
 def _plate(name: str) -> Image.Image:
@@ -57,18 +58,13 @@ def _captioned(plate: Image.Image, label: str, colour, alpha: float) -> Image.Im
 
 
 def build() -> list:
-    plates = [(_plate(n), lab, col) for n, lab, col in SEQ]
-    frames: list = []
-    frames += [c.blend(c.new_frame(), plates[0][0], c.ease((k + 1) / FADE)) for k in range(FADE)]
-    for i, (plate, label, colour) in enumerate(plates):
-        if i > 0:                                        # bare figure crossfade -- no caption yet
-            prev = plates[i - 1][0]
-            frames += [c.blend(prev, plate, c.ease((k + 1) / FADE)) for k in range(FADE)]
-        frames += [_captioned(plate, label, colour, c.ease((k + 1) / CAP_IN)) for k in range(CAP_IN)]
-        frames += [_captioned(plate, label, colour, 1.0)] * HOLD
-        if i < len(plates) - 1:                          # clear the caption before the next stage
-            frames += [_captioned(plate, label, colour, 1.0 - c.ease((k + 1) / CAP_OUT))
-                       for k in range(CAP_OUT)]
+    """Each stage is a fully captioned plate; consecutive plates cross-dissolve into one another."""
+    plates = [_captioned(_plate(n), lab, col, 1.0) for n, lab, col in SEQ]
+    frames: list = [c.blend(c.new_frame(), plates[0], c.ease((k + 1) / 12)) for k in range(12)]
+    frames += [plates[0]] * HOLD
+    for prev, nxt in zip(plates, plates[1:]):
+        frames += [c.blend(prev, nxt, c.ease((k + 1) / FADE)) for k in range(FADE)]
+        frames += [nxt] * HOLD
     frames += [frames[-1]] * TAIL
     return frames
 
