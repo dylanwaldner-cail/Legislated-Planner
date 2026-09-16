@@ -4,67 +4,476 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Legislating World-Model-Based Planning with Legal Reasoning</title>
+<meta name="description" content="A legal planning stack that uses Defeasible Deontic Logic to constrain a world-model-based motion planner, enabling ex ante governance of robot behavior.">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="Legislating World-Model-Based Planning with Legal Reasoning">
+<meta property="og:description" content="Defeasible Deontic Logic constrains a world-model-based motion planner, enabling ex ante governance of robot behavior.">
+<meta property="og:image" content="assets/img/fig1_pipeline.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Legislating World-Model-Based Planning with Legal Reasoning">
+<meta name="twitter:description" content="Defeasible Deontic Logic constrains a world-model-based motion planner, enabling ex ante governance of robot behavior.">
+<meta name="twitter:image" content="assets/img/fig1_pipeline.png">
+
 <style>
-  :root { --ink:#15181d; --mute:#5c636e; --rule:#e2e5ea; --bg:#fff; --accent:#1d6fe0; }
+  :root {
+    --ink:#15181d; --mute:#5c636e; --faint:#878e99;
+    --rule:#e2e5ea; --bg:#fff; --panel:#f7f8fa;
+    --accent:#1d6fe0; --accent-soft:#eef4fd;
+    --law:#1d6fe0; --plan:#e63946; --dev:#e39e14; --oracle:#7c3aed;
+    --maxw:1040px;
+  }
   @media (prefers-color-scheme: dark) {
-    :root { --ink:#e8eaee; --mute:#9aa2ad; --rule:#2b3038; --bg:#14171b; --accent:#6aa6f5; }
+    :root {
+      --ink:#e8eaee; --mute:#9aa2ad; --faint:#79818d;
+      --rule:#2b3038; --bg:#14171b; --panel:#1b1f25;
+      --accent:#6aa6f5; --accent-soft:#18222f;
+      --law:#6aa6f5; --plan:#f4767f; --dev:#e3a93c; --oracle:#a683f2;
+    }
   }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink);
-         font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
-  main { max-width:720px; margin:0 auto; padding:64px 20px 96px; }
-  h1 { font-size:1.7rem; line-height:1.3; margin:0 0 18px; letter-spacing:-.01em; }
-  .authors { margin:0 0 4px; }
-  .affil { color:var(--mute); font-size:.9rem; margin:0 0 28px; }
-  .venue { display:inline-block; font-size:.8rem; letter-spacing:.04em; text-transform:uppercase;
-           color:var(--mute); border:1px solid var(--rule); border-radius:999px; padding:4px 12px; margin-bottom:32px; }
-  h2 { font-size:.8rem; letter-spacing:.08em; text-transform:uppercase; color:var(--mute);
-       margin:40px 0 12px; font-weight:600; }
-  p { margin:0 0 16px; }
+  html { scroll-behavior:smooth; }
+  body {
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  main { max-width:var(--maxw); margin:0 auto; padding:56px 20px 96px; }
   a { color:var(--accent); }
-  .links { list-style:none; padding:0; margin:0; }
-  .links li { padding:10px 0; border-top:1px solid var(--rule); }
-  .links li:last-child { border-bottom:1px solid var(--rule); }
-  .soon { color:var(--mute); }
-  footer { margin-top:56px; padding-top:20px; border-top:1px solid var(--rule);
-           color:var(--mute); font-size:.85rem; }
+
+  /* ---------- header ---------- */
+  header { text-align:center; margin-bottom:44px; }
+  .venue {
+    display:inline-block; font-size:.75rem; letter-spacing:.06em; text-transform:uppercase;
+    color:var(--mute); border:1px solid var(--rule); border-radius:999px;
+    padding:4px 13px; margin-bottom:24px;
+  }
+  h1 {
+    font-size:clamp(1.65rem, 4vw, 2.45rem); line-height:1.2; letter-spacing:-.02em;
+    margin:0 auto 20px; max-width:15em; font-weight:650;
+  }
+  .authors { margin:0 0 6px; font-size:1.02rem; }
+  .authors sup { font-size:.7em; color:var(--mute); font-weight:600; }
+  .affil { color:var(--mute); font-size:.88rem; margin:0 auto 26px; max-width:46em; }
+  .affil sup { font-weight:600; }
+
+  .links { display:flex; flex-wrap:wrap; gap:10px; justify-content:center; padding:0; margin:0; list-style:none; }
+  .links a {
+    display:inline-flex; align-items:center; gap:7px; text-decoration:none;
+    font-size:.92rem; font-weight:600; color:var(--ink);
+    border:1px solid var(--rule); border-radius:999px; padding:8px 17px;
+    transition:border-color .15s, background .15s, color .15s;
+  }
+  .links a:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
+  .links a[aria-disabled="true"] { color:var(--faint); pointer-events:none; border-style:dashed; font-weight:500; }
+  .links svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+
+  /* ---------- sections ---------- */
+  section { margin-top:72px; scroll-margin-top:24px; }
+  .eyebrow {
+    font-size:.72rem; letter-spacing:.11em; text-transform:uppercase;
+    color:var(--faint); font-weight:650; margin:0 0 7px;
+  }
+  h2 { font-size:1.5rem; line-height:1.25; letter-spacing:-.015em; margin:0 0 16px; font-weight:640; }
+  h3 { font-size:1.02rem; margin:32px 0 10px; font-weight:640; }
+  p { margin:0 0 16px; }
+  .lede { font-size:1.03rem; color:var(--mute); max-width:62ch; }
+  .divider { border:0; border-top:1px solid var(--rule); margin:0; }
+
+  /* ---------- figures ---------- */
+  /* Every paper figure is drawn on white, so the frame stays white in dark mode too --
+     inverting them would falsify the colour-coded legends. */
+  figure { margin:0 0 8px; }
+  .frame {
+    background:#fff; border:1px solid var(--rule); border-radius:10px;
+    padding:14px; overflow:hidden;
+  }
+  .frame img { display:block; width:100%; height:auto; }
+  figcaption { font-size:.855rem; color:var(--mute); margin-top:11px; line-height:1.55; }
+  figcaption b, figcaption strong { color:var(--ink); font-weight:640; }
+
+  .wide { max-width:none; }
+  @media (min-width:1180px) {
+    .bleed { width:calc(100vw - 40px); max-width:1240px; margin-left:calc(50% - min(50vw - 20px, 620px)); }
+  }
+
+  /* ---------- video grid ---------- */
+  .vgrid { display:grid; gap:20px; grid-template-columns:repeat(3, 1fr); }
+  @media (max-width:860px) { .vgrid { grid-template-columns:1fr; } }
+  .vcard { display:flex; flex-direction:column; }
+  .vcard video { display:block; width:100%; height:auto; border-radius:10px; background:#000; border:1px solid var(--rule); }
+  .vcard .vlabel { font-size:.92rem; font-weight:640; margin:11px 0 3px; display:flex; align-items:center; gap:8px; }
+  .vcard .vnote { font-size:.83rem; color:var(--mute); line-height:1.5; margin:0; }
+  .dot { width:9px; height:9px; border-radius:50%; flex:0 0 9px; }
+  .dot.ok { background:var(--law); } .dot.bad { background:var(--plan); } .dot.edge { background:var(--dev); }
+
+  /* Placeholder shown until the rendered episode lands in assets/video/.
+     To go live: delete the .vstub div and uncomment the <video> above it. */
+  .vstub {
+    aspect-ratio:16/10; border:1px dashed var(--rule); border-radius:10px;
+    background:var(--panel); display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:6px; text-align:center; padding:16px;
+  }
+  .vstub span { font-size:.8rem; color:var(--faint); }
+  .vstub .vstub-title { font-size:.88rem; color:var(--mute); font-weight:600; }
+  .hero-stub { aspect-ratio:16/9; }
+
+  /* ---------- tables ---------- */
+  .tscroll { overflow-x:auto; -webkit-overflow-scrolling:touch; margin-bottom:10px; }
+  table { border-collapse:collapse; width:100%; font-size:.865rem; }
+  th, td { text-align:left; padding:7px 11px; border-bottom:1px solid var(--rule); vertical-align:top; }
+  thead th { font-weight:650; font-size:.76rem; letter-spacing:.05em; text-transform:uppercase; color:var(--mute); white-space:nowrap; }
+  tbody tr:last-child td { border-bottom:0; }
+  td.r, th.r { text-align:right; font-variant-numeric:tabular-nums; }
+  .rid { font-weight:650; color:var(--accent); white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .rule-txt { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.83rem; line-height:1.5; }
+  .inserted .rid { color:var(--dev); }
+  .inserted .rule-txt { font-style:italic; }
+  .tnote { font-size:.82rem; color:var(--mute); margin:10px 0 0; }
+  td.hi { font-weight:660; color:var(--ink); }
+  .swatch { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:7px; vertical-align:baseline; }
+
+  /* ---------- filmstrip steps ---------- */
+  .steps { list-style:none; padding:0; margin:20px 0 0; display:grid; gap:9px; }
+  .steps li { display:grid; grid-template-columns:auto auto 1fr; gap:12px; align-items:baseline;
+              font-size:.875rem; padding:9px 0; border-top:1px solid var(--rule); }
+  .steps li:first-child { border-top:0; }
+  .stepno { font-variant-numeric:tabular-nums; color:var(--faint); font-weight:650; font-size:.78rem; letter-spacing:.04em; text-transform:uppercase; white-space:nowrap; }
+  .sign { font-size:.7rem; font-weight:700; letter-spacing:.05em; text-transform:uppercase;
+          border-radius:4px; padding:2px 7px; white-space:nowrap; border:1px solid var(--rule); }
+  .sign.white { background:#fff; color:#444; }
+  .sign.yellow { background:#f6d02f; color:#4a3a00; border-color:#e0bc1f; }
+  .sign.red { background:#e63946; color:#fff; border-color:#c92b38; }
+  .steps code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.9em;
+                background:var(--panel); padding:1px 5px; border-radius:4px; }
+
+  /* ---------- bibtex ---------- */
+  pre {
+    background:var(--panel); border:1px solid var(--rule); border-radius:10px;
+    padding:16px 18px; overflow-x:auto; font-size:.82rem; line-height:1.6;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; margin:0;
+  }
+  footer { margin-top:72px; padding-top:22px; border-top:1px solid var(--rule); color:var(--mute); font-size:.84rem; }
 </style>
 </head>
 <body>
 <main>
+
+<header>
   <span class="venue">Under review &middot; JURIX 2026</span>
 
   <h1>Legislating World-Model-Based Planning with Legal Reasoning</h1>
 
-  <p class="authors">Dylan Waldner, Yiannis Kantaros, Guido Governatori,
-     Risto Miikkulainen, Amir Banifatemi</p>
-  <p class="affil">Cognizant Responsible AI Lab &middot; Cognizant AI Lab &middot;
-     Washington University &middot; Central Queensland University</p>
+  <p class="authors">
+    Dylan Waldner<sup>1</sup>,
+    Yiannis Kantaros<sup>2</sup>,
+    Guido Governatori<sup>3</sup>,
+    Risto Miikkulainen<sup>1,4</sup>,
+    Amir Banifatemi<sup>1</sup>
+  </p>
+  <p class="affil">
+    <sup>1</sup>Cognizant AI Lab &nbsp;&middot;&nbsp;
+    <sup>2</sup>Washington University &nbsp;&middot;&nbsp;
+    <sup>3</sup>Central Queensland University &nbsp;&middot;&nbsp;
+    <sup>4</sup>UT Austin
+  </p>
 
-  <h2>Abstract</h2>
+  <ul class="links">
+    <li><a href="https://arxiv.org/pdf/2609.15113" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>
+      Paper (PDF)</a></li>
+    <li><a href="https://arxiv.org/abs/2609.15113" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24"><path d="M10 14a5 5 0 0 0 7.5.5l3-3A5 5 0 0 0 13.5 4.5l-1.7 1.7"/><path d="M14 10a5 5 0 0 0-7.5-.5l-3 3A5 5 0 0 0 10.5 19.5l1.7-1.7"/></svg>
+      arXiv</a></li>
+    <li><a href="https://github.com/dylanwaldner-cail/Legislated-Planner" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg>
+      Code</a></li>
+    <li><a href="#" aria-disabled="true">JURIX proceedings &mdash; pending</a></li>
+  </ul>
+</header>
+
+<!-- ============ HERO: narrated pipeline explainer ============ -->
+<!-- TO GO LIVE: drop the encoded file at assets/video/pipeline_explainer.mp4,
+     delete the .vstub div below, and uncomment this block.
+<video controls playsinline poster="assets/img/fig1_pipeline.png"
+       style="width:100%;height:auto;border-radius:12px;border:1px solid var(--rule);background:#000;">
+  <source src="assets/video/pipeline_explainer.mp4" type="video/mp4">
+</video>
+-->
+<div class="vstub hero-stub">
+  <span class="vstub-title">Pipeline walkthrough &mdash; narrated</span>
+  <span>How a legal source text becomes a planning constraint</span>
+</div>
+
+<!-- ============ ABSTRACT ============ -->
+<section id="abstract">
+  <p class="eyebrow">Abstract</p>
+  <h2>Laws as runtime constraints on a learned world model</h2>
   <p>As robotic systems grow more general, legal norms are needed to integrate them into society.
      This paper extends the isomorphism problem of aligning legal source texts with their encodings,
-     and measures two key challenges to robot normative control: the <em>grounding isomorphism
-     gap</em>, where perception error grounds false atoms for legal reasoning, and the
+     and measures two key challenges to robot normative control: (1) the <em>grounding isomorphism
+     gap</em>, where perception error grounds false atoms for legal reasoning, and (2) the
      <em>ontological isomorphism gap</em>, where one legal conclusion admits many faithful
      translations into planning constraints.</p>
   <p>The paper introduces a legal planning stack that employs Defeasible Deontic Logic (DDL) to
-     constrain a motion planner, using learned world models both to plan and to supply legal
-     context &mdash; enabling <em>ex ante</em> governance that intervenes before an illegal action
-     is executed.</p>
+     constrain a motion planner. The stack leverages learned world models to plan and to provide
+     legal context, enabling <em>ex ante</em> governance that intervenes before an illegal action is
+     executed. It was deployed on a simulated robot arm pushing a cube across a 3&times;3 grid.
+     The findings were that (1) the legislated agent abided substantially more often than the
+     non-legislated one, and modeling perception uncertainty lifted abidance even further, (2) the
+     legal reasoning ran efficiently at runtime and its verdicts were auditable, and (3) the stack
+     adapted to exogenous signals and endogenous rule changes. Both gaps were measured: (4) world
+     model and probe error corrupted the factual input for the DDL reasoner, and (5) a single law
+     admitted several faithful metric interpretations yielding drastically different abidance.</p>
+</section>
 
-  <h2>Links</h2>
-  <ul class="links">
-    <li><a href="https://github.com/dylanwaldner-cail/Legislated-Planner">Code and experiments</a></li>
-    <li class="soon">Paper &mdash; coming soon</li>
-    <li><a href="https://arxiv.org/abs/2609.15113" target="_blank" rel="noopener noreferrer">arXiv preprint</a> &middot;
-        <a href="https://arxiv.org/pdf/2609.15113" target="_blank" rel="noopener noreferrer">PDF</a></li>
-    <li class="soon">Result videos &mdash; coming soon</li>
-  </ul>
+<!-- ============ THE STACK ============ -->
+<section id="stack">
+  <p class="eyebrow">The stack</p>
+  <h2>The law enters through perception and leaves through the planner</h2>
+  <p class="lede">A DDL rule base encodes the source text, probes ground latent predictions as its
+     facts, and its verdict constrains the RRT planner &mdash; closing the loop before an illegal
+     action is executed. The two dashed arrows are where isomorphism breaks down.</p>
 
-  <footer>
-    Page under construction; videos and additional material to follow.
-  </footer>
+  <figure class="bleed">
+    <div class="frame"><img src="assets/img/fig1_pipeline.png"
+      alt="The legislation planning stack: an Isaac Lab Franka arm pushing a cube on a 3x3 grid, beside a three-layer diagram showing the law, perception and planning rows."></div>
+    <figcaption><b>The Legislation Planning Stack.</b> <b>(a)</b> the Isaac Lab environment: a Franka
+      arm pushes a cube across a 3&times;3 grid with an illegal center cell, two yellow check-in
+      cells, and a color-flipping rule sign. <b>(b)</b> the legal layer. Dashed arrows are the
+      isomorphism gaps: the <span style="color:#00b4d8;font-weight:640">grounding gap</span> where
+      probe error grounds the wrong atom, and the
+      <span style="color:#c2185b;font-weight:640">ontological gap</span> where one verdict admits
+      many planning constraints.</figcaption>
+  </figure>
+
+  <h3>Setup</h3>
+  <p>A Franka arm with a welded paddle pushes a 0.09&nbsp;m cube across a 3&times;3 grid of
+     0.133&nbsp;m cells in Isaac Lab. The planner never sees the cube's pose &mdash; only a
+     224&times;224 RGB frame and proprioception &mdash; so the pose must be read back from pixels by
+     learned probes. Planning is RRT in the latent space of DINO-WM, with horizon <em>H</em>&nbsp;=&nbsp;3;
+     only the first action of each plan is executed before replanning. Each task starts the cube in
+     one cell with its goal in the diametrically opposite cell, giving eight tasks run over 50
+     variations each: <b>400 episodes per agent</b>. The center cell is illegal and is never a start
+     or a goal.</p>
+
+  <h3>Three agents, one stack</h3>
+  <p>The agent types come from the BIO framework and differ <em>only</em> in what they do with the
+     violation flag on a candidate action &mdash; same planner, same world model, same laws.
+     A fourth <b>oracle</b> agent runs the social policy on simulation ground truth instead of probe
+     readings, isolating how much of the failure is perception rather than reasoning.</p>
+  <div class="tscroll">
+    <table>
+      <thead><tr><th>Agent</th><th>Treats a deontic conclusion as&hellip;</th></tr></thead>
+      <tbody>
+        <tr><td><span class="swatch" style="background:var(--plan)"></span><b>Realistic</b></td>
+            <td>Nothing. No legislation; returns the lowest-cost plan in the tree.</td></tr>
+        <tr><td><span class="swatch" style="background:var(--law)"></span><b>Social</b></td>
+            <td>A hard constraint. Violating actions are pruned as the tree is expanded.</td></tr>
+        <tr><td><span class="swatch" style="background:var(--dev)"></span><b>Deviant</b></td>
+            <td>A price. Violations cost &lambda; = 0.067&nbsp;m of progress each, never a veto.</td></tr>
+        <tr><td><span class="swatch" style="background:var(--oracle)"></span><b>Oracle</b></td>
+            <td>A hard constraint, but grounded on ground truth rather than probes.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============ THE LAWS ============ -->
+<section id="laws">
+  <p class="eyebrow">The laws</p>
+  <h2>A small rule base that still exercises every DDL construct</h2>
+  <p class="lede">In natural language: the center cell is off-limits (R2); a yellow sign obliges the
+     cube to first enter a yellow cell (R5); reaching it flips the sign green if the trajectory is
+     clean (R7) or red if the cube already passed through the center (R7b); a green sign then permits
+     the center (R4), while a red sign freezes the agent (R2, R3 &rArr; R9). The yellow cell is a
+     legality check-in &mdash; the cube must present itself for authorization before the restricted
+     area opens, like scanning a key card at a checkpoint.</p>
+
+  <div class="tscroll">
+    <table>
+      <thead><tr><th style="width:3.5em">R</th><th>Rule</th></tr></thead>
+      <tbody>
+        <tr><td class="rid">R1</td>  <td class="rule-txt">cube &rArr;<sub>O</sub> &not;off_grid</td></tr>
+        <tr><td class="rid">R2</td>  <td class="rule-txt">cube &rArr;<sub>O</sub> &not;in_cell(4)</td></tr>
+        <tr><td class="rid">R3</td>  <td class="rule-txt">sign(red) &rArr;<sub>O</sub> in_cell(4)</td></tr>
+        <tr><td class="rid">R4</td>  <td class="rule-txt">sign(green) &rArr;<sub>P</sub> in_cell(4)</td></tr>
+        <tr><td class="rid">R5</td>  <td class="rule-txt">sign(yellow) &rArr;<sub>O</sub> in_yellow_cell</td></tr>
+        <tr><td class="rid">R5b</td> <td class="rule-txt">occupies(Y), yellow_cell(Y) &rArr; in_yellow_cell</td></tr>
+        <tr><td class="rid">R7</td>  <td class="rule-txt">in_yellow_cell, sign(yellow) &rArr; sign(green)</td></tr>
+        <tr><td class="rid">R7b</td> <td class="rule-txt">in_yellow_cell, visited(4), sign(yellow) &rArr; sign(red)</td></tr>
+        <tr><td class="rid">R8</td>  <td class="rule-txt">goal_cell(N), [P]moving &rArr;<sub>O</sub> in_cell(N)</td></tr>
+        <tr><td class="rid">R9</td>  <td class="rule-txt">[P]in_cell(4), [P]&not;in_cell(4) &rArr;<sub>O</sub> &not;moving</td></tr>
+        <tr><td class="rid">R10</td> <td class="rule-txt">cube &rArr;<sub>O</sub> &not;in_cell(4) &otimes; exit_cell(4)</td></tr>
+        <tr class="inserted"><td class="rid">R11</td><td class="rule-txt">sign(white) &rArr;<sub>O</sub> in_start_cell &nbsp;&nbsp;<span style="font-style:normal;color:var(--mute);font-family:inherit;font-size:.9em">&mdash; inserted at runtime</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="tnote"><b>Superiority:</b> R4&nbsp;&gt;&nbsp;R2, R4&nbsp;&gt;&nbsp;R10, R7b&nbsp;&gt;&nbsp;R7.
+     <code style="font-family:ui-monospace,monospace">occupies</code>(<i>c</i>) is the cube's
+     <em>ground-truth</em> cell, recorded with <code style="font-family:ui-monospace,monospace">visited</code>(<i>c</i>);
+     <code style="font-family:ui-monospace,monospace">in_cell</code>(<i>c</i>) is the probe prediction
+     the agent is pruned on. The set covers a defeasible prohibition with an earned exception
+     (R2, R4), a compensatory duty (R10), a permission conflict (R9), and a runtime amendment (R11).</p>
+</section>
+
+<!-- ============ EPISODES ============ -->
+<section id="episodes">
+  <p class="eyebrow">Episodes</p>
+  <h2>What compliance and violation actually look like</h2>
+  <p class="lede">Three representative episodes, re-simulated from their recorded action sequences at
+     full render quality so the whole continuous push is visible rather than the planner's
+     stroke-boundary snapshots.</p>
+
+  <div class="vgrid">
+    <div class="vcard">
+      <!-- <video muted autoplay loop playsinline controls><source src="assets/video/ep_abiding.mp4" type="video/mp4"></video> -->
+      <div class="vstub"><span class="vstub-title">Law-abiding run</span><span>social agent</span></div>
+      <p class="vlabel"><span class="dot ok"></span>Abiding</p>
+      <p class="vnote">The social agent detours around the forbidden center, checks in at a yellow
+         cell, and reaches the goal without ever entering cell&nbsp;4.</p>
+    </div>
+    <div class="vcard">
+      <!-- <video muted autoplay loop playsinline controls><source src="assets/video/ep_blatant.mp4" type="video/mp4"></video> -->
+      <div class="vstub"><span class="vstub-title">Blatant violation</span><span>realistic agent</span></div>
+      <p class="vlabel"><span class="dot bad"></span>Blatant violation</p>
+      <p class="vnote">With no legal layer, the shortest path runs straight through the center cell.
+         The cube crosses and dwells in the forbidden region.</p>
+    </div>
+    <div class="vcard">
+      <!-- <video muted autoplay loop playsinline controls><source src="assets/video/ep_graze.mp4" type="video/mp4"></video> -->
+      <div class="vstub"><span class="vstub-title">Edge graze</span><span>agent TBD</span></div>
+      <p class="vlabel"><span class="dot edge"></span>Edge graze</p>
+      <p class="vnote">The hard case: the plan was adjudged legal, but the executed push clips the
+         boundary of the forbidden cell &mdash; the grounding gap in a single frame.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FILMSTRIP ============ -->
+<section id="filmstrip">
+  <p class="eyebrow">Audit trace</p>
+  <h2>Watching the verdict and the goal switch mid-episode</h2>
+  <p class="lede">Every deontic decision is logged with the rule that fired, the atoms grounding it,
+     and the verdict. One panel per decision step of a single social-agent episode, each rendered at
+     the cube's recorded rest position and tinted with the <em>effective</em> sign &mdash; the color
+     the verdict was actually assessed under, which at the last step differs from the color on the
+     sign itself.</p>
+
+  <figure class="bleed">
+    <div class="frame"><img src="assets/img/fig_trace_filmstrip.png"
+      alt="Five-panel filmstrip of one episode, showing the cube position and sign color at each decision step."></div>
+    <figcaption><b>One episode, five decisions.</b> A world-model error drops the cube into the
+      forbidden center; the contrary-to-duty rule repairs it; the taint it left behind turns the
+      sign red and freezes the agent on arrival at the check-in.</figcaption>
+  </figure>
+
+  <ol class="steps">
+    <li><span class="stepno">Step 0</span><span class="sign white">white</span>
+        <span>In cell 1. The planner predicts a small nudge that keeps it there &mdash; a legal,
+              unremarkable move.</span></li>
+    <li><span class="stepno">Step 1</span><span class="sign yellow">yellow</span>
+        <span>The push overshoots by nearly <b>8&nbsp;cm</b> and drops the cube in the forbidden
+              center. The plan was legal; the execution was not.
+              <b>This is the grounding gap.</b></span></li>
+    <li><span class="stepno">Step 2</span><span class="sign yellow">yellow</span>
+        <span>R10's compensatory duty fires &mdash; <code>[O]exit_cell(4)</code>. The goal bank
+              retargets to cell 1 and the exit succeeds. The law absorbs the violation rather than
+              rejecting the agent.</span></li>
+    <li><span class="stepno">Step 3</span><span class="sign yellow">yellow</span>
+        <span>Duty discharged, it resumes toward yellow cell 3 to satisfy
+              <code>[O]in_yellow_cell</code>.</span></li>
+    <li><span class="stepno">Step 4</span><span class="sign red">red</span>
+        <span>It reaches the check-in still carrying <code>visited(4)</code>. R7b outranks R7, so the
+              sign flips <b>red</b> rather than green, and R9's permission conflict freezes it. The
+              earlier violation is what closes the door.</span></li>
+  </ol>
+</section>
+
+<!-- ============ RESULTS ============ -->
+<section id="results">
+  <p class="eyebrow">Results</p>
+  <h2>Ex ante legislation works, and both gaps are measurable</h2>
+  <p class="lede">The findings in brief. Full tables, confidence intervals and the runtime audit are
+     in the <a href="https://arxiv.org/pdf/2609.15113" target="_blank" rel="noopener">paper</a>.</p>
+
+  <h3>The legal layer is what produces compliance</h3>
+  <figure>
+    <div class="frame"><img src="assets/img/fig_sign_lawset.png"
+      alt="Grouped bar chart of success and law abidance rates by task for the realistic, social and deviant agents, with an oracle reference line."></div>
+    <figcaption>Success (solid) and law abidance (light) by task. The social agent abides
+      <b>5.9&times;</b> more often than the unlegislated one. Its success is capped by its abidance,
+      because breaking the law turns the sign red and freezes it &mdash; while the realistic and
+      deviant agents succeed far more often than they abide.</figcaption>
+  </figure>
+
+  <h3>Perception error grounds the law on the wrong cell</h3>
+  <div class="vgrid" style="grid-template-columns:1fr 1fr;">
+    <figure>
+      <div class="frame"><img src="assets/img/fig_pred_vs_real.png"
+        alt="Scatter of predicted versus executed cube rest positions where the two fall in different grid cells."></div>
+      <figcaption>Cases where the predicted and executed rest positions fall in <em>different</em>
+        cells: the world model grounds a legal atom, but the executed action is illegal.</figcaption>
+    </figure>
+    <figure>
+      <div class="frame"><img src="assets/img/fig_cushion_sweep.png"
+        alt="Law abidance versus cushion delta, with Wilson 95% confidence bands."></div>
+      <figcaption>Modeling the uncertainty &mdash; a cushion that dilates the enforced footprint so
+        the atom absorbs the error instead of trusting a point estimate &mdash; lifts abidance
+        substantially, with success rising alongside it.</figcaption>
+    </figure>
+  </div>
+  <p>Typical error is a sizeable fraction of a cell and the tail exceeds a full cell width, so a
+     cushion narrows the gap but cannot close it. The oracle agent, running the same laws on ground
+     truth, marks the ceiling: the distance between it and the social agent is the price of grounding
+     the law in learned perception, not a limit of the DDL layer.</p>
+
+  <h3>One law, several faithful readings</h3>
+  <p>Re-scoring the center-cell prohibition alone &mdash; scoring the cube's center or its whole
+     footprint, over its full swept path or only at the frames the planner perceives &mdash; moves
+     measured abidance by <b>tens of points</b> on the very same episodes. Nothing about the behavior
+     changes; only the interpretation of the rule does. Which reading is correct is a question a
+     legislator drafting the rule would never see, and it lands on the engineer.</p>
+
+  <h3>Runtime amendment, at negligible cost</h3>
+  <div class="vgrid" style="grid-template-columns:minmax(0,0.9fr) minmax(0,1.1fr);">
+    <figure>
+      <div class="frame"><img src="assets/img/fig_rule_insert_narrow.png"
+        alt="Stacked bar chart of episodes at risk, repaired, and returned to start after the runtime rule insertion."></div>
+      <figcaption><b>R11 inserted at t = 3.</b> An amendment strands the agent in violation, and the
+        contrary-to-duty rule repairs it without costing task success.</figcaption>
+    </figure>
+    <div>
+      <p>Legal design is updateable and need not be fixed <em>a priori</em>. Inserting a new duty
+         mid-episode strands many agents in violation &mdash; some holding a license the reverting
+         sign revoked underneath them &mdash; and the compensatory duty walks most of them back into
+         a legal cell by the next step without hurting task success.</p>
+      <p>The stack tracks exogenous change too: the agent enters the center roughly
+         <b>seven times more often</b> when the sign permits it than when it forbids it.</p>
+      <p>And the reasoning is cheap. A verdict costs <b>16.6&nbsp;ms</b>, against the
+         <b>12.5&nbsp;s</b> the planner spends on each executed action &mdash; about three orders of
+         magnitude less than the search it governs.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CITATION ============ -->
+<section id="citation">
+  <p class="eyebrow">Citation</p>
+  <h2>BibTeX</h2>
+<pre><code>@article{waldner2026legislating,
+  title   = {Legislating World-Model-Based Planning with Legal Reasoning},
+  author  = {Waldner, Dylan and Kantaros, Yiannis and Governatori, Guido
+             and Miikkulainen, Risto and Banifatemi, Amir},
+  journal = {arXiv preprint arXiv:2609.15113},
+  year    = {2026}
+}</code></pre>
+</section>
+
+<footer>
+  <p>Result videos are being re-rendered from recorded episodes and will appear here shortly.</p>
+</footer>
+
 </main>
 </body>
 </html>

@@ -116,3 +116,8 @@ src/scripts/wm_cube_pred_check.py
 !src/scripts/precompute_dino_latents.py
 
 src/Defeasible-Deontic-Logic/
+
+# project page assets — override the repo-wide *.png / *.mp4 rules above so the
+# GitHub Pages site under docs/ can actually carry its own figures and videos.
+!docs/assets/img/*.png
+!docs/assets/video/*.mp4
