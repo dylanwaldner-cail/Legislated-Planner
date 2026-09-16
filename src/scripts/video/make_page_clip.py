@@ -1,52 +1,75 @@
-"""Re-time a planner-produced episode mp4 into a short loop for the project page.
+"""Trim a planner-produced episode mp4 to the part where something happens, and play it at a chosen
+multiple of REAL time.
 
-plan.py's `video=true` clips capture EVERY internal sim substep and are muxed at 8 fps, so a 4-stroke
-episode lands at ~860 frames / 108 s -- unwatchable on a page. This subsamples every Nth substep and
-remuxes at 30 fps, which both speeds it up and shrinks it, exactly like the --speed flag on
-render_episode_video.py. Frame content is untouched: no interpolation, no re-encode of pixels beyond
-the x264 pass, so nothing is invented.
+TIMEBASE. The Single env runs sim.dt=0.01 with decimation=4 (dinowm_grid_env_cfg.DinoWMGridSingleEnvCfg),
+so one captured substep frame is 0.04 s of simulated time -- real time is 25 fps. `--speed 2` means
+twice real time, and the output fps is derived from that, not guessed. plan.py muxes these at 8 fps,
+i.e. ~3x SLOWER than real, which is why the raw clips feel interminable.
 
-Layout note: the source is [executed | goal] side by side (evaluator._save_executed_video), so the
-goal panel travels with the clip and the viewer can see what the task was.
-
-    python scripts/video/make_page_clip.py IN.mp4 OUT.mp4 [--stride 3] [--fps 30]
+TRIMMING. `full_video=true` keeps rendering after the goal is reached, so the tail is a parked arm
+and a motionless cube. Rather than guess a cut point from stroke counts (substeps per stroke vary),
+the cut is measured from the footage: the last frame whose executed panel differs from its
+predecessor by more than --motion-eps, plus a short tail. The detected cut is printed so it can be
+sanity-checked against the episode's recorded n_steps.
 """
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, "/newdata2/dylantw/Legislated-Planner/src")
+from scripts.video import common as c  # noqa: E402
+
+SIM_DT = 0.04                      # s per captured substep frame (0.01 * decimation 4)
+REAL_FPS = 1.0 / SIM_DT            # 25
+
+
+def last_motion_frame(frames, eps: float) -> int:
+    """Index of the last frame where the EXECUTED panel (left half) still changes."""
+    half = frames[0].width // 2
+    prev = np.asarray(frames[0].crop((0, 0, half, frames[0].height)), dtype=np.int16)
+    last = 0
+    for i, fr in enumerate(frames[1:], start=1):
+        cur = np.asarray(fr.crop((0, 0, half, fr.height)), dtype=np.int16)
+        if float(np.abs(cur - prev).mean()) > eps:
+            last = i
+        prev = cur
+    return last
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("src"); ap.add_argument("dst")
-    ap.add_argument("--stride", type=int, default=4, help="keep every Nth substep frame")
-    ap.add_argument("--fps", type=int, default=60,
-                    help="playback rate. Speed is set HERE rather than by dropping more frames -- "
-                         "a higher fps at a low stride keeps the motion smooth instead of choppy.")
-    ap.add_argument("--scale", type=int, default=2, help="integer upscale for crisper playback")
+    ap.add_argument("--speed", type=float, default=2.0, help="multiple of real time")
+    ap.add_argument("--stride", type=int, default=1, help="keep every Nth frame (1 = all, smoothest)")
+    ap.add_argument("--scale", type=int, default=2)
+    ap.add_argument("--trim", action="store_true", default=True,
+                    help="cut the motionless tail after the goal is reached")
+    ap.add_argument("--no-trim", dest="trim", action="store_false")
+    ap.add_argument("--motion-eps", type=float, default=0.35)
+    ap.add_argument("--tail", type=float, default=0.4, help="seconds of stillness to keep")
     a = ap.parse_args()
 
-    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
-                            "-show_entries", "stream=width,height,nb_frames",
-                            "-of", "default=noprint_wrappers=1:nokey=1", a.src],
-                           capture_output=True, text=True).stdout.split()
-    w, h, n = int(probe[0]), int(probe[1]), int(probe[2])
-    kept = n // a.stride
-    print(f"[clip] {Path(a.src).name}: {n} frames {w}x{h} -> keep every {a.stride} = {kept} "
-          f"@ {a.fps}fps = {kept / a.fps:.1f}s")
+    frames = c.read_mp4(a.src)
+    n0 = len(frames)
+    if a.trim:
+        last = last_motion_frame(frames, a.motion_eps)
+        keep = min(n0, last + 1 + int(a.tail / SIM_DT))
+        print(f"[clip] motion ends at frame {last}/{n0-1} "
+              f"({last * SIM_DT:.1f}s sim) -> keeping {keep} frames")
+        frames = frames[:keep]
 
-    vf = (f"select='not(mod(n\\,{a.stride}))',setpts=N/{a.fps}/TB,"
-          f"scale={w * a.scale}:{h * a.scale}:flags=lanczos")
-    Path(a.dst).parent.mkdir(parents=True, exist_ok=True)
-    r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", a.src, "-vf", vf,
-                        "-r", str(a.fps), "-an", "-c:v", "libx264", "-preset", "slow",
-                        "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart", a.dst])
-    if r.returncode != 0:
-        sys.exit("[clip] ffmpeg failed")
-    print(f"[clip] wrote {a.dst}  {Path(a.dst).stat().st_size/1e6:.2f} MB")
+    frames = frames[::a.stride]
+    fps = max(1, int(round(REAL_FPS * a.speed / a.stride)))
+    if a.scale > 1:
+        w, h = frames[0].size
+        frames = [f.resize((w * a.scale, h * a.scale)) for f in frames]
+    print(f"[clip] {Path(a.src).name}: {n0} -> {len(frames)} frames @ {fps}fps "
+          f"= {len(frames)/fps:.1f}s  ({a.speed:g}x real time)")
+    c.write_mp4(frames, a.dst, fps=fps, crf=20)
 
 
 if __name__ == "__main__":
