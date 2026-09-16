@@ -12,8 +12,10 @@ sys.path.insert(0, "/newdata2/dylantw/Legislated-Planner/src")
 from scripts.video import common as c  # noqa: E402
 
 ORDER = [
-    ("beat01_stack", "the stack assembles"),
-    ("beat06_ddl",   "the reasoner"),
+    ("beat01_stack",    "the stack assembles"),
+    ("beat06_ddl",      "the reasoner"),
+    ("beat08_prune",    "pruning the search"),
+    ("beat11_ontology", "the ontological gap"),
 ]
 XFADE = 14          # frames of crossfade between beats
 
