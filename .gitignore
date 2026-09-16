@@ -124,3 +124,6 @@ src/Defeasible-Deontic-Logic/
 
 # planning doc, kept with the project but not committed
 docs/intro_video_plan.md
+
+# intro-video build pipeline: local tooling, not part of the published repo
+src/scripts/video/
