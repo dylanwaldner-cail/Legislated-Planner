@@ -17,8 +17,11 @@ from probes.probe_cube_cells import CUBE_HALF  # noqa: E402
 from scripts.video import common as c  # noqa: E402
 
 YELLOW_CELLS, RED_CELL = (3, 5), 4
-CELL_FILL = {"green": (232, 245, 236), "yellow": (253, 246, 214), "red": (252, 229, 231)}
-GRIDLINE, OUTER = (170, 174, 180), (60, 64, 70)
+# The paper's figures tint these very lightly (alpha 0.12-0.22) because they sit under dense plot
+# ink. On screen at video scale that reads as washed out, so the same hues are composited at a
+# higher alpha -- same colours, more saturation.
+CELL_FILL = {"green": (168, 218, 187), "yellow": (250, 219, 104), "red": (243, 157, 164)}
+GRIDLINE, OUTER = (140, 146, 154), (48, 52, 58)
 TREE_EDGE, TREE_NODE = (110, 155, 209), c.LAW
 
 
@@ -43,7 +46,7 @@ class GridCanvas:
             kind = "red" if cid == RED_CELL else ("yellow" if cid in YELLOW_CELLS else "green")
             fill = CELL_FILL[kind]
             if kind == "red" and not dim_red:
-                fill = (250, 214, 218)
+                fill = (238, 132, 141)          # the forbidden cell is the subject: strongest tint
             x0, y0 = self.px(gx - gm.CELL / 2, gy + gm.CELL / 2)
             x1, y1 = self.px(gx + gm.CELL / 2, gy - gm.CELL / 2)
             d.rectangle([x0, y0, x1, y1], fill=fill, outline=GRIDLINE, width=2)

@@ -37,13 +37,25 @@ FOOT, CENT = CUBE_HALF, 0.0
 READINGS = [("centre", CENT, "full path", True), ("centre", CENT, "at rest", False),
             ("footprint", FOOT, "full path", True), ("footprint", FOOT, "at rest", False)]
 
+# Three constructed pushes, all clear of the grid edge, all verified in build().
+#   1) corner clip in ONE stroke   -> only footprint x full-path convicts
+#   2) the SAME corner clip, SAME endpoints, in TWO strokes (it rests at the corner)
+#      -> at-rest now convicts too. Nothing physical changed; the planner just stopped there.
+#   3) straight THROUGH the cell, starting and ending clear of it
+#      -> both at-rest readings acquit a cube driven right through the forbidden cell.
 SCENES = [
-    dict(path=[(-0.155, 0.0), (0.155, 0.0)],
-         title="Pushed straight through",
-         sub="one stroke · starts and ends clear of the cell"),
     dict(path=[(0.152, 0.03), (0.03, 0.152)],
          title="Clipping the corner",
-         sub="one stroke · the centre never enters"),
+         sub="one stroke \u00b7 the centre never enters",
+         note="only the swept footprint sees it"),
+    dict(path=[(0.152, 0.03), (0.09, 0.09), (0.03, 0.152)],
+         title="The same corner, two strokes",
+         sub="same start, same end \u00b7 it merely STOPS at the corner",
+         note="stopping there is what makes it illegal at rest"),
+    dict(path=[(-0.155, 0.0), (0.155, 0.0)],
+         title="Pushed straight through",
+         sub="one stroke \u00b7 starts and ends clear of the cell",
+         note="at rest, a cube driven through the cell looks clean"),
 ]
 
 PANEL, PX, PY = 320, (700, 1290), (430, 812)
@@ -94,17 +106,17 @@ def panel(d, g, scene, half, swept, progress: float, show_verdict: bool):
     if swept:
         if half > 0:                                        # footprint -> two rails, a cube apart
             for a, b in _band_edges(pts, half):
-                g.draw_edge(d, a, b, col, width=3)
+                g.draw_edge(d, a, b, col, width=5)
         else:                                               # centre -> one line
             for t in range(len(pts) - 1):
-                g.draw_edge(d, pts[t], pts[t + 1], col, width=4)
+                g.draw_edge(d, pts[t], pts[t + 1], col, width=6)
     else:
         reached = [p for k, p in enumerate(P) if k == 0 or sum(segs[:k]) <= want + 1e-9]
         for p in reached:
             if half > 0:
-                g.draw_footprint(d, *p, col, width=3)
+                g.draw_footprint(d, *p, col, width=5)
             else:
-                g.draw_node(d, *p, col, r=7)
+                g.draw_node(d, *p, col, r=9)
 
     # the moving cube itself, always shown so the motion is legible
     cur = pts[-1]
@@ -137,8 +149,10 @@ def frame(si: int, progress: float, show_verdict: bool):
                                 outline=c.GAP_ONTO if bad else (0, 0x88, 0), width=2)
             c.text(d, (bx, by), txt, kind="display" if bad else "roman_i", size=32,
                    fill=c.GAP_ONTO if bad else (0, 0x88, 0), anchor="ma")
-    c.text(d, (c.W // 2, 1032), "same push · same law · four faithful readings",
-           kind="roman_i", size=28, fill=c.FAINT, anchor="ma")
+    c.text(d, (c.W // 2, 992), sc.get("note", ""), kind="roman_b", size=32,
+           fill=c.GAP_ONTO, anchor="ma")
+    c.text(d, (c.W // 2, 1042), "one law · four faithful readings",
+           kind="roman_i", size=26, fill=c.FAINT, anchor="ma")
     return f
 
 
@@ -156,7 +170,7 @@ def build() -> list:
         frames += [frame(si, (k + 1) / N, False) for k in range(N)]
         tgt = frame(si, 1.0, True)
         frames += [c.blend(frames[-1], tgt, c.ease((k + 1) / 8)) for k in range(8)]
-        frames += [tgt] * 92
+        frames += [tgt] * 155
     return frames
 
 
