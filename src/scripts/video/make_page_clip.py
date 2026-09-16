@@ -27,6 +27,27 @@ SIM_DT = 0.04                      # s per captured substep frame (0.01 * decima
 REAL_FPS = 1.0 / SIM_DT            # 25
 
 
+def stroke_boundaries(frames, expected: int):
+    """Frame indices where a stroke ends, found from the footage.
+
+    At every stroke boundary the harness snaps the arm back to the home pose
+    (grid_wrapper_single.execute_stroke), which produces a far larger frame-to-frame change than
+    anything mid-push. So the boundaries are the `expected` strongest, well-separated peaks in the
+    inter-frame difference. The count is checked against the batch's own stroke count and reported.
+    """
+    half = frames[0].width // 2
+    A = np.stack([np.asarray(f.crop((0, 0, half, f.height)), dtype=np.int16) for f in frames])
+    d = np.abs(np.diff(A, axis=0)).mean(axis=(1, 2, 3))
+    order = np.argsort(d)[::-1]
+    picked: list[int] = []
+    for i in order:
+        if len(picked) >= expected:
+            break
+        if all(abs(int(i) - p) > 15 for p in picked):      # suppress the cluster around each peak
+            picked.append(int(i))
+    return sorted(picked)
+
+
 def last_motion_frame(frames, eps: float) -> int:
     """Index of the last frame where the EXECUTED panel (left half) still changes."""
     half = frames[0].width // 2
@@ -50,11 +71,36 @@ def main():
                     help="cut the motionless tail after the goal is reached")
     ap.add_argument("--no-trim", dest="trim", action="store_false")
     ap.add_argument("--motion-eps", type=float, default=0.35)
+    ap.add_argument("--metrics", default=None,
+                    help="eval_metrics.json of the run; with --ep, cuts at THIS episode's own goal "
+                         "instead of the batch's longest episode")
+    ap.add_argument("--ep", type=int, default=None)
     ap.add_argument("--tail", type=float, default=0.4, help="seconds of stillness to keep")
     a = ap.parse_args()
 
     frames = c.read_mp4(a.src)
     n0 = len(frames)
+
+    # The clip's length is set by the LONGEST episode in the batch -- a shorter episode keeps being
+    # stepped with padded actions after it has already reached the goal, so it must be cut at its
+    # own boundary, not where motion happens to stop.
+    if a.metrics and a.ep is not None:
+        import json
+        ns = np.asarray(json.load(open(a.metrics))["n_steps"])
+        mine, longest = int(ns[a.ep]), int(ns.max())
+        if mine < longest:
+            b = stroke_boundaries(frames, longest - 1)
+            print(f"[clip] batch runs {longest} strokes, ep{a.ep} runs {mine}; "
+                  f"found {len(b)} boundaries {b[:6]}{'...' if len(b) > 6 else ''}")
+            cut = b[mine - 1] + int(a.tail / SIM_DT)
+            frames = frames[:min(n0, cut)]
+            print(f"[clip] cut at its own goal: frame {cut} of {n0}")
+        else:
+            print(f"[clip] ep{a.ep} IS the longest episode ({mine} strokes); no goal cut needed")
+
+    # The two cuts COMPOSE: the goal cut removes padded strokes after this episode finished, and the
+    # stillness cut removes the settle frames at the end of the last real stroke. Applying only one
+    # leaves either padded pushes or a frozen tail.
     if a.trim:
         last = last_motion_frame(frames, a.motion_eps)
         keep = min(n0, last + 1 + int(a.tail / SIM_DT))
