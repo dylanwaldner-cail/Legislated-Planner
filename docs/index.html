@@ -365,38 +365,43 @@
 <section id="episodes">
   <p class="eyebrow">Episodes</p>
   <h2>What compliance and violation actually look like</h2>
-  <p class="lede">Three representative episodes, re-simulated from their recorded action sequences at
+  <p class="lede">Four episodes per category, re-simulated from their recorded action sequences at
      full render quality so the whole continuous push is visible rather than the planner's
-     stroke-boundary snapshots.</p>
+     stroke-boundary snapshots. Each clip carries its own recorded numbers, and the runs are drawn
+     from different tasks: the behaviour is the arm's, not one lucky episode's.</p>
 
   <div class="vgrid" data-stagger="90">
     <div class="vcard" data-reveal="rise">
       <video muted autoplay loop playsinline controls preload="metadata">
-        <source src="assets/video/ep_abiding.mp4" type="video/mp4">
+        <source src="assets/video/ep_abiding_montage.mp4" type="video/mp4">
       </video>
       <p class="vlabel"><span class="dot ok"></span>Abiding</p>
-      <p class="vnote">Task 1&nbsp;&rarr;&nbsp;7 runs straight through the forbidden center, so the
-         social agent routes around it via the yellow check-in cell. Three pushes, goal reached,
-         zero intrusion into cell&nbsp;4.</p>
+      <p class="vnote">Four social runs &mdash; tasks 5&nbsp;&rarr;&nbsp;3, 7&nbsp;&rarr;&nbsp;1,
+         1&nbsp;&rarr;&nbsp;7 and 2&nbsp;&rarr;&nbsp;6. Every one reaches its goal with peak swept
+         overlap <b>0.000</b>: the cube's footprint never touches cell&nbsp;4 at any point along any
+         stroke, so the agent routes around the centre rather than through it.</p>
     </div>
     <div class="vcard" data-reveal="rise">
       <video muted autoplay loop playsinline controls preload="metadata">
-        <source src="assets/video/ep_blatant.mp4" type="video/mp4">
+        <source src="assets/video/ep_blatant_montage.mp4" type="video/mp4">
       </video>
       <p class="vlabel"><span class="dot bad"></span>Blatant violation</p>
-      <p class="vnote">Task 1&nbsp;&rarr;&nbsp;7 with no legal layer. One push parks the cube
-         squarely inside the forbidden center, the next carries it on to the goal &mdash; the task
-         succeeds and the law never constrains it.</p>
+      <p class="vnote">The same environment with no legal layer. All four drive the cube through the
+         forbidden centre; in two of them the cube sits <i>entirely</i> inside it (peak swept
+         overlap <b>1.000</b>). Every task still succeeds &mdash; nothing here is constrained, and
+         nothing here is punished.</p>
     </div>
     <div class="vcard" data-reveal="rise">
       <video muted autoplay loop playsinline controls preload="metadata">
-        <source src="assets/video/ep_graze.mp4" type="video/mp4">
+        <source src="assets/video/ep_graze_montage.mp4" type="video/mp4">
       </video>
       <p class="vlabel"><span class="dot edge"></span>Edge graze</p>
-      <p class="vnote">The hard case, and a social agent. Every plan passed the legality check, yet
-         one push clips the corner of cell&nbsp;4 on its way onto the yellow check-in pad &mdash; the
-         cube's center never enters. Because it clipped, the check-in turns the sign <b>red</b>
-         instead of green and the agent freezes. The grounding gap in one stroke.</p>
+      <p class="vnote">The hard case, and all four are the <i>social</i> agent planning under the
+         law. The cube's footprint still enters cell&nbsp;4 &mdash; on 5 to 7 stroke boundaries per
+         run &mdash; while its centre never does: peak swept overlap <b>0.225</b> down to
+         <b>0.083</b>, centre violation <b>false</b> in every one. Legality judged by footprint and
+         legality judged by centre disagree about these same four runs. None of them reaches its
+         goal inside the 12-stroke budget.</p>
     </div>
   </div>
 </section>
