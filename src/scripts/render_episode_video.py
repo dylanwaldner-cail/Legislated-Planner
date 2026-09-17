@@ -165,6 +165,7 @@ def main():
             frames.append(np.asarray(obs["visual"]).copy())
 
         states = [st0]
+        bounds: list = []                    # frame index at which each stroke ENDS
         cur_sign = None
         for t in range(n_steps):
             if signs is not None and signs[t] != cur_sign:        # only on CHANGE: each call steps physics
@@ -172,6 +173,8 @@ def main():
                 cur_sign = signs[t]
             _o, st = env.execute_stroke(acts[:, t], frame_sink=frames)
             states.append(st)
+            if frames is not None:
+                bounds.append(len(frames))
         states = np.stack(states, axis=1)                          # (1, n_steps+1, 31)
 
         # ---- determinism check against the stored ground-truth boundary path ----
@@ -241,6 +244,16 @@ def main():
         w.close()
         print(f"[video] wrote {out.resolve()} ({len(seq)} frames @ {args.fps} fps, "
               f"{len(seq)/args.fps:.1f}s)", flush=True)
+
+        # Sidecar: the EXACT frame index where each stroke ends, recorded as the frames are
+        # captured. Recovering these from the footage afterwards means guessing, and the guess fails
+        # on precisely the strokes worth trimming -- a no-op stroke moves the arm but not the cube.
+        # Indices are into the UNSUBSAMPLED capture, so a consumer must apply --speed itself.
+        sb = out.with_suffix(".strokes.json")
+        sb.write_text(json.dumps({"n_captured": len(frames), "speed": sp,
+                                  "stroke_end_frames": bounds,
+                                  "cube_xy_boundaries": rep.tolist()}, indent=1))
+        print(f"[video] wrote {sb.name}: {len(bounds)} stroke boundaries", flush=True)
     finally:
         close_or_exit(env)
 
