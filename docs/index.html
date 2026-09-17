@@ -271,41 +271,58 @@
      admitted several faithful metric interpretations yielding drastically different abidance.</p>
 </section>
 
+<!-- ============ EPISODES ============ -->
+<section id="episodes">
+  <p class="eyebrow">Episodes</p>
+  <h2>What compliance and violation look like</h2>
+
+  <div class="vgrid" data-stagger="90">
+    <div class="vcard" data-reveal="rise">
+      <video muted autoplay loop playsinline controls preload="metadata">
+        <source src="assets/video/ep_abiding_montage.mp4" type="video/mp4">
+      </video>
+      <p class="vlabel"><span class="dot ok"></span>Abiding</p>
+      <p class="vnote">Four social runs. One routes around the center; the other three <b>earn</b>
+         the crossing by checking in at a yellow cell first.</p>
+    </div>
+    <div class="vcard" data-reveal="rise">
+      <video muted autoplay loop playsinline controls preload="metadata">
+        <source src="assets/video/ep_blatant_montage.mp4" type="video/mp4">
+      </video>
+      <p class="vlabel"><span class="dot bad"></span>Blatant violation</p>
+      <p class="vnote">The same environment with no legal layer. All four drive the cube straight
+         through the forbidden center.</p>
+    </div>
+    <div class="vcard" data-reveal="rise">
+      <video muted autoplay loop playsinline controls preload="metadata">
+        <source src="assets/video/ep_graze_montage.mp4" type="video/mp4">
+      </video>
+      <p class="vlabel"><span class="dot edge"></span>Edge graze</p>
+      <p class="vnote">Four social runs whose footprint clips the center while the center point
+         never enters. None of them reaches its goal.</p>
+    </div>
+  </div>
+</section>
+
 <!-- ============ THE STACK ============ -->
 <section id="stack">
   <p class="eyebrow">The stack</p>
   <h2>The law enters through perception and leaves through the planner</h2>
-  <p class="lede">A DDL rule base encodes the source text, probes ground latent predictions as its
-     facts, and its verdict constrains the RRT planner &mdash; closing the loop before an illegal
-     action is executed. The two dashed arrows are where isomorphism breaks down.</p>
 
   <figure class="bleed" data-reveal="wipe">
     <div class="frame"><img src="assets/img/fig1_pipeline.png"
       alt="The legislation planning stack: an Isaac Lab Franka arm pushing a cube on a 3x3 grid, beside a three-layer diagram showing the law, perception and planning rows."></div>
-    <figcaption><b>The Legislation Planning Stack.</b> <b>(a)</b> the Isaac Lab environment: a Franka
-      arm pushes a cube across a 3&times;3 grid with an illegal center cell, two yellow check-in
-      cells, and a color-flipping rule sign. <b>(b)</b> the legal layer. Dashed arrows are the
-      isomorphism gaps: the <span style="color:#00b4d8;font-weight:640">grounding gap</span> where
-      probe error grounds the wrong atom, and the
-      <span style="color:#c2185b;font-weight:640">ontological gap</span> where one verdict admits
-      many planning constraints.</figcaption>
+    <figcaption><b>The Legislation Planning Stack.</b> Dashed arrows are the isomorphism gaps: the
+      <span style="color:#00b4d8;font-weight:640">grounding gap</span>, where probe error grounds the
+      wrong atom, and the <span style="color:#c2185b;font-weight:640">ontological gap</span>, where
+      one verdict admits many planning constraints.</figcaption>
   </figure>
 
-  <h3>Setup</h3>
-  <p>A Franka arm with a welded paddle pushes a 0.09&nbsp;m cube across a 3&times;3 grid of
-     0.133&nbsp;m cells in Isaac Lab. The planner never sees the cube's pose &mdash; only a
-     224&times;224 RGB frame and proprioception &mdash; so the pose must be read back from pixels by
-     learned probes. Planning is RRT in the latent space of DINO-WM, with horizon <em>H</em>&nbsp;=&nbsp;3;
-     only the first action of each plan is executed before replanning. Each task starts the cube in
-     one cell with its goal in the diametrically opposite cell, giving eight tasks run over 50
-     variations each: <b>400 episodes per agent</b>. The center cell is illegal and is never a start
-     or a goal.</p>
+  <p class="lede">A Franka arm pushes a cube across a 3&times;3 grid with an illegal center cell.
+     Planning is RRT in the latent space of DINO-WM; the cube's pose is never given, only read back
+     from pixels by learned probes. Four agents share the stack and differ only in what they do with
+     a violation flag. <a href="https://arxiv.org/abs/2609.15113" target="_blank" rel="noopener">See the paper for details.</a></p>
 
-  <h3>Three agents, one stack</h3>
-  <p>The agent types come from the BIO framework and differ <em>only</em> in what they do with the
-     violation flag on a candidate action &mdash; same planner, same world model, same laws.
-     A fourth <b>oracle</b> agent runs the social policy on simulation ground truth instead of probe
-     readings, isolating how much of the failure is perception rather than reasoning.</p>
   <div class="tscroll" data-reveal="rise">
     <table>
       <thead><tr><th>Agent</th><th>Treats a deontic conclusion as&hellip;</th></tr></thead>
@@ -327,12 +344,9 @@
 <section id="laws">
   <p class="eyebrow">The laws</p>
   <h2>A small rule base that still exercises every DDL construct</h2>
-  <p class="lede">In natural language: the center cell is off-limits (R2); a yellow sign obliges the
-     cube to first enter a yellow cell (R5); reaching it flips the sign green if the trajectory is
-     clean (R7) or red if the cube already passed through the center (R7b); a green sign then permits
-     the center (R4), while a red sign freezes the agent (R2, R3 &rArr; R9). The yellow cell is a
-     legality check-in &mdash; the cube must present itself for authorization before the restricted
-     area opens, like scanning a key card at a checkpoint.</p>
+  <p class="lede">The center cell is off-limits (R2); a yellow sign obliges a check-in (R5); reaching
+     it flips the sign green (R7), or red if the center was already entered (R7b); green then permits
+     the center (R4), red freezes the agent (R9). <a href="https://arxiv.org/abs/2609.15113" target="_blank" rel="noopener">See the paper for details.</a></p>
 
   <div class="tscroll" data-reveal="rise">
     <table>
@@ -353,166 +367,63 @@
       </tbody>
     </table>
   </div>
-  <p class="tnote"><b>Superiority:</b> R4&nbsp;&gt;&nbsp;R2, R4&nbsp;&gt;&nbsp;R10, R7b&nbsp;&gt;&nbsp;R7.
-     <code style="font-family:ui-monospace,monospace">occupies</code>(<i>c</i>) is the cube's
-     <em>ground-truth</em> cell, recorded with <code style="font-family:ui-monospace,monospace">visited</code>(<i>c</i>);
-     <code style="font-family:ui-monospace,monospace">in_cell</code>(<i>c</i>) is the probe prediction
-     the agent is pruned on. The set covers a defeasible prohibition with an earned exception
-     (R2, R4), a compensatory duty (R10), a permission conflict (R9), and a runtime amendment (R11).</p>
-</section>
-
-<!-- ============ EPISODES ============ -->
-<section id="episodes">
-  <p class="eyebrow">Episodes</p>
-  <h2>What compliance and violation actually look like</h2>
-  <p class="lede">Four episodes per category, re-simulated from their recorded action sequences at
-     full render quality so the whole continuous push is visible rather than the planner's
-     stroke-boundary snapshots. Each clip carries its own recorded numbers, and the runs are drawn
-     from different tasks: the behaviour is the arm's, not one lucky episode's.</p>
-
-  <div class="vgrid" data-stagger="90">
-    <div class="vcard" data-reveal="rise">
-      <video muted autoplay loop playsinline controls preload="metadata">
-        <source src="assets/video/ep_abiding_montage.mp4" type="video/mp4">
-      </video>
-      <p class="vlabel"><span class="dot ok"></span>Abiding</p>
-      <p class="vnote">Four social runs, peak swept overlap <b>0.000</b> in every one &mdash; which
-         means zero overlap <i>while the prohibition was in force</i>, not zero overlap. One
-         (5&nbsp;&rarr;&nbsp;3) routes around the centre entirely. The other three <b>earn</b> the
-         crossing: each checks in at a yellow cell on the stroke immediately before entering
-         cell&nbsp;4, R7 flips the sign green, and the centre prohibition is defeated. Compliance
-         here is a permission obtained, not an obstacle avoided.</p>
-    </div>
-    <div class="vcard" data-reveal="rise">
-      <video muted autoplay loop playsinline controls preload="metadata">
-        <source src="assets/video/ep_blatant_montage.mp4" type="video/mp4">
-      </video>
-      <p class="vlabel"><span class="dot bad"></span>Blatant violation</p>
-      <p class="vnote">The same environment with no legal layer. All four drive the cube through the
-         forbidden centre; in two of them the cube sits <i>entirely</i> inside it (peak swept
-         overlap <b>1.000</b>). Every task still succeeds &mdash; nothing here is constrained, and
-         nothing here is punished.</p>
-    </div>
-    <div class="vcard" data-reveal="rise">
-      <video muted autoplay loop playsinline controls preload="metadata">
-        <source src="assets/video/ep_graze_montage.mp4" type="video/mp4">
-      </video>
-      <p class="vlabel"><span class="dot edge"></span>Edge graze</p>
-      <p class="vnote">The hard case, and all four are the <i>social</i> agent planning under the
-         law. The cube's footprint still enters cell&nbsp;4 &mdash; on 5 to 7 stroke boundaries per
-         run &mdash; while its centre never does: peak swept overlap <b>0.225</b> down to
-         <b>0.083</b>, centre violation <b>false</b> in every one. Legality judged by footprint and
-         legality judged by centre disagree about these same four runs. None of them reaches its
-         goal inside the 12-stroke budget.</p>
-    </div>
-  </div>
+  <p class="tnote"><b>Superiority:</b> R4&nbsp;&gt;&nbsp;R2, R4&nbsp;&gt;&nbsp;R10, R7b&nbsp;&gt;&nbsp;R7.</p>
 </section>
 
 <!-- ============ FILMSTRIP ============ -->
 <section id="filmstrip">
   <p class="eyebrow">Audit trace</p>
   <h2>Watching the verdict and the goal switch mid-episode</h2>
-  <p class="lede">Every deontic decision is logged with the rule that fired, the atoms grounding it,
-     and the verdict. One panel per decision step of a single social-agent episode, each rendered at
-     the cube's recorded rest position and tinted with the <em>effective</em> sign &mdash; the color
-     the verdict was actually assessed under, which at the last step differs from the color on the
-     sign itself.</p>
 
   <figure class="bleed" data-reveal="wipe">
     <div class="frame"><img src="assets/img/fig_trace_filmstrip.png"
       alt="Five-panel filmstrip of one episode, showing the cube position and sign color at each decision step."></div>
     <figcaption><b>One episode, five decisions.</b> A world-model error drops the cube into the
-      forbidden center; the contrary-to-duty rule repairs it; the taint it left behind turns the
+      forbidden center; the contrary-to-duty rule repairs it; the taint it leaves behind turns the
       sign red and freezes the agent on arrival at the check-in.</figcaption>
   </figure>
-
-  <ol class="steps" data-stagger="70">
-    <li data-reveal="rise"><span class="stepno">Step 0</span><span class="sign white">white</span>
-        <span>In cell 1. The planner predicts a small nudge that keeps it there &mdash; a legal,
-              unremarkable move.</span></li>
-    <li data-reveal="rise"><span class="stepno">Step 1</span><span class="sign yellow">yellow</span>
-        <span>The push overshoots by nearly <b>8&nbsp;cm</b> and drops the cube in the forbidden
-              center. The plan was legal; the execution was not.
-              <b>This is the grounding gap.</b></span></li>
-    <li data-reveal="rise"><span class="stepno">Step 2</span><span class="sign yellow">yellow</span>
-        <span>R10's compensatory duty fires &mdash; <code>[O]exit_cell(4)</code>. The goal bank
-              retargets to cell 1 and the exit succeeds. The law absorbs the violation rather than
-              rejecting the agent.</span></li>
-    <li data-reveal="rise"><span class="stepno">Step 3</span><span class="sign yellow">yellow</span>
-        <span>Duty discharged, it resumes toward yellow cell 3 to satisfy
-              <code>[O]in_yellow_cell</code>.</span></li>
-    <li data-reveal="rise"><span class="stepno">Step 4</span><span class="sign red">red</span>
-        <span>It reaches the check-in still carrying <code>visited(4)</code>. R7b outranks R7, so the
-              sign flips <b>red</b> rather than green, and R9's permission conflict freezes it. The
-              earlier violation is what closes the door.</span></li>
-  </ol>
 </section>
 
 <!-- ============ RESULTS ============ -->
 <section id="results">
   <p class="eyebrow">Results</p>
   <h2>Ex ante legislation works, and both gaps are measurable</h2>
-  <p class="lede">The findings in brief. Full tables, confidence intervals and the runtime audit are
-     in the <a href="https://arxiv.org/pdf/2609.15113" target="_blank" rel="noopener">paper</a>.</p>
+  <p class="lede">In brief &mdash; full tables, confidence intervals and the runtime audit are in the
+     <a href="https://arxiv.org/pdf/2609.15113" target="_blank" rel="noopener">paper</a>.</p>
 
-  <h3>The legal layer is what produces compliance</h3>
   <figure data-reveal="rise">
     <div class="frame"><img src="assets/img/fig_sign_lawset.png"
       alt="Grouped bar chart of success and law abidance rates by task for the realistic, social and deviant agents, with an oracle reference line."></div>
     <figcaption>Success (solid) and law abidance (light) by task. The social agent abides
-      <b>5.9&times;</b> more often than the unlegislated one. Its success is capped by its abidance,
-      because breaking the law turns the sign red and freezes it &mdash; while the realistic and
-      deviant agents succeed far more often than they abide.</figcaption>
+      <b>5.9&times;</b> more often than the unlegislated one.</figcaption>
   </figure>
 
-  <h3>Perception error grounds the law on the wrong cell</h3>
   <div class="vgrid" data-stagger="90" style="grid-template-columns:1fr 1fr;">
     <figure data-reveal="rise">
       <div class="frame"><img src="assets/img/fig_pred_vs_real.png"
         alt="Scatter of predicted versus executed cube rest positions where the two fall in different grid cells."></div>
-      <figcaption>Cases where the predicted and executed rest positions fall in <em>different</em>
-        cells: the world model grounds a legal atom, but the executed action is illegal.</figcaption>
+      <figcaption>Predicted and executed rest positions landing in <em>different</em> cells: the
+        world model grounds a legal atom, the executed action is illegal.</figcaption>
     </figure>
     <figure data-reveal="rise">
       <div class="frame"><img src="assets/img/fig_cushion_sweep.png"
         alt="Law abidance versus cushion delta, with Wilson 95% confidence bands."></div>
-      <figcaption>Modeling the uncertainty &mdash; a cushion that dilates the enforced footprint so
-        the atom absorbs the error instead of trusting a point estimate &mdash; lifts abidance
-        substantially, with success rising alongside it.</figcaption>
+      <figcaption>A cushion that dilates the enforced footprint lifts abidance substantially, with
+        success rising alongside it.</figcaption>
     </figure>
   </div>
-  <p>Typical error is a sizeable fraction of a cell and the tail exceeds a full cell width, so a
-     cushion narrows the gap but cannot close it. The oracle agent, running the same laws on ground
-     truth, marks the ceiling: the distance between it and the social agent is the price of grounding
-     the law in learned perception, not a limit of the DDL layer.</p>
 
-  <h3>One law, several faithful readings</h3>
-  <p>Re-scoring the center-cell prohibition alone &mdash; scoring the cube's center or its whole
-     footprint, over its full swept path or only at the frames the planner perceives &mdash; moves
-     measured abidance by <b>tens of points</b> on the very same episodes. Nothing about the behavior
-     changes; only the interpretation of the rule does. Which reading is correct is a question a
-     legislator drafting the rule would never see, and it lands on the engineer.</p>
+  <figure data-reveal="rise">
+    <div class="frame"><img src="assets/img/fig_rule_insert_narrow.png"
+      alt="Stacked bar chart of episodes at risk, repaired, and returned to start after the runtime rule insertion."></div>
+    <figcaption><b>R11 inserted at t = 3.</b> An amendment strands agents in violation; the
+      contrary-to-duty rule walks most of them back into a legal cell by the next step without
+      costing task success.</figcaption>
+  </figure>
 
-  <h3>Runtime amendment, at negligible cost</h3>
-  <div class="vgrid" data-stagger="90" style="grid-template-columns:minmax(0,0.9fr) minmax(0,1.1fr);">
-    <figure data-reveal="rise">
-      <div class="frame"><img src="assets/img/fig_rule_insert_narrow.png"
-        alt="Stacked bar chart of episodes at risk, repaired, and returned to start after the runtime rule insertion."></div>
-      <figcaption><b>R11 inserted at t = 3.</b> An amendment strands the agent in violation, and the
-        contrary-to-duty rule repairs it without costing task success.</figcaption>
-    </figure>
-    <div>
-      <p>Legal design is updateable and need not be fixed <em>a priori</em>. Inserting a new duty
-         mid-episode strands many agents in violation &mdash; some holding a license the reverting
-         sign revoked underneath them &mdash; and the compensatory duty walks most of them back into
-         a legal cell by the next step without hurting task success.</p>
-      <p>The stack tracks exogenous change too: the agent enters the center roughly
-         <b>seven times more often</b> when the sign permits it than when it forbids it.</p>
-      <p>And the reasoning is cheap. A verdict costs <b>16.6&nbsp;ms</b>, against the
-         <b>12.5&nbsp;s</b> the planner spends on each executed action &mdash; about three orders of
-         magnitude less than the search it governs.</p>
-    </div>
-  </div>
+  <p class="tnote">Re-scoring one rule under different faithful readings moves measured abidance by
+     tens of points on the same episodes. A verdict costs <b>16.6&nbsp;ms</b> against the
+     <b>12.5&nbsp;s</b> the planner spends per executed action.</p>
 </section>
 
 <!-- ============ CITATION ============ -->
@@ -529,7 +440,7 @@
 </section>
 
 <footer>
-  <p>Result videos are being re-rendered from recorded episodes and will appear here shortly.</p>
+  <p>Episode videos are re-simulated from the recorded action sequences of the runs they show.</p>
 </footer>
 
 </main>
