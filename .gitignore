@@ -119,8 +119,8 @@ src/Defeasible-Deontic-Logic/
 
 # project page assets — override the repo-wide *.png / *.mp4 rules above so the
 # GitHub Pages site under docs/ can actually carry its own figures and videos.
-!docs/assets/img/*.png
-!docs/assets/video/*.mp4
+!docs/assets/*.png
+!docs/assets/*.mp4
 
 # planning doc, kept with the project but not committed
 docs/intro_video_plan.md

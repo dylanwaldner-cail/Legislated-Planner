@@ -12,11 +12,11 @@
 <meta property="og:type" content="website">
 <meta property="og:title" content="Legislating World-Model-Based Planning with Legal Reasoning">
 <meta property="og:description" content="Defeasible Deontic Logic constrains a world-model-based motion planner, enabling ex ante governance of robot behavior.">
-<meta property="og:image" content="assets/img/fig1_pipeline.png">
+<meta property="og:image" content="assets/fig1_pipeline.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Legislating World-Model-Based Planning with Legal Reasoning">
 <meta name="twitter:description" content="Defeasible Deontic Logic constrains a world-model-based motion planner, enabling ex ante governance of robot behavior.">
-<meta name="twitter:image" content="assets/img/fig1_pipeline.png">
+<meta name="twitter:image" content="assets/fig1_pipeline.png">
 
 <style>
   :root {
@@ -110,7 +110,7 @@
   .dot { width:9px; height:9px; border-radius:50%; flex:0 0 9px; }
   .dot.ok { background:var(--law); } .dot.bad { background:var(--plan); } .dot.edge { background:var(--dev); }
 
-  /* Placeholder shown until the rendered episode lands in assets/video/.
+  /* Placeholder shown until the rendered episode lands in assets/.
      To go live: delete the .vstub div and uncomment the <video> above it. */
   .vstub {
     aspect-ratio:1/1; border:1px dashed var(--rule); border-radius:10px;
@@ -238,15 +238,14 @@
     <li><a href="https://github.com/dylanwaldner-cail/Legislated-Planner" target="_blank" rel="noopener">
       <svg viewBox="0 0 24 24"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg>
       Code</a></li>
-    <li><a href="#" aria-disabled="true">JURIX proceedings &mdash; pending</a></li>
   </ul>
 </header>
 
 <!-- ============ HERO: pipeline explainer ============
      Built by src/scripts/video/ (gitignored). Rebuild with:  python scripts/video/assemble.py -->
-<video controls playsinline muted loop poster="assets/img/fig1_pipeline.png"
+<video controls playsinline muted loop preload="none" poster="assets/fig1_pipeline.png"
        style="width:100%;height:auto;border-radius:12px;border:1px solid var(--rule);background:#000;">
-  <source src="assets/video/intro_preview.mp4" type="video/mp4">
+  <source src="assets/intro_preview.mp4" type="video/mp4">
 </video>
 
 <!-- ============ ABSTRACT ============ -->
@@ -279,7 +278,7 @@
   <div class="vgrid" data-stagger="90">
     <div class="vcard" data-reveal="rise">
       <video muted autoplay loop playsinline controls preload="metadata">
-        <source src="assets/video/ep_abiding_montage.mp4" type="video/mp4">
+        <source src="assets/ep_abiding_montage.mp4" type="video/mp4">
       </video>
       <p class="vlabel"><span class="dot ok"></span>Abiding</p>
       <p class="vnote">Four social runs. One routes around the center; the other three <b>earn</b>
@@ -287,7 +286,7 @@
     </div>
     <div class="vcard" data-reveal="rise">
       <video muted autoplay loop playsinline controls preload="metadata">
-        <source src="assets/video/ep_blatant_montage.mp4" type="video/mp4">
+        <source src="assets/ep_blatant_montage.mp4" type="video/mp4">
       </video>
       <p class="vlabel"><span class="dot bad"></span>Blatant violation</p>
       <p class="vnote">The same environment with no legal layer. All four drive the cube straight
@@ -295,7 +294,7 @@
     </div>
     <div class="vcard" data-reveal="rise">
       <video muted autoplay loop playsinline controls preload="metadata">
-        <source src="assets/video/ep_graze_montage.mp4" type="video/mp4">
+        <source src="assets/ep_graze_montage.mp4" type="video/mp4">
       </video>
       <p class="vlabel"><span class="dot edge"></span>Edge graze</p>
       <p class="vnote">Four social runs whose footprint clips the center while the center point
@@ -310,7 +309,7 @@
   <h2>The law enters through perception and leaves through the planner</h2>
 
   <figure class="bleed" data-reveal="wipe">
-    <div class="frame"><img src="assets/img/fig1_pipeline.png"
+    <div class="frame"><img src="assets/fig1_pipeline.png"
       alt="The legislation planning stack: an Isaac Lab Franka arm pushing a cube on a 3x3 grid, beside a three-layer diagram showing the law, perception and planning rows."></div>
     <figcaption><b>The Legislation Planning Stack.</b> Dashed arrows are the isomorphism gaps: the
       <span style="color:#00b4d8;font-weight:640">grounding gap</span>, where probe error grounds the
@@ -376,7 +375,7 @@
   <h2>Watching the verdict and the goal switch mid-episode</h2>
 
   <figure class="bleed" data-reveal="wipe">
-    <div class="frame"><img src="assets/img/fig_trace_filmstrip.png"
+    <div class="frame"><img src="assets/fig_trace_filmstrip.png"
       alt="Five-panel filmstrip of one episode, showing the cube position and sign color at each decision step."></div>
     <figcaption><b>One episode, five decisions.</b> A world-model error drops the cube into the
       forbidden center; the contrary-to-duty rule repairs it; the taint it leaves behind turns the
@@ -392,7 +391,7 @@
      <a href="https://arxiv.org/pdf/2609.15113" target="_blank" rel="noopener">paper</a>.</p>
 
   <figure data-reveal="rise">
-    <div class="frame"><img src="assets/img/fig_sign_lawset.png"
+    <div class="frame"><img src="assets/fig_sign_lawset.png"
       alt="Grouped bar chart of success and law abidance rates by task for the realistic, social and deviant agents, with an oracle reference line."></div>
     <figcaption>Success (solid) and law abidance (light) by task. The social agent abides
       <b>5.9&times;</b> more often than the unlegislated one.</figcaption>
@@ -400,13 +399,13 @@
 
   <div class="vgrid" data-stagger="90" style="grid-template-columns:1fr 1fr;">
     <figure data-reveal="rise">
-      <div class="frame"><img src="assets/img/fig_pred_vs_real.png"
+      <div class="frame"><img src="assets/fig_pred_vs_real.png"
         alt="Scatter of predicted versus executed cube rest positions where the two fall in different grid cells."></div>
       <figcaption>Predicted and executed rest positions landing in <em>different</em> cells: the
         world model grounds a legal atom, the executed action is illegal.</figcaption>
     </figure>
     <figure data-reveal="rise">
-      <div class="frame"><img src="assets/img/fig_cushion_sweep.png"
+      <div class="frame"><img src="assets/fig_cushion_sweep.png"
         alt="Law abidance versus cushion delta, with Wilson 95% confidence bands."></div>
       <figcaption>A cushion that dilates the enforced footprint lifts abidance substantially, with
         success rising alongside it.</figcaption>
@@ -415,7 +414,7 @@
 
   <!-- 308x406 source: full width would upscale it ~4x and dwarf every other figure. -->
   <figure data-reveal="rise" style="max-width:360px;margin-inline:auto;">
-    <div class="frame"><img src="assets/img/fig_rule_insert_narrow.png"
+    <div class="frame"><img src="assets/fig_rule_insert_narrow.png"
       alt="Stacked bar chart of episodes at risk, repaired, and returned to start after the runtime rule insertion."></div>
     <figcaption><b>R11 inserted at t = 3.</b> An amendment strands agents in violation; the
       contrary-to-duty rule walks most of them back into a legal cell by the next step without

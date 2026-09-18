@@ -32,7 +32,7 @@ derives a flip; see scripts/render_trace_filmstrip.py).
 Run INSIDE the IsaacLab container, from /workspace/src:
   CUDA_VISIBLE_DEVICES=2 ./IsaacLab/isaaclab.sh -p scripts/render_episode_video.py \
       --run results/no_yaw/sign_change --arm social --task 3_5 --batch batch_000 --ep 0 \
-      --out /workspace/src/../docs/assets/video/ep_graze.mp4
+      --out /workspace/src/../docs/assets/ep_graze.mp4
 """
 from __future__ import annotations
 
