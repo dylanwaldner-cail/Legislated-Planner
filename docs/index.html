@@ -320,23 +320,9 @@
   <p class="lede">A Franka arm pushes a cube across a 3&times;3 grid with an illegal center cell.
      Planning is RRT in the latent space of DINO-WM; the cube's pose is never given, only read back
      from pixels by learned probes. Four agents share the stack and differ only in what they do with
-     a violation flag. <a href="https://arxiv.org/abs/2609.15113" target="_blank" rel="noopener">See the paper for details.</a></p>
+     a violation flag &mdash; they are the four series in the results below.
+     <a href="https://arxiv.org/abs/2609.15113" target="_blank" rel="noopener">See the paper for details.</a></p>
 
-  <div class="tscroll" data-reveal="rise">
-    <table>
-      <thead><tr><th>Agent</th><th>Treats a deontic conclusion as&hellip;</th></tr></thead>
-      <tbody>
-        <tr><td><span class="swatch" style="background:var(--plan)"></span><b>Realistic</b></td>
-            <td>Nothing. No legislation; returns the lowest-cost plan in the tree.</td></tr>
-        <tr><td><span class="swatch" style="background:var(--law)"></span><b>Social</b></td>
-            <td>A hard constraint. Violating actions are pruned as the tree is expanded.</td></tr>
-        <tr><td><span class="swatch" style="background:var(--dev)"></span><b>Deviant</b></td>
-            <td>A price. Violations cost &lambda; = 0.067&nbsp;m of progress each, never a veto.</td></tr>
-        <tr><td><span class="swatch" style="background:var(--oracle)"></span><b>Oracle</b></td>
-            <td>A hard constraint, but grounded on ground truth rather than probes.</td></tr>
-      </tbody>
-    </table>
-  </div>
 </section>
 
 <!-- ============ THE LAWS ============ -->
@@ -396,6 +382,22 @@
     <figcaption>Success (solid) and law abidance (light) by task. The social agent abides
       <b>5.9&times;</b> more often than the unlegislated one.</figcaption>
   </figure>
+
+  <div class="tscroll" data-reveal="rise">
+    <table>
+      <thead><tr><th>Agent</th><th>Treats a deontic conclusion as&hellip;</th></tr></thead>
+      <tbody>
+        <tr><td><span class="swatch" style="background:var(--plan)"></span><b>Realistic</b></td>
+            <td>Nothing. No legislation; returns the lowest-cost plan in the tree.</td></tr>
+        <tr><td><span class="swatch" style="background:var(--law)"></span><b>Social</b></td>
+            <td>A hard constraint. Violating actions are pruned as the tree is expanded.</td></tr>
+        <tr><td><span class="swatch" style="background:var(--dev)"></span><b>Deviant</b></td>
+            <td>A price. Violations cost &lambda; = 0.067&nbsp;m of progress each, never a veto.</td></tr>
+        <tr><td><span class="swatch" style="background:var(--oracle)"></span><b>Oracle</b></td>
+            <td>A hard constraint, but grounded on ground truth rather than probes.</td></tr>
+      </tbody>
+    </table>
+  </div>
 
   <div class="vgrid" data-stagger="90" style="grid-template-columns:1fr 1fr;">
     <figure data-reveal="rise">
