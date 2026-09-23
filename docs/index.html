@@ -237,31 +237,34 @@
   </ul>
 </header>
 
-<!-- ============ TEMPORARY: style options for the beat artwork ============
-     Rendered by src/scripts/video/style_options.py. Remove this section once a direction is
-     picked; the images live in docs/assets/style_[abc].png. -->
+<!-- ============ TEMPORARY: Figure 1 style options ============
+     Rendered by src/scripts/video/fig1_style_options.py. Remove this section once a direction is
+     picked; the images are docs/assets/fig1_style_[abc].png. -->
 <section id="styleopts" style="margin-bottom:48px;">
   <p class="eyebrow">Work in progress</p>
-  <h2 style="margin-bottom:6px;">Artwork style options</h2>
-  <p class="lede">Same geometry and same data in all three &mdash; only edge quality and palette
-     differ. Scratch section, not part of the paper page.</p>
-  <div class="vgrid" data-stagger="90">
-    <figure>
-      <div class="frame"><img src="assets/style_a.png" alt="Style A: current rendering, no antialiasing."></div>
-      <figcaption><b>A &mdash; today.</b> No antialiasing: every diagonal, circle and dash edge is a
-        hard staircase, while the type beside it is smooth.</figcaption>
-    </figure>
-    <figure>
-      <div class="frame"><img src="assets/style_b.png" alt="Style B: antialiased, same palette."></div>
-      <figcaption><b>B &mdash; antialiased.</b> Identical geometry and palette, drawn at 4&times;
-        and downsampled. Edge quality only.</figcaption>
-    </figure>
-    <figure>
-      <div class="frame"><img src="assets/style_c.png" alt="Style C: antialiased with a deeper palette."></div>
-      <figcaption><b>C &mdash; antialiased + deeper palette.</b> Stronger cell colours, darker grid
-        lines, round-capped strokes, denser fill.</figcaption>
-    </figure>
-  </div>
+  <h2 style="margin-bottom:6px;">Figure 1 style options</h2>
+  <p class="lede">Identical figure in all three. Only two things vary: how strongly the cards are
+     filled, and whether the drop shadow is actually visible. Scratch section, not part of the
+     paper page.</p>
+
+  <figure data-reveal="rise">
+    <div class="frame"><img src="assets/fig1_style_a.png" alt="Figure 1, current style."></div>
+    <figcaption><b>A &mdash; today.</b> Card fills are 7&ndash;9% tints, so every card is
+      effectively white, and the blur shadow is set to opacity 13 with sub-pixel offsets &mdash;
+      invisible at any size. That is what reads as flat.</figcaption>
+  </figure>
+
+  <figure data-reveal="rise">
+    <div class="frame"><img src="assets/fig1_style_b.png" alt="Figure 1, stronger fills and a visible shadow."></div>
+    <figcaption><b>B &mdash; fills and shadow.</b> Fills raised to 16&ndash;18%, shadow opacity
+      13&nbsp;&rarr;&nbsp;30 with a real offset and blur. Nothing else moves.</figcaption>
+  </figure>
+
+  <figure data-reveal="rise">
+    <div class="frame"><img src="assets/fig1_style_c.png" alt="Figure 1, strongest fills, borders and text."></div>
+    <figcaption><b>C &mdash; maximum separation.</b> Fills 24&ndash;26%, shadow opacity 38, borders
+      1.8&nbsp;&rarr;&nbsp;2.5&nbsp;pt, and darker label text.</figcaption>
+  </figure>
 </section>
 
 <!-- ============ HERO: pipeline explainer ============
