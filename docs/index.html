@@ -25,15 +25,11 @@
     --accent:#1d6fe0; --accent-soft:#eef4fd;
     --law:#1d6fe0; --plan:#e63946; --dev:#e39e14; --oracle:#7c3aed;
     --maxw:1040px;
+    color-scheme: light;   /* keep UA widgets (video controls, scrollbars) light too */
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --ink:#e8eaee; --mute:#9aa2ad; --faint:#79818d;
-      --rule:#2b3038; --bg:#14171b; --panel:#1b1f25;
-      --accent:#6aa6f5; --accent-soft:#18222f;
-      --law:#6aa6f5; --plan:#f4767f; --dev:#e3a93c; --oracle:#a683f2;
-    }
-  }
+  /* The page is light only. A dark variant existed here and was dropped deliberately: every
+     figure and video on this page is rendered on white, so a dark page framed them in a bright
+     slab and the palettes stopped agreeing. */
   * { box-sizing:border-box; }
   html { scroll-behavior:smooth; }
   body {
@@ -240,6 +236,33 @@
       Code</a></li>
   </ul>
 </header>
+
+<!-- ============ TEMPORARY: style options for the beat artwork ============
+     Rendered by src/scripts/video/style_options.py. Remove this section once a direction is
+     picked; the images live in docs/assets/style_[abc].png. -->
+<section id="styleopts" style="margin-bottom:48px;">
+  <p class="eyebrow">Work in progress</p>
+  <h2 style="margin-bottom:6px;">Artwork style options</h2>
+  <p class="lede">Same geometry and same data in all three &mdash; only edge quality and palette
+     differ. Scratch section, not part of the paper page.</p>
+  <div class="vgrid" data-stagger="90">
+    <figure>
+      <div class="frame"><img src="assets/style_a.png" alt="Style A: current rendering, no antialiasing."></div>
+      <figcaption><b>A &mdash; today.</b> No antialiasing: every diagonal, circle and dash edge is a
+        hard staircase, while the type beside it is smooth.</figcaption>
+    </figure>
+    <figure>
+      <div class="frame"><img src="assets/style_b.png" alt="Style B: antialiased, same palette."></div>
+      <figcaption><b>B &mdash; antialiased.</b> Identical geometry and palette, drawn at 4&times;
+        and downsampled. Edge quality only.</figcaption>
+    </figure>
+    <figure>
+      <div class="frame"><img src="assets/style_c.png" alt="Style C: antialiased with a deeper palette."></div>
+      <figcaption><b>C &mdash; antialiased + deeper palette.</b> Stronger cell colours, darker grid
+        lines, round-capped strokes, denser fill.</figcaption>
+    </figure>
+  </div>
+</section>
 
 <!-- ============ HERO: pipeline explainer ============
      Built by src/scripts/video/ (gitignored). Rebuild with:  python scripts/video/assemble.py -->
