@@ -5,7 +5,7 @@ repo, using PIL's default face -- DejaVu Sans **Bold**. Every other piece of tex
 Times: the prose and both matplotlib panels (`plot_sign_lawset.py`, `plot_cushion_sweep_lawset.py`)
 render in Nimbus Roman, the URW Times clone that `mathptmx` actually ships. Figure 2 was the only
 place a reader met a different family, and it was the one figure whose text is baked into pixels and
-so cannot be fixed in LaTeX. This script rebuilds that overlay in Nimbus Roman Bold.
+so cannot be fixed in LaTeX. This script rebuilds that overlay; see FONT_BOLD for the face it now uses and why.
 
 GEOMETRY IS NOT GUESSED. Every rectangle, leader endpoint and swatch below was measured off the
 original by diffing it against its own un-annotated base render
@@ -33,10 +33,21 @@ BASE = os.path.join(HERE, "env_hi_touch.png")
 OUT_LOCAL = os.path.join(HERE, "env_hi_touch_annotated.png")
 OUT_PAPER = "/newdata2/dylantw/Legislated-Planner/Jurix_paper/Images/env.png"
 
-# MATCH THE DIAGRAM, NOT THE PROSE. This render is now a panel inside Fig. 1, so its callouts are
-# read against the diagram's cards, not against body text -- and the diagram sets its nodes in
-# \sffamily, which main.tex maps to Nimbus Sans via `helvet`. This is the file behind that name.
-FONT_BOLD = "/usr/share/fonts/opentype/urw-base35/NimbusSans-Bold.otf"
+# MATCH THE VIDEO'S VOICE. This was Nimbus Sans, chosen to match the diagram's own cards (main.tex
+# sets its nodes in \sffamily, which `helvet` maps to Nimbus Sans). That is a defensible match and
+# it is also Helvetica, which is the most anonymous type available -- the callouts read as a system
+# dialog sitting on the render. Lato Black is the face the intro video already titles in
+# (scripts/video/common.py:_LATO) and the one dino-wm.github.io uses, so the panel now speaks with
+# the same voice as everything else built around this figure.
+#
+# TRADE-OFF, on purpose: inside Fig. 1 the callouts no longer match the cards beside them. They are
+# a photographic overlay rather than diagram furniture, so reading as a different register is the
+# intent, not a slip. Put NimbusSans-Bold.otf back here to undo it -- nothing else needs changing,
+# the box widths are recomputed from the text extent.
+#
+# Black, not Bold: these print at roughly 5pt in the paper, and the heavier weight is what survives
+# at that size. Lato Bold measurably thins out there; Black holds.
+FONT_BOLD = "/usr/share/fonts/truetype/lato/Lato-Black.ttf"
 
 S = 3                     # supersample: draw the overlay at 3x, keep the composite at 3x
 # FS drives everything downstream: the bigger the type IN the render, the smaller the panel can be
@@ -78,7 +89,7 @@ CALLOUTS = [
     ("y3",      "Yellow cell 3",                   "tr", (476, 140), (252, 220), GOLD, GOLD),
     ("center",  "Illegal center\n(cell 4)",        "tr", (492, 226), (262, 260), RED,  RED),
     ("y5",      "Yellow cell 5",                   "tr", (486, 300), (266, 300), GOLD, GOLD),
-    ("sign",    "Rule sign\n(flips green,\nyellow, red)", "tl", (14, 378), (250, 424), GREY, None),
+    ("sign",    "Rule sign\n(Flips green,\nyellow, red)", "tl", (14, 378), (250, 424), GREY, None),
 ]
 
 # Cell-ID legend, measured off the original: panel interior, then the 3x3 swatch grid.
