@@ -127,3 +127,9 @@ docs/intro_video_plan.md
 
 # intro-video build pipeline: local tooling, not part of the published repo
 src/scripts/video/
+
+# private scratch clips: re-ignored AFTER the !docs/assets/*.mp4 negation above, which would
+# otherwise force them into the published repo. Not for the public page.
+docs/assets/rrt_unlock.mp4
+
+GPT*/
