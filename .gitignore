@@ -133,3 +133,7 @@ src/scripts/video/
 docs/assets/rrt_unlock.mp4
 
 GPT*/
+
+# sandbox for new IsaacLab env designs + local backups (never committed)
+/src/new_envs/
+/src/env_backups/
