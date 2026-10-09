@@ -1,5 +1,23 @@
 # Legislated Planner
 
+<p align="center">
+  <a href="https://arxiv.org/abs/2609.15113"><img alt="arXiv" src="https://img.shields.io/badge/arXiv-2609.15113-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white"></a>
+  <a href="https://dylanwaldner-cail.github.io/Legislated-Planner/"><img alt="Project page" src="https://img.shields.io/badge/Project_Page-1D6FE0?style=for-the-badge&logo=githubpages&logoColor=white"></a>
+  <!-- BLOG: drop the URL in and uncomment when the post is live.
+  <a href="BLOG_URL_HERE"><img alt="Blog post" src="https://img.shields.io/badge/Blog_Post-E39E14?style=for-the-badge&logo=rss&logoColor=white"></a>
+  -->
+</p>
+
+<p align="center">
+  <img src="docs/assets/fig1_pipeline.png" alt="The legislation planning stack: on the left, an Isaac Lab Franka arm pushing a cube across a 3x3 grid; on the right, a three-layer diagram with a Law row (legal source text to DDL rule base), a Perception row (world model to probes to atoms) and a Planning row (verdict to planning constraint to motion planner), with dashed arrows marking the grounding and ontological isomorphism gaps.">
+</p>
+
+<p align="center">
+  <sub><b>The legislation planning stack.</b> A DDL rule base encodes the legal source text, learned
+  probes ground its facts from world-model latents, and the verdict constrains the RRT planner.
+  Dashed arrows are the two isomorphism gaps.</sub>
+</p>
+
 Research code for **law as control**: human-authored legal norms, written in Defeasible Deontic
 Logic (DDL), are compiled into constraints on a world-model-based robot motion planner. A learned
 probe reads facts off a frozen-DINO world model, a clingo-backed DDL reasoner turns those facts and
@@ -62,7 +80,19 @@ following vendored directories are third-party and remain under their own terms:
 ## Paper
 
 *Legislating World-Model-Based Planning with Legal Reasoning.* Dylan Waldner, Yiannis Kantaros,
-Guido Governatori, Risto Miikkulainen, Amir Banifatemi. Under review.
+Guido Governatori, Risto Miikkulainen, Amir Banifatemi.
+[arXiv:2609.15113](https://arxiv.org/abs/2609.15113) ([PDF](https://arxiv.org/pdf/2609.15113)) ·
+[project page](https://dylanwaldner-cail.github.io/Legislated-Planner/)
+
+```bibtex
+@article{waldner2026legislating,
+  title   = {Legislating World-Model-Based Planning with Legal Reasoning},
+  author  = {Waldner, Dylan and Kantaros, Yiannis and Governatori, Guido
+             and Miikkulainen, Risto and Banifatemi, Amir},
+  journal = {arXiv preprint arXiv:2609.15113},
+  year    = {2026}
+}
+```
 
 ## License
 
