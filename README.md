@@ -79,9 +79,12 @@ following vendored directories are third-party and remain under their own terms:
 
 ## Paper
 
-*Legislating World-Model-Based Planning with Legal Reasoning.* Dylan Waldner, Yiannis Kantaros,
-Guido Governatori, Risto Miikkulainen, Amir Banifatemi.
-[arXiv:2609.15113](https://arxiv.org/abs/2609.15113) ([PDF](https://arxiv.org/pdf/2609.15113)) ·
+[*Legislating World-Model-Based Planning with Legal Reasoning.*](https://arxiv.org/abs/2609.15113)
+Dylan Waldner, Yiannis Kantaros, Guido Governatori, Risto Miikkulainen, Amir Banifatemi.
+Under review.
+
+[arXiv:2609.15113](https://arxiv.org/abs/2609.15113) ·
+[PDF](https://arxiv.org/pdf/2609.15113) ·
 [project page](https://dylanwaldner-cail.github.io/Legislated-Planner/)
 
 ```bibtex

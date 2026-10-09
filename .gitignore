@@ -137,3 +137,6 @@ GPT*/
 # sandbox for new IsaacLab env designs + local backups (never committed)
 /src/new_envs/
 /src/env_backups/
+
+# nested repo, tracked separately
+ProjectProposal/
