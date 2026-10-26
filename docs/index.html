@@ -237,6 +237,36 @@
   </ul>
 </header>
 
+<!-- ============ TEMPORARY: Figure 1 style options ============
+     Rendered by src/scripts/video/fig1_style_options.py. Remove this section once a direction is
+     picked; the images are docs/assets/fig1_style_[abc].png. -->
+<section id="styleopts" style="margin-bottom:48px;">
+  <p class="eyebrow">Work in progress</p>
+  <h2 style="margin-bottom:6px;">Figure 1 style options</h2>
+  <p class="lede">Identical figure in all three. Only two things vary: how strongly the cards are
+     filled, and whether the drop shadow is actually visible. Scratch section, not part of the
+     paper page.</p>
+
+  <figure data-reveal="rise">
+    <div class="frame"><img src="assets/fig1_style_a.png" alt="Figure 1, current style."></div>
+    <figcaption><b>A &mdash; today.</b> Card fills are 7&ndash;9% tints, so every card is
+      effectively white, and the blur shadow is set to opacity 13 with sub-pixel offsets &mdash;
+      invisible at any size. That is what reads as flat.</figcaption>
+  </figure>
+
+  <figure data-reveal="rise">
+    <div class="frame"><img src="assets/fig1_style_b.png" alt="Figure 1, stronger fills and a visible shadow."></div>
+    <figcaption><b>B &mdash; fills and shadow.</b> Fills raised to 16&ndash;18%, shadow opacity
+      13&nbsp;&rarr;&nbsp;30 with a real offset and blur. Nothing else moves.</figcaption>
+  </figure>
+
+  <figure data-reveal="rise">
+    <div class="frame"><img src="assets/fig1_style_c.png" alt="Figure 1, strongest fills, borders and text."></div>
+    <figcaption><b>C &mdash; maximum separation.</b> Fills 24&ndash;26%, shadow opacity 38, borders
+      1.8&nbsp;&rarr;&nbsp;2.5&nbsp;pt, and darker label text.</figcaption>
+  </figure>
+</section>
+
 <!-- ============ HERO: pipeline explainer ============
      Built by src/scripts/video/ (gitignored). Rebuild with:  python scripts/video/assemble.py -->
 <video controls playsinline muted loop preload="metadata" poster="assets/fig1_pipeline.png"
@@ -270,6 +300,10 @@
 <section id="episodes">
   <p class="eyebrow">Episodes</p>
   <h2>What compliance and violation look like</h2>
+  <p class="lede">Start with the behavior. The same arm, the same grid, the same world model in
+     every clip below &mdash; the only thing that changes is what the agent does with a deontic
+     conclusion. Four runs per category, re-simulated from their recorded action sequences, drawn
+     from different tasks so the pattern is the arm's and not one lucky episode's.</p>
 
   <div class="vgrid" data-stagger="90">
     <div class="vcard" data-reveal="rise">
@@ -303,14 +337,27 @@
 <section id="stack">
   <p class="eyebrow">The stack</p>
   <h2>The law enters through perception and leaves through the planner</h2>
+  <p class="lede">That difference is produced by a stack, not a reward. A DDL rule base encodes
+     the source text, learned probes ground its facts from pixels, and its verdict constrains the
+     planner before an illegal action is ever executed. A Franka arm pushes a cube across a
+     3&times;3 grid with an illegal center cell; planning is RRT in the latent space of DINO-WM,
+     and the cube's pose is never given, only read back from pixels. Four agents share all of it
+     and differ only in what they do with a violation flag &mdash; they are the four series in the
+     results below.
+     <a href="https://arxiv.org/abs/2609.15113" target="_blank" rel="noopener">See the paper for details.</a></p>
 
   <figure class="bleed" data-reveal="wipe">
     <div class="frame"><img src="assets/fig1_pipeline.png"
       alt="The legislation planning stack: an Isaac Lab Franka arm pushing a cube on a 3x3 grid, beside a three-layer diagram showing the law, perception and planning rows."></div>
-    <figcaption><b>The Legislation Planning Stack.</b> Dashed arrows are the isomorphism gaps: the
-      <span style="color:#00b4d8;font-weight:640">grounding gap</span>, where probe error grounds the
-      wrong atom, and the <span style="color:#c2185b;font-weight:640">ontological gap</span>, where
-      one verdict admits many planning constraints.</figcaption>
+    <figcaption><b>The Legislation Planning Stack.</b> <b>(a)</b> the Isaac Lab environment: a
+      Franka arm pushes a cube across a 3&times;3 grid with an illegal center cell, two yellow
+      check-in cells, and a color-flipping rule sign. <b>(b)</b> the legal layer: a DDL rule base
+      encodes the source text, probes ground latents as its facts, and its verdict constrains the
+      RRT planner, closing the loop. The dashed arrows are the two isomorphism gaps &mdash; the
+      <span style="color:#00b4d8;font-weight:640">grounding gap</span>, where probe error grounds
+      the wrong atom, and the <span style="color:#c2185b;font-weight:640">ontological gap</span>,
+      where one verdict admits many planning constraints. <b>The point:</b> the law enters through
+      perception and leaves through the planner, and the gaps open during translation.</figcaption>
   </figure>
 
   <p class="lede">A Franka arm pushes a cube across a 3&times;3 grid with an illegal center cell.
@@ -325,9 +372,13 @@
 <section id="laws">
   <p class="eyebrow">The laws</p>
   <h2>A small rule base that still exercises every DDL construct</h2>
-  <p class="lede">The center cell is off-limits (R2); a yellow sign obliges a check-in (R5); reaching
-     it flips the sign green (R7), or red if the center was already entered (R7b); green then permits
-     the center (R4), red freezes the agent (R9). <a href="https://arxiv.org/abs/2609.15113" target="_blank" rel="noopener">See the paper for details.</a></p>
+  <p class="lede">What the stack enforces is eleven rules. The center cell is off-limits (R2); a
+     yellow sign obliges a check-in (R5); reaching it flips the sign green (R7), or red if the
+     center was already entered (R7b); green then permits the center (R4), red freezes the agent
+     (R9); and if the cube ends up inside anyway, R10 converts the prohibition into a duty to get
+     out. Small, but it exercises a defeasible prohibition with an earned exception, a compensatory
+     duty, a permission conflict, and a rule inserted at runtime.
+     <a href="https://arxiv.org/abs/2609.15113" target="_blank" rel="noopener">See the paper for details.</a></p>
 
   <div class="tscroll" data-reveal="rise">
     <table>
@@ -355,13 +406,23 @@
 <section id="filmstrip">
   <p class="eyebrow">Audit trace</p>
   <h2>Watching the verdict and the goal switch mid-episode</h2>
+  <p class="lede">Those rules interact, and the interaction is auditable. Here is a single
+     social-agent episode, decision by decision: a violation, the duty that repairs it, and the
+     record of the violation closing a door several steps later.</p>
 
   <figure class="bleed" data-reveal="wipe">
     <div class="frame"><img src="assets/fig_trace_filmstrip.png"
       alt="Five-panel filmstrip of one episode, showing the cube position and sign color at each decision step."></div>
-    <figcaption><b>One episode, five decisions.</b> A world-model error drops the cube into the
-      forbidden center; the contrary-to-duty rule repairs it; the taint it leaves behind turns the
-      sign red and freezes the agent on arrival at the check-in.</figcaption>
+    <figcaption><b>One episode, five decisions.</b> Every deontic decision is logged with the
+      rule that fired, the atoms grounding it, and the verdict; each panel is tinted with the
+      <em>effective</em> sign, the color the verdict was assessed under. A world-model error
+      overshoots by nearly <b>8&nbsp;cm</b> and drops the cube in the forbidden center &mdash; the
+      plan was legal, the execution was not. R10's compensatory duty then fires,
+      <code>[O]exit_cell(4)</code>, and the exit succeeds. But the episode still carries
+      <code>visited(4)</code>, so on arrival at the check-in R7b outranks R7, the sign flips
+      <b>red</b> instead of green, and R9's permission conflict freezes the agent.
+      <b>The point:</b> the law absorbs the violation rather than rejecting the agent, and the
+      earlier breach is still what closes the door.</figcaption>
   </figure>
 </section>
 
@@ -369,14 +430,23 @@
 <section id="results">
   <p class="eyebrow">Results</p>
   <h2>Ex ante legislation works, and both gaps are measurable</h2>
-  <p class="lede">In brief &mdash; full tables, confidence intervals and the runtime audit are in the
+  <p class="lede">So: does it work, and where does it break? It works &mdash; the legal layer is
+     what produces compliance. It breaks in exactly the two places the law has to be
+     <em>translated</em>: into facts, and into constraints.
+     Full tables, confidence intervals and the runtime audit are in the
      <a href="https://arxiv.org/abs/2609.15113" target="_blank" rel="noopener">paper</a>.</p>
 
+  <h3>The legal layer is what produces compliance</h3>
   <figure data-reveal="rise">
     <div class="frame"><img src="assets/fig_sign_lawset.png"
       alt="Grouped bar chart of success and law abidance rates by task for the realistic, social and deviant agents, with an oracle reference line."></div>
-    <figcaption>Success (solid) and law abidance (light) by task. The social agent abides
-      <b>5.9&times;</b> more often than the unlegislated one.</figcaption>
+    <figcaption><b>Baseline experiment.</b> Success (solid) and law abidance (light) by task,
+      with <b>All</b> pooled across tasks; bars are 95% CIs and the purple line is the oracle. For
+      the social agent abidance <em>caps</em> success &mdash; breaking the law turns the sign red
+      and freezes it &mdash; while the realistic and deviant agents succeed far more often than
+      they abide. The social agent abides <b>5.9&times;</b> more often than the unlegislated one.
+      <b>The point:</b> <em>ex ante</em> legislation shapes behavior, and what it costs in task
+      completion depends on how the agent treats a deontic conclusion.</figcaption>
   </figure>
 
   <div class="tscroll" data-reveal="rise">
@@ -395,33 +465,89 @@
     </table>
   </div>
 
+  <h3 style="color:#00b4d8;">The Grounding Isomorphism Gap</h3>
+  <p class="lede">Perception error grounds the law on the wrong cell: the atom the planner is pruned
+     on describes a pose the cube never reaches.</p>
   <div class="vgrid" data-stagger="90" style="grid-template-columns:1fr 1fr;">
     <figure data-reveal="rise">
       <div class="frame"><img src="assets/fig_pred_vs_real.png"
         alt="Scatter of predicted versus executed cube rest positions where the two fall in different grid cells."></div>
-      <figcaption>Predicted and executed rest positions landing in <em>different</em> cells: the
-        world model grounds a legal atom, the executed action is illegal.</figcaption>
+      <figcaption><b>Where the atom and the world disagree.</b> The 16 largest social cases in
+        which the <em>predicted</em> rest pose and the <em>executed</em> one fall in different
+        cells, each arrow running from prediction to outcome. The planner was pruned on the atom at
+        the tail; the law was broken at the head.</figcaption>
     </figure>
     <figure data-reveal="rise">
       <div class="frame"><img src="assets/fig_cushion_sweep.png"
         alt="Law abidance versus cushion delta, with Wilson 95% confidence bands."></div>
-      <figcaption>A cushion that dilates the enforced footprint lifts abidance substantially, with
-        success rising alongside it.</figcaption>
+      <figcaption><b>Modeling the uncertainty narrows it.</b> A cushion &delta; dilating the
+        enforced footprint, with Wilson 95% bands, so the grounded atom absorbs the prediction
+        error instead of trusting a point estimate. Social abidance rises from <b>64.7%</b> to
+        <b>88.7%</b> at &delta;&nbsp;=&nbsp;0.04&nbsp;m, with success rising alongside it &mdash;
+        but a cushion cannot recover the tail, which exceeds a full cell
+        width.</figcaption>
     </figure>
   </div>
 
-  <!-- 308x406 source: full width would upscale it ~4x and dwarf every other figure. -->
+  <h3 style="color:#c2185b;">The Ontological Isomorphism Gap</h3>
+  <p class="lede">One law, several faithful readings. Re-scoring R2 alone on the <em>same</em>
+     episodes &mdash; never rerunning them &mdash; moves measured abidance by tens of points,
+     purely by changing what the rule is taken to mean.</p>
+  <div class="tscroll" data-reveal="rise">
+    <table>
+      <thead>
+        <tr>
+          <th rowspan="2">Agent</th><th rowspan="2"><i>n</i></th>
+          <th colspan="2" style="text-align:center">success</th>
+          <th colspan="2" style="text-align:center">abidance, full path</th>
+          <th colspan="2" style="text-align:center">abidance, at rest</th>
+        </tr>
+        <tr>
+          <th style="text-align:right">center</th><th style="text-align:right">footprint</th>
+          <th style="text-align:right">center</th><th style="text-align:right">footprint</th>
+          <th style="text-align:right">center</th><th style="text-align:right">footprint</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><span class="swatch" style="background:var(--plan)"></span>realistic</td><td>400</td>
+            <td style="text-align:right"><b>0.998</b></td><td style="text-align:right">0.998</td>
+            <td style="text-align:right">0.138</td><td style="text-align:right"><b>0.113</b></td>
+            <td style="text-align:right">0.352</td><td style="text-align:right">0.130</td></tr>
+        <tr><td><span class="swatch" style="background:var(--law)"></span>social</td><td>400</td>
+            <td style="text-align:right"><b>0.662</b></td><td style="text-align:right">0.677</td>
+            <td style="text-align:right">0.948</td><td style="text-align:right"><b>0.655</b></td>
+            <td style="text-align:right">0.978</td><td style="text-align:right">0.833</td></tr>
+        <tr><td><span class="swatch" style="background:var(--dev)"></span>deviant</td><td>400</td>
+            <td style="text-align:right"><b>0.958</b></td><td style="text-align:right">0.988</td>
+            <td style="text-align:right">0.557</td><td style="text-align:right"><b>0.448</b></td>
+            <td style="text-align:right">0.680</td><td style="text-align:right">0.497</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="tnote"><b>Bold</b> is the reading actually implemented and reported everywhere else on
+     this page. <i>Full path</i> uses the line between start and end poses; <i>at rest</i> only the
+     frames the planner perceives. <i>Center</i> scores the cube's center, <i>footprint</i> its whole
+     area. The social agent reads as <b>0.655</b> or <b>0.978</b> abiding depending only on which
+     column you take as the law.</p>
+
+  <h3>Contrary-to-duty: violation recovery</h3>
+  <p class="lede">A compensatory duty (R10) turns a violation into a repair instead of a dead end,
+     and the lawset can be amended while the agent is running.</p>
   <figure data-reveal="rise" style="max-width:360px;margin-inline:auto;">
     <div class="frame"><img src="assets/fig_rule_insert_narrow.png"
       alt="Stacked bar chart of episodes at risk, repaired, and returned to start after the runtime rule insertion."></div>
-    <figcaption><b>R11 inserted at t = 3.</b> An amendment strands agents in violation; the
-      contrary-to-duty rule walks most of them back into a legal cell by the next step without
-      costing task success.</figcaption>
+    <figcaption><b>Rule insertion.</b> <em>R11</em> inserted at <i>t</i>&nbsp;=&nbsp;3, mid-episode,
+      into a running agent. The amendment immediately strands agents in violation &mdash; some
+      holding a license the reverting sign revoked underneath them &mdash; and R10's
+      contrary-to-duty duty walks most of them back into a legal cell by the next step.
+      <b>The point:</b> legal design is updateable and need not be fixed <em>a priori</em>; a
+      violation becomes a repair obligation rather than a dead end, and it costs no task
+      success.</figcaption>
   </figure>
 
-  <p class="tnote">Re-scoring one rule under different faithful readings moves measured abidance by
-     tens of points on the same episodes. A verdict costs <b>16.6&nbsp;ms</b> against the
-     <b>12.5&nbsp;s</b> the planner spends per executed action.</p>
+  <p class="tnote">A verdict costs <b>16.6&nbsp;ms</b> against the <b>12.5&nbsp;s</b> the planner
+     spends per executed action &mdash; about three orders of magnitude less than the search it
+     governs.</p>
 </section>
 
 <!-- ============ CITATION ============ -->
