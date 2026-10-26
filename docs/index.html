@@ -92,9 +92,6 @@
   figcaption b, figcaption strong { color:var(--ink); font-weight:640; }
 
   .wide { max-width:none; }
-  @media (min-width:1180px) {
-    .bleed { width:calc(100vw - 40px); max-width:1240px; margin-left:calc(50% - min(50vw - 20px, 620px)); }
-  }
 
   /* ---------- video grid ---------- */
   .vgrid { display:grid; gap:20px; grid-template-columns:repeat(3, 1fr); }
@@ -237,36 +234,6 @@
   </ul>
 </header>
 
-<!-- ============ TEMPORARY: Figure 1 style options ============
-     Rendered by src/scripts/video/fig1_style_options.py. Remove this section once a direction is
-     picked; the images are docs/assets/fig1_style_[abc].png. -->
-<section id="styleopts" style="margin-bottom:48px;">
-  <p class="eyebrow">Work in progress</p>
-  <h2 style="margin-bottom:6px;">Figure 1 style options</h2>
-  <p class="lede">Identical figure in all three. Only two things vary: how strongly the cards are
-     filled, and whether the drop shadow is actually visible. Scratch section, not part of the
-     paper page.</p>
-
-  <figure data-reveal="rise">
-    <div class="frame"><img src="assets/fig1_style_a.png" alt="Figure 1, current style."></div>
-    <figcaption><b>A &mdash; today.</b> Card fills are 7&ndash;9% tints, so every card is
-      effectively white, and the blur shadow is set to opacity 13 with sub-pixel offsets &mdash;
-      invisible at any size. That is what reads as flat.</figcaption>
-  </figure>
-
-  <figure data-reveal="rise">
-    <div class="frame"><img src="assets/fig1_style_b.png" alt="Figure 1, stronger fills and a visible shadow."></div>
-    <figcaption><b>B &mdash; fills and shadow.</b> Fills raised to 16&ndash;18%, shadow opacity
-      13&nbsp;&rarr;&nbsp;30 with a real offset and blur. Nothing else moves.</figcaption>
-  </figure>
-
-  <figure data-reveal="rise">
-    <div class="frame"><img src="assets/fig1_style_c.png" alt="Figure 1, strongest fills, borders and text."></div>
-    <figcaption><b>C &mdash; maximum separation.</b> Fills 24&ndash;26%, shadow opacity 38, borders
-      1.8&nbsp;&rarr;&nbsp;2.5&nbsp;pt, and darker label text.</figcaption>
-  </figure>
-</section>
-
 <!-- ============ HERO: pipeline explainer ============
      Built by src/scripts/video/ (gitignored). Rebuild with:  python scripts/video/assemble.py -->
 <video controls playsinline muted loop preload="metadata" poster="assets/fig1_pipeline.png"
@@ -300,11 +267,6 @@
 <section id="episodes">
   <p class="eyebrow">Episodes</p>
   <h2>What compliance and violation look like</h2>
-  <p class="lede">Start with the behavior. The same arm, the same grid, the same world model in
-     every clip below &mdash; the only thing that changes is what the agent does with a deontic
-     conclusion. Four runs per category, re-simulated from their recorded action sequences, drawn
-     from different tasks so the pattern is the arm's and not one lucky episode's.</p>
-
   <div class="vgrid" data-stagger="90">
     <div class="vcard" data-reveal="rise">
       <video muted autoplay loop playsinline controls preload="metadata">
@@ -346,7 +308,7 @@
      results below.
      <a href="https://arxiv.org/abs/2609.15113" target="_blank" rel="noopener">See the paper for details.</a></p>
 
-  <figure class="bleed" data-reveal="wipe">
+  <figure data-reveal="wipe">
     <div class="frame"><img src="assets/fig1_pipeline.png"
       alt="The legislation planning stack: an Isaac Lab Franka arm pushing a cube on a 3x3 grid, beside a three-layer diagram showing the law, perception and planning rows."></div>
     <figcaption><b>The Legislation Planning Stack.</b> <b>(a)</b> the Isaac Lab environment: a
@@ -410,7 +372,7 @@
      social-agent episode, decision by decision: a violation, the duty that repairs it, and the
      record of the violation closing a door several steps later.</p>
 
-  <figure class="bleed" data-reveal="wipe">
+  <figure data-reveal="wipe">
     <div class="frame"><img src="assets/fig_trace_filmstrip.png"
       alt="Five-panel filmstrip of one episode, showing the cube position and sign color at each decision step."></div>
     <figcaption><b>One episode, five decisions.</b> Every deontic decision is logged with the
@@ -545,9 +507,32 @@
       success.</figcaption>
   </figure>
 
-  <p class="tnote">A verdict costs <b>16.6&nbsp;ms</b> against the <b>12.5&nbsp;s</b> the planner
-     spends per executed action &mdash; about three orders of magnitude less than the search it
-     governs.</p>
+</section>
+
+<!-- ============ RUNTIME COST ============ -->
+<section id="runtime">
+  <p class="eyebrow">Runtime cost</p>
+  <h2>The reasoning is nearly free next to the search it governs</h2>
+  <p class="lede">None of this matters if the legal layer cannot run at robot speed. It can: the
+     whole symbolic path &mdash; grounding the atoms, running clingo, building the constraint
+     &mdash; is three orders of magnitude below the planner it constrains.</p>
+
+  <figure data-reveal="rise">
+    <div class="frame"><img src="assets/fig_runtime_cost.png"
+      alt="Horizontal log-scale bar chart comparing symbolic reasoning, legality pruning and RRT plus world-model rollouts for the social and deviant agents."></div>
+    <figcaption><b>Runtime cost audit.</b> 400 episodes; 4,720 social and 3,620 deviant deontic
+      decisions. Mean milliseconds per <em>executed action</em>, on a log axis &mdash; on a linear
+      one the reasoning would not be visible at all. Symbolic reasoning costs <b>20&nbsp;ms</b>
+      against a <b>12,518&nbsp;ms</b> social planning step, <b>0.16%</b> of it; even legality
+      pruning, which re-adjudicates every candidate the tree generates, is <b>1.07%</b>. The
+      deviant agent weighs violations rather than vetoing them, so it prunes nothing and searches
+      longer &mdash; 27,528&nbsp;ms a step. <b>The point:</b> DDL reasoning is viable at deployment,
+      and what costs time is the world model, not the law.</figcaption>
+  </figure>
+
+  <p class="tnote">Inside the legislation layer, per deontic decision: perception and grounding
+     <b>1.71&nbsp;ms</b>, clingo <b>14.68&nbsp;ms</b> amortized, constraint build
+     <b>0.26&nbsp;ms</b> &mdash; <b>16.65&nbsp;ms</b> for a verdict.</p>
 </section>
 
 <!-- ============ CITATION ============ -->
