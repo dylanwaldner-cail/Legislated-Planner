@@ -81,7 +81,7 @@
 
   /* ---------- figures ---------- */
   /* Every paper figure is drawn on white, so the frame stays white in dark mode too --
-     inverting them would falsify the colour-coded legends. */
+     inverting them would falsify the color-coded legends. */
   figure { margin:0 0 8px; }
   .frame {
     background:#fff; border:1px solid var(--rule); border-radius:10px;
@@ -260,7 +260,7 @@
      legal reasoning ran efficiently at runtime and its verdicts were auditable, and (3) the stack
      adapted to exogenous signals and endogenous rule changes. Both gaps were measured: (4) world
      model and probe error corrupted the factual input for the DDL reasoner, and (5) a single law
-     admitted several faithful metric interpretations yielding drastically different abidance.</p>
+     admitted several faithful metric interpretations yielding drastically different abidance. Thus, <i>ex ante</i> legislation functions as intended, and closing these gaps &mdash; with a standardized mapping from the law to runtime constraints, and improved fact grounding from perception &mdash; will yield robust laws that align robot behavior with society's norms.</p>
 </section>
 
 <!-- ============ EPISODES ============ -->
@@ -322,19 +322,13 @@
       perception and leaves through the planner, and the gaps open during translation.</figcaption>
   </figure>
 
-  <p class="lede">A Franka arm pushes a cube across a 3&times;3 grid with an illegal center cell.
-     Planning is RRT in the latent space of DINO-WM; the cube's pose is never given, only read back
-     from pixels by learned probes. Four agents share the stack and differ only in what they do with
-     a violation flag &mdash; they are the four series in the results below.
-     <a href="https://arxiv.org/abs/2609.15113" target="_blank" rel="noopener">See the paper for details.</a></p>
-
 </section>
 
 <!-- ============ THE LAWS ============ -->
 <section id="laws">
   <p class="eyebrow">The laws</p>
   <h2>A small rule base that still exercises every DDL construct</h2>
-  <p class="lede">What the stack enforces is eleven rules. The center cell is off-limits (R2); a
+  <p class="lede">What the stack enforces is twelve rules. The center cell is off-limits (R2); a
      yellow sign obliges a check-in (R5); reaching it flips the sign green (R7), or red if the
      center was already entered (R7b); green then permits the center (R4), red freezes the agent
      (R9); and if the cube ends up inside anyway, R10 converts the prohibition into a duty to get
@@ -377,8 +371,9 @@
       alt="Five-panel filmstrip of one episode, showing the cube position and sign color at each decision step."></div>
     <figcaption><b>One episode, five decisions.</b> Every deontic decision is logged with the
       rule that fired, the atoms grounding it, and the verdict; each panel is tinted with the
-      <em>effective</em> sign, the color the verdict was assessed under. A world-model error
-      overshoots by nearly <b>8&nbsp;cm</b> and drops the cube in the forbidden center &mdash; the
+      <em>effective</em> sign, the color the verdict was assessed under. A world-model error of nearly
+      <b>8&nbsp;cm</b> sends the cube <b>11.2&nbsp;cm</b> &mdash; 2.7&times; the distance predicted
+      &mdash; into the forbidden center &mdash; the
       plan was legal, the execution was not. R10's compensatory duty then fires,
       <code>[O]exit_cell(4)</code>, and the exit succeeds. But the episode still carries
       <code>visited(4)</code>, so on arrival at the check-in R7b outranks R7, the sign flips
@@ -501,7 +496,7 @@
     <figcaption><b>Rule insertion.</b> <em>R11</em> inserted at <i>t</i>&nbsp;=&nbsp;3, mid-episode,
       into a running agent. The amendment immediately strands agents in violation &mdash; some
       holding a license the reverting sign revoked underneath them &mdash; and R10's
-      contrary-to-duty duty walks most of them back into a legal cell by the next step.
+      contrary-to-duty obligation walks most of them back into a legal cell by the next step.
       <b>The point:</b> legal design is updateable and need not be fixed <em>a priori</em>; a
       violation becomes a repair obligation rather than a dead end, and it costs no task
       success.</figcaption>
@@ -515,7 +510,7 @@
   <h2>The reasoning is nearly free next to the search it governs</h2>
   <p class="lede">None of this matters if the legal layer cannot run at robot speed. It can: the
      whole symbolic path &mdash; grounding the atoms, running clingo, building the constraint
-     &mdash; is three orders of magnitude below the planner it constrains.</p>
+     &mdash; is nearly three orders of magnitude below the planner it constrains.</p>
 
   <figure data-reveal="rise">
     <div class="frame"><img src="assets/fig_runtime_cost.png"
